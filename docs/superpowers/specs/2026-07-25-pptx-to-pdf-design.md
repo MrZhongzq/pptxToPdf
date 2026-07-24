@@ -81,7 +81,7 @@ backend/
       uploads.py         分片上传四端点
       tasks.py           任务查询与结果下载
     services/
-      upload_store.py    块落盘、状态查询、拼装校验
+      chunk_store.py     块落盘、已收块查询、拼装（纯文件操作，不访问 DB）
       pptx_probe.py      元信息解析（不加载整包）
       engines/
         base.py          ConversionEngine 抽象基类
@@ -91,7 +91,7 @@ backend/
 
 各单元职责边界：
 
-- **`upload_store`** — 只管字节。接收块、记录已收偏移、拼装、校验大小与摘要。不认识 pptx。
+- **`chunk_store`** — 只管字节。接收块、列举已收块、按序拼装。不认识 pptx，也不认识数据库。
 - **`pptx_probe`** — 只管解析。输入一个已落盘的文件路径，输出元信息或抛解析错误。不认识 HTTP。
 - **`ConversionEngine`** — 只管转换。输入 pptx 路径与元信息，输出 PDF 路径。不认识数据库。
 - **API 层** — 只管编排与 HTTP 语义，不含业务逻辑。
@@ -143,11 +143,12 @@ POST   /api/uploads/{upload_id}/complete
 
 ```
 storage/
-  uploads/{upload_id}/meta.json
-  uploads/{upload_id}/chunks/000000.part ...
+  uploads/{upload_id}/000000.part ...
   originals/{task_id}.pptx
   outputs/{task_id}.pdf
 ```
+
+**唯一真相源是数据库**。文件系统只存块字节，不放 `meta.json` 之类的旁路元数据，避免双真相源在崩溃恢复时产生分歧。相应地，块存储层 `ChunkStore` 是**纯文件操作、不访问数据库**的单元，元数据读写全部由 API 层负责——这样 `ChunkStore` 可以完全脱离 DB 单测。
 
 ### 6.4 数据模型
 
