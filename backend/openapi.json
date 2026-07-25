@@ -377,6 +377,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "ENGINE_UNAVAILABLE",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         }
       }

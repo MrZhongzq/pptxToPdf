@@ -183,7 +183,13 @@ def get_status(
     )
 
 
-@router.post("/{upload_id}/complete", response_model=CompleteResponse, responses=UPLOAD_ERRORS)
+# 只有本端点会在 Redis 不可达时抛 EngineUnavailable(503)，所以 503 就地合并进
+# responses，而不是加到共享的 UPLOAD_ERRORS 里给另外三个端点误声明。
+@router.post(
+    "/{upload_id}/complete",
+    response_model=CompleteResponse,
+    responses={**UPLOAD_ERRORS, 503: {**_ERR, "description": "ENGINE_UNAVAILABLE"}},
+)
 def complete_upload(
     upload_id: str,
     session: Session = Depends(get_session),
