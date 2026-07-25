@@ -223,3 +223,50 @@ storage/
 - **字体全家桶**（二期）：LibreOffice 容器需装齐中文字体与 MS 核心字体，这是保真度的 80%
 - **风控**（四期）：设备指纹作为**加权信号**而非硬阻断（降配额、加排队惩罚、触发复核），避免公用机房同型号设备指纹碰撞造成误伤；IP 维度放宽，校园网 NAT 后大量用户共享出口
 - **D 类后处理**（最后）：动画分步展开成多页、PDF 书签大纲、页边距重映射
+
+## 10. 二期开工前的既定决策
+
+以下在一期收尾时拍板，二期用 writing-plans 生成实施计划时直接采纳，不必重新讨论。
+
+### 10.1 会话模型：刷新即重置，不做跨刷新的续传恢复
+
+采用在线转换站的通行心智模型——**一次页面加载 = 一个 session，刷新即全部重置**。
+
+这条决策把一期终审提出的「断点续传在 UI 上不可达」从缺陷降级为**非需求**：用户不会指望刷新后还能接着传，因此不实现 `localStorage` 持久化 `upload_id`、不实现「检测到未完成的上传」提示。`uploadClient` 的 `resumeUploadId` 参数保留，但定位调整为**session 内网络抖动的重试路径**，不是跨会话恢复入口。
+
+**多标签页不做适配**：假定用户只开一个标签页；多开时各标签页独立运行、互不感知，属可接受行为。因此 session 状态**纯前端**保存（内存即可），**不**在 `Upload`/`Task` 表增加 `session_id` 字段，后端无需任何改动。
+
+### 10.2 文件身份用轻量指纹，不用完整密码学哈希
+
+session 内判断「用户是不是又选了同一个文件」，用 **`size` + `lastModified` + 首尾各 1MB 的 sha256** 作为指纹，而非对整个文件算哈希。
+
+**Why:** Web Crypto 的 `crypto.subtle.digest()` 没有流式接口，要求一次性传入完整 `ArrayBuffer`。500MB 文件意味着先 `await file.arrayBuffer()` 全读进内存再算——移动端 Safari 基本必崩，桌面也是数秒到数十秒卡顿，且发生在用户点击上传之后、进度条出现之前，表现为白屏等待。轻量指纹是毫秒级，要构造碰撞得同时凑齐大小、修改时间和首尾内容。
+
+**这两件事的强度需求不同，不要混为一谈：**
+
+| | 「是不是同一个文件」 | 「传上来的字节对不对」 |
+|---|---|---|
+| 性质 | UX 去重，防手滑重复选择 | 完整性校验，需密码学强度 |
+| 误判代价 | 多传一次 | 数据损坏 |
+| 方案 | 轻量指纹（前端，毫秒级） | 后端 `_sha256_of()` 流式校验（**已实现**） |
+
+因此**不引入 `hash-wasm` 之类的 WASM 流式哈希依赖**，也**不把后端现有的 sha256 改成 sha512**——后者要动 schema 字段名、正则 pattern（64→128 hex）、`_sha256_of` 及相关测试，成本非零而收益为零：sha256 已是 2^128 量级抗碰撞，对文件身份判定绰绰有余。
+
+### 10.3 任务超时：显性要求用户重传，不做自动恢复
+
+任务卡在非终态（`pending`/`parsing`/`queued`/`converting`）超过阈值时，前端**停止轮询并提示用户重新上传**，不尝试自动恢复或后台重试。与 10.1 的刷新即重置一致。
+
+这同时收口了一期终审的 I3：当前 `useTaskPolling` 的轮询没有终止条件，一个因进程重启而永久停在 `pending` 的任务会被每秒轮询到天荒地老。
+
+### 10.4 一期终审遗留、需在二期处理的项
+
+按优先级排列，前两条建议在写任何二期新代码**之前**先做——现在改是几行，等二期实现堆上去再改要动一大片：
+
+1. **引擎选择从 HTTP 层挪到 `pipeline.py` 的 `probe()` 之后。** 现状是 `uploads.py` 写死 `engine="placeholder"`，但按 §9 的引擎路由，判据是**页数**，而页数要解析完才知道。不挪这个点，本文档 §5 声称的「二期加 LibreOffice 只需新增一个文件与一行注册」不成立。建议新增 `services/engine_router.py::select_engine(meta) -> str`。
+2. **`ConversionEngine` 补超时与错误族。** 签名加 `timeout_s`，`errors.py` 加 `ConversionFailed` / `ConversionTimeout` / `EngineUnavailable`。Graph 是硬性 45 秒超时、LibreOffice 是几十秒外部进程，当前 `convert(src, meta, dest) -> None` 没有任何地方能挂超时控制；且所有引擎异常现在都被 `pipeline` 归一成 `INTERNAL_ERROR`，前端会把原始异常字符串直接显示给用户。
+3. **`BackgroundTasks` 换真队列**（Redis + ARQ）。当前是单进程内存队列，进程重启丢任务。`run_task(task_id)` 的签名已为此设计（只吃 id、自开 session、路径从 settings 取），换队列时函数体几乎不动，只需替换投递方式。
+4. **`originals/` 与 `outputs/` 的保留策略。** 目前**没有任何删除路径**，磁盘随使用无限增长（单节课 80MB、半学期 500MB，每次转换永久留下原文件 + 输出 PDF）。落地后 §7 的 `TASK_NOT_READY` 才有条件换成语义准确的 `RESULT_EXPIRED`(410)。
+5. **`put_chunk` 改流式读取。** 当前先 `await request.body()` 再校验大小；`Content-Length` 缺失（`Transfer-Encoding: chunked`）时该调用无上限。生产有 Nginx `client_max_body_size 16m` 兜底，但后端裸跑无保护。
+6. **业务错误码补进 `openapi.json` 契约。** 当前快照每个端点只声明 200 和 FastAPI 默认的 422，全部业务错误码（`UPLOAD_SESSION_NOT_FOUND` / `UPLOAD_SIZE_EXCEEDED` / `STORAGE_FULL` 等）都不在契约里，且 `VALIDATION_ERROR` 的实际返回形状与声明的 `HTTPValidationError` 不一致。建议给路由加 `responses={...}` 声明，并在 CI 跑 `dump_openapi.py && git diff --exit-code`。
+7. **`Settings` 加 `env_prefix="PPTX2PDF_"`。** 当前 `CHUNK_SIZE`、`DATABASE_URL` 这类通用环境变量名容易与同机其他服务撞车。
+8. **`deploy/nginx.conf.example` 的 `listen 443 ssl http2;` 在 nginx ≥1.25.1 已废弃**（应为 `listen 443 ssl;` + `http2 on;`），且缺 `ssl_certificate` 指令，照抄起不来。
