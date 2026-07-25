@@ -1,9 +1,14 @@
 server {
-    listen 443 ssl http2;
+    listen 443 ssl;
+    http2 on;
     server_name pptx.example.com;
 
+    # 证书路径按实际部署修改。缺这两行 nginx 起不来。
+    ssl_certificate     /etc/letsencrypt/live/pptx.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/pptx.example.com/privkey.pem;
+
     # 分片上传后单次请求体只有 5 MiB，无需为 500MB 放宽。
-    # 留 16m 余量覆盖块加请求头。
+    # 留 16m 余量覆盖块加请求头。改大它没有好处，只会削弱防护。
     client_max_body_size 16m;
     client_body_timeout 120s;
 
