@@ -13,6 +13,7 @@ from app.errors import (
     StorageFull,
     UploadChecksumMismatch,
     UploadSessionExpired,
+    UploadSessionNotActive,
     UploadSessionNotFound,
     UploadSizeExceeded,
 )
@@ -61,8 +62,10 @@ def _sha256_of(path: Path) -> str:
 def _purge_expired(session: Session) -> None:
     """惰性清理：每次新建会话时顺带回收过期会话的块目录。
 
-    一期不引入后台循环——新建上传是唯一会让磁盘增长的入口，
-    在这里回收足以防止无限堆积。
+    注意范围：本函数只回收 uploads/ 下过期会话的块目录。originals/
+    （拼装后的原始 pptx）与 outputs/（转换产物 PDF）目前没有任何保留
+    策略——它们不会被这个函数、也不会被任何其它路径回收，磁盘会随
+    真实使用无限增长。详见 README「已知限制 / 一期技术债」一节。
     """
     now = datetime.now(timezone.utc)
     stale = (
@@ -119,6 +122,13 @@ async def put_chunk(
     session: Session = Depends(get_session),
 ) -> ChunkAck:
     upload = _load_active(session, upload_id)
+    if upload.status != "active":
+        # complete 之后迟到的 PUT（网络层重传、abort 后仍在飞的请求）不得
+        # 复活块目录——那个目录一旦复活，_purge_expired 只清 active 会话，
+        # 永远不会被任何路径回收。
+        raise UploadSessionNotActive(
+            f"上传会话 {upload_id} 状态为 {upload.status}，不再接受分片"
+        )
     if not 0 <= index < upload.total_chunks:
         raise UploadSessionNotFound(f"块序号 {index} 越界")
 
@@ -159,6 +169,10 @@ def complete_upload(
     session: Session = Depends(get_session),
 ) -> CompleteResponse:
     upload = _load_active(session, upload_id)
+    if upload.status != "active":
+        raise UploadSessionNotActive(
+            f"上传会话 {upload_id} 状态为 {upload.status}，无法重复完成"
+        )
     task_id = str(uuid.uuid4())
     dest = settings.originals_dir / f"{task_id}.pptx"
 

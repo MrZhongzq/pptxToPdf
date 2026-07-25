@@ -17,6 +17,22 @@ class UploadSessionExpired(AppError):
     http_status = 410
 
 
+class UploadSessionNotActive(AppError):
+    """会话存在且未过期，但状态已不是 active（如已 completed）——
+    典型触发场景：complete 之后迟到的分片 PUT（网络层重传、abort 后仍在飞的请求）。"""
+
+    code = "UPLOAD_SESSION_NOT_ACTIVE"
+    http_status = 409
+
+
+class ValidationError(AppError):
+    """FastAPI/pydantic 请求体校验失败时的统一错误码，供 RequestValidationError
+    处理器复用，保持所有错误响应的码值都来自本模块这一个来源。"""
+
+    code = "VALIDATION_ERROR"
+    http_status = 422
+
+
 class UploadSizeExceeded(AppError):
     code = "UPLOAD_SIZE_EXCEEDED"
     http_status = 413

@@ -2,11 +2,16 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.config import settings
-from app.db import Base, SessionLocal, engine
 
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
+    # Base/engine 延迟到函数体内导入：conftest.py 的 _isolate_app_db autouse
+    # fixture 会把 app.db.engine 重定向到 tmp_path 下的隔离 sqlite 文件，
+    # 若在模块顶层 import，拿到的会是重定向之前的旧引用，
+    # drop_all/create_all 就会作用到开发者本地真实的 backend/pptx2pdf.db。
+    from app.db import Base, engine
+
     monkeypatch.setattr(settings, "storage_root", tmp_path / "storage")
     monkeypatch.setattr(settings, "chunk_size", 4)  # 小块便于测试
     settings.ensure_dirs()
@@ -284,6 +289,69 @@ async def test_complete_sha256_io_error_returns_storage_full(client, monkeypatch
     done = await client.post(f"/api/uploads/{uid}/complete")
     assert done.status_code == 507
     assert done.json()["code"] == "STORAGE_FULL"
+
+
+async def test_create_upload_rejects_zero_size_with_validation_error_contract(client):
+    """回归测试：请求体校验失败（size=0 违反 Field(ge=1)）必须走全局错误契约，
+    返回 {"code": "VALIDATION_ERROR", "message": ...}，而不是 FastAPI 默认的
+    {"detail": [...]} —— 后者会让前端 api.ts 的 parse() 找不到 body.code，
+    退化成显示无意义的英文 "Unprocessable Entity"。用户选一个 0 字节的 pptx
+    就能触发。
+    """
+    resp = await client.post(
+        "/api/uploads", json={"filename": "empty.pptx", "size": 0}
+    )
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["code"] == "VALIDATION_ERROR"
+    assert "message" in body and body["message"]
+
+
+async def test_create_upload_rejects_invalid_sha256_with_validation_error_contract(
+    client,
+):
+    """同上，换一个校验失败的字段（sha256 不满足 64 位十六进制正则）。"""
+    resp = await client.post(
+        "/api/uploads",
+        json={"filename": "deck.pptx", "size": 4, "sha256": "not-a-valid-hash"},
+    )
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["code"] == "VALIDATION_ERROR"
+    assert "message" in body and body["message"]
+
+
+async def test_put_chunk_after_complete_is_rejected_and_does_not_revive_directory(
+    client,
+):
+    """回归测试：complete 之后迟到的 PUT（网络层重传、abort 后仍在飞的请求）
+    必须被拒绝，且不能重新创建块目录——_purge_expired 只清 active 会话，
+    一旦目录复活就再也没有任何路径会回收它。
+    """
+    body = await _create(client, size=4)
+    uid = body["upload_id"]
+    await client.put(f"/api/uploads/{uid}/chunks/0", content=b"abcd")
+    complete_resp = await client.post(f"/api/uploads/{uid}/complete")
+    assert complete_resp.status_code == 200
+    assert not (settings.uploads_dir / uid).exists()
+
+    late = await client.put(f"/api/uploads/{uid}/chunks/0", content=b"abcd")
+    assert late.status_code == 409
+    assert late.json()["code"] == "UPLOAD_SESSION_NOT_ACTIVE"
+    assert not (settings.uploads_dir / uid).exists()
+
+
+async def test_complete_after_complete_is_rejected(client):
+    """回归测试：重复调用 complete 也必须走同一条状态检查，不能悄悄重跑一遍。"""
+    body = await _create(client, size=4)
+    uid = body["upload_id"]
+    await client.put(f"/api/uploads/{uid}/chunks/0", content=b"abcd")
+    first = await client.post(f"/api/uploads/{uid}/complete")
+    assert first.status_code == 200
+
+    second = await client.post(f"/api/uploads/{uid}/complete")
+    assert second.status_code == 409
+    assert second.json()["code"] == "UPLOAD_SESSION_NOT_ACTIVE"
 
 
 async def test_put_chunk_rejects_oversized_content_length_before_reading_body(client):
