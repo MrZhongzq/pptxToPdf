@@ -28,6 +28,12 @@ export function formatBytes(bytes: number): string {
     value /= 1024
     unit += 1
   }
+  // 舍入到一位小数后可能刚好达到 1024（如 1023.98 -> "1024.0"），需要再提一级单位，
+  // 否则会显示违反直觉的 "1024.0 KB" 而不是 "1.0 MB"。
+  if (unit < UNITS.length - 1 && Number(value.toFixed(1)) >= 1024) {
+    value /= 1024
+    unit += 1
+  }
   return unit === 0 ? `${value} B` : `${value.toFixed(1)} ${UNITS[unit]}`
 }
 

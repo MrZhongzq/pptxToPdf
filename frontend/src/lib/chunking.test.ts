@@ -27,6 +27,46 @@ describe('sliceChunks', () => {
   it('returns empty for zero size', () => {
     expect(sliceChunks(0, 5)).toEqual([])
   })
+
+  it('preserves chunk-size invariants at real-world scale (evenly divisible)', () => {
+    const size = 524288000 // 500 MiB
+    const chunkSize = 5242880 // 5 MiB
+    const chunks = sliceChunks(size, chunkSize)
+
+    const totalLength = chunks.reduce((sum, c) => sum + (c.end - c.start), 0)
+    expect(totalLength).toBe(size)
+
+    expect(chunks[0].start).toBe(0)
+    expect(chunks[chunks.length - 1].end).toBe(size)
+
+    chunks.forEach((chunk, i) => {
+      expect(chunk.index).toBe(i)
+      if (i < chunks.length - 1) {
+        expect(chunk.end).toBe(chunks[i + 1].start)
+        expect(chunk.end - chunk.start).toBe(chunkSize)
+      }
+    })
+  })
+
+  it('preserves chunk-size invariants at real-world scale (non-divisible)', () => {
+    const size = 524288001 // 500 MiB + 1 byte
+    const chunkSize = 5242880 // 5 MiB
+    const chunks = sliceChunks(size, chunkSize)
+
+    const totalLength = chunks.reduce((sum, c) => sum + (c.end - c.start), 0)
+    expect(totalLength).toBe(size)
+
+    expect(chunks[0].start).toBe(0)
+    expect(chunks[chunks.length - 1].end).toBe(size)
+
+    chunks.forEach((chunk, i) => {
+      expect(chunk.index).toBe(i)
+      if (i < chunks.length - 1) {
+        expect(chunk.end).toBe(chunks[i + 1].start)
+        expect(chunk.end - chunk.start).toBe(chunkSize)
+      }
+    })
+  })
 })
 
 describe('backoffDelay', () => {
@@ -46,6 +86,13 @@ describe('formatBytes', () => {
     expect(formatBytes(512)).toBe('512 B')
     expect(formatBytes(1536)).toBe('1.5 KB')
     expect(formatBytes(5 * 1024 * 1024)).toBe('5.0 MB')
+  })
+
+  it('rounds up to the next unit at the unit boundary instead of showing 1024.0', () => {
+    // 舍入到 KB 后恰好达到 1024.0 KB，应提升到 1.0 MB
+    expect(formatBytes(1048574.976)).toBe('1.0 MB')
+    // 舍入到 MB 后恰好达到 1024.0 MB，应提升到 1.0 GB
+    expect(formatBytes(1073741823)).toBe('1.0 GB')
   })
 })
 
