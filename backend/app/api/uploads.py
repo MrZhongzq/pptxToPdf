@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import get_session
 from app.errors import (
+    StorageFull,
     UploadChecksumMismatch,
     UploadSessionExpired,
     UploadSessionNotFound,
@@ -48,9 +49,12 @@ def _load_active(session: Session, upload_id: str) -> Upload:
 def _sha256_of(path: Path) -> str:
     """流式摘要，500MB 文件也不会把内容读进内存。"""
     digest = hashlib.sha256()
-    with path.open("rb") as fh:
-        while block := fh.read(HASH_BLOCK):
-            digest.update(block)
+    try:
+        with path.open("rb") as fh:
+            while block := fh.read(HASH_BLOCK):
+                digest.update(block)
+    except OSError as exc:
+        raise StorageFull(f"读取 {path} 计算校验和失败: {exc}") from exc
     return digest.hexdigest()
 
 
@@ -118,8 +122,14 @@ async def put_chunk(
     if not 0 <= index < upload.total_chunks:
         raise UploadSessionNotFound(f"块序号 {index} 越界")
 
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > upload.chunk_size:
+        raise UploadSizeExceeded(
+            f"块 {index} 声明 {declared} 字节，超过块大小 {upload.chunk_size}"
+        )
+
     data = await request.body()
-    if len(data) > upload.chunk_size:
+    if len(data) > upload.chunk_size:  # Content-Length 可能缺失或撒谎，读后复验兜底
         raise UploadSizeExceeded(f"块 {index} 为 {len(data)} 字节，超过块大小")
 
     chunks = store()

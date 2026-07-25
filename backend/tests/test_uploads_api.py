@@ -148,3 +148,108 @@ async def test_complete_returns_task_id(client):
     resp = await client.post(f"/api/uploads/{uid}/complete")
     assert resp.status_code == 200
     assert resp.json()["task_id"]
+
+
+async def test_run_task_records_failure_when_first_commit_fails(client, monkeypatch):
+    """回归测试：run_task 兜底分支自身的 commit 若失败会让任务永久卡死。
+
+    模拟真实 DB 错误在第一次 _set_status("parsing") 的 commit 上发生：
+    run_task 必须靠 _record_failure 的回滚重试自愈，最终把任务落到
+    failed 状态并写入 error_code，而不是让异常从 run_task 逃逸、
+    把任务永远卡在 pending/parsing。
+    """
+    from sqlalchemy.orm import Session as OrmSession
+
+    from app.db import SessionLocal
+    from app.models import Task
+    from app.services import pipeline
+
+    task_id = "task-commit-fail"
+    setup = SessionLocal()
+    setup.add(
+        Task(
+            task_id=task_id,
+            upload_id="upload-does-not-matter",
+            original_filename="deck.pptx",
+            size_bytes=4,
+            status="pending",
+            engine="placeholder",
+        )
+    )
+    setup.commit()
+    setup.close()
+
+    original_commit = OrmSession.commit
+    calls = {"n": 0}
+
+    def flaky_commit(self):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("simulated DB commit failure")
+        return original_commit(self)
+
+    monkeypatch.setattr(OrmSession, "commit", flaky_commit)
+
+    pipeline.run_task(task_id)  # 不应向外抛异常
+
+    check = SessionLocal()
+    persisted = check.get(Task, task_id)
+    check.close()
+    assert persisted.status == "failed"
+    assert persisted.error_code == "INTERNAL_ERROR"
+    assert persisted.error_message == "simulated DB commit failure"
+
+
+async def test_complete_sha256_io_error_returns_storage_full(client, monkeypatch):
+    """回归测试：_sha256_of 读取阶段的裸 OSError 必须归一化成 StorageFull。
+
+    真实触发路径包括并发 complete 撞车、AV 软件对刚写完的大文件加短暂锁等，
+    都会让 path.open("rb") 抛 OSError 子类，不能绕过全局 AppError 契约。
+    """
+    import hashlib
+    from pathlib import Path
+
+    payload = b"abcd"
+    resp = await client.post(
+        "/api/uploads",
+        json={
+            "filename": "deck.pptx",
+            "size": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        },
+    )
+    uid = resp.json()["upload_id"]
+    await client.put(f"/api/uploads/{uid}/chunks/0", content=payload)
+
+    original_open = Path.open
+
+    def flaky_open(self, mode="r", *args, **kwargs):
+        # 只拦截对已拼装 .pptx 文件的只读打开（即 _sha256_of 的调用路径），
+        # 放行 ChunkStore.assemble 的写入（"wb"）与其它无关文件操作。
+        if self.suffix == ".pptx" and mode == "rb":
+            raise PermissionError("simulated AV lock")
+        return original_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", flaky_open)
+
+    done = await client.post(f"/api/uploads/{uid}/complete")
+    assert done.status_code == 507
+    assert done.json()["code"] == "STORAGE_FULL"
+
+
+async def test_put_chunk_rejects_oversized_content_length_before_reading_body(client):
+    """回归测试：块大小校验必须在读 body 之前先看 Content-Length 提前拒绝。
+
+    读后复验（len(data) > chunk_size）仍然保留作为最后防线，但这里验证
+    声明的 Content-Length 超限时能直接 413，不依赖是否真的把 body 读完。
+    """
+    body = await _create(client, size=10)
+    uid = body["upload_id"]
+
+    resp = await client.put(
+        f"/api/uploads/{uid}/chunks/0",
+        content=b"ab",
+        headers={"content-length": "999999"},
+    )
+    assert resp.status_code == 413
+    assert resp.json()["code"] == "UPLOAD_SIZE_EXCEEDED"
