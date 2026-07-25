@@ -45,7 +45,9 @@ export function TaskCard({ taskId }: { taskId: string }) {
       document.body.appendChild(link)
       link.click()
       link.remove()
-      URL.revokeObjectURL(url)
+      // 不能同步 revoke：Firefox/Safari 上 click() 返回时下载可能尚未真正
+      // 开始，立刻撤销 object URL 会让下载失败。延后 1s 释放。
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
     } catch (err) {
       if (err instanceof ApiError) {
         setDownloadError({ code: err.code, message: err.message })
@@ -126,7 +128,9 @@ export function TaskCard({ taskId }: { taskId: string }) {
             display: 'inline-block',
             padding: '8px 20px',
             color: 'var(--g-text)',
-            border: 'none',
+            // 不写 border: 'none'——那会盖掉 .glass-strong 的玻璃描边。
+            // 项目没有全局 button { font: inherit } 重置，需显式继承字体。
+            font: 'inherit',
             cursor: 'pointer',
           }}
         >
