@@ -56,6 +56,15 @@ def _force_placeholder_engine(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _sync_conversion(monkeypatch):
+    """测试环境没有 Redis。把入队换成同步执行，保持一期测试对
+    「complete 之后任务已跑完」的假设成立。"""
+    from app.services.pipeline import run_task
+
+    monkeypatch.setattr("app.api.uploads.enqueue_conversion", run_task)
+
+
 @pytest.fixture
 def session(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")

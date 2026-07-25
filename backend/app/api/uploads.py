@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Request
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -25,8 +25,8 @@ from app.schemas import (
     CreateUploadResponse,
     UploadStatus,
 )
+from app.queue import enqueue_conversion
 from app.services.chunk_store import ChunkStore
-from app.services.pipeline import run_task
 
 router = APIRouter(prefix="/api/uploads", tags=["uploads"])
 
@@ -165,7 +165,6 @@ def get_status(
 @router.post("/{upload_id}/complete", response_model=CompleteResponse)
 def complete_upload(
     upload_id: str,
-    background: BackgroundTasks,
     session: Session = Depends(get_session),
 ) -> CompleteResponse:
     upload = _load_active(session, upload_id)
@@ -193,11 +192,10 @@ def complete_upload(
         original_filename=upload.filename,
         size_bytes=upload.size_bytes,
         status="pending",
-        engine="placeholder",
     )
     session.add(task)
     session.commit()
 
     store().purge(upload_id)
-    background.add_task(run_task, task_id)
+    enqueue_conversion(task_id)
     return CompleteResponse(task_id=task_id)
