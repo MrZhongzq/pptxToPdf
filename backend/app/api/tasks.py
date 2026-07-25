@@ -10,9 +10,16 @@ from app.config import settings
 from app.db import get_session
 from app.errors import AppError, ResultExpired
 from app.models import Task
-from app.schemas import TaskDto
+from app.schemas import ErrorResponse, TaskDto
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
+
+_ERR = {"model": ErrorResponse}
+TASK_ERRORS = {
+    404: {**_ERR, "description": "TASK_NOT_FOUND"},
+    409: {**_ERR, "description": "TASK_NOT_READY"},
+    410: {**_ERR, "description": "RESULT_EXPIRED"},
+}
 
 
 class TaskNotFound(AppError):
@@ -48,7 +55,7 @@ def _fonts(task: Task) -> list[str]:
         raise AppError(f"任务 {task.task_id} 的字体元数据已损坏") from exc
 
 
-@router.get("/{task_id}", response_model=TaskDto)
+@router.get("/{task_id}", response_model=TaskDto, responses=TASK_ERRORS)
 def get_task(task_id: str, session: Session = Depends(get_session)) -> TaskDto:
     task = _load(session, task_id)
     return TaskDto(
@@ -71,7 +78,7 @@ def get_task(task_id: str, session: Session = Depends(get_session)) -> TaskDto:
     )
 
 
-@router.get("/{task_id}/download")
+@router.get("/{task_id}/download", responses=TASK_ERRORS)
 def download(task_id: str, session: Session = Depends(get_session)) -> FileResponse:
     task = _load(session, task_id)
     if task.status != "done" or not task.output_path:

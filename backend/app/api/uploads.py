@@ -23,12 +23,23 @@ from app.schemas import (
     CompleteResponse,
     CreateUploadRequest,
     CreateUploadResponse,
+    ErrorResponse,
     UploadStatus,
 )
 from app.queue import enqueue_conversion
 from app.services.chunk_store import ChunkStore
 
 router = APIRouter(prefix="/api/uploads", tags=["uploads"])
+
+_ERR = {"model": ErrorResponse}
+UPLOAD_ERRORS = {
+    404: {**_ERR, "description": "UPLOAD_SESSION_NOT_FOUND"},
+    409: {**_ERR, "description": "UPLOAD_INCOMPLETE / UPLOAD_SESSION_NOT_ACTIVE"},
+    410: {**_ERR, "description": "UPLOAD_SESSION_EXPIRED"},
+    413: {**_ERR, "description": "UPLOAD_SIZE_EXCEEDED"},
+    422: {**_ERR, "description": "VALIDATION_ERROR / UPLOAD_CHECKSUM_MISMATCH / PPTX_*"},
+    507: {**_ERR, "description": "STORAGE_FULL"},
+}
 
 
 def store() -> ChunkStore:
@@ -82,7 +93,7 @@ def _purge_expired(session: Session) -> None:
     session.commit()
 
 
-@router.post("", response_model=CreateUploadResponse)
+@router.post("", response_model=CreateUploadResponse, responses=UPLOAD_ERRORS)
 def create_upload(
     body: CreateUploadRequest, session: Session = Depends(get_session)
 ) -> CreateUploadResponse:
@@ -114,7 +125,7 @@ def create_upload(
     )
 
 
-@router.put("/{upload_id}/chunks/{index}", response_model=ChunkAck)
+@router.put("/{upload_id}/chunks/{index}", response_model=ChunkAck, responses=UPLOAD_ERRORS)
 async def put_chunk(
     upload_id: str,
     index: int,
@@ -155,7 +166,7 @@ async def put_chunk(
     return ChunkAck(index=index, received_count=len(chunks.received_indices(upload_id)))
 
 
-@router.get("/{upload_id}", response_model=UploadStatus)
+@router.get("/{upload_id}", response_model=UploadStatus, responses=UPLOAD_ERRORS)
 def get_status(
     upload_id: str, session: Session = Depends(get_session)
 ) -> UploadStatus:
@@ -170,7 +181,7 @@ def get_status(
     )
 
 
-@router.post("/{upload_id}/complete", response_model=CompleteResponse)
+@router.post("/{upload_id}/complete", response_model=CompleteResponse, responses=UPLOAD_ERRORS)
 def complete_upload(
     upload_id: str,
     session: Session = Depends(get_session),

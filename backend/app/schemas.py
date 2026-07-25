@@ -46,3 +46,10 @@ class TaskDto(BaseModel):
     error_code: str | None
     error_message: str | None
     created_at: datetime
+
+
+class ErrorResponse(BaseModel):
+    """所有 API 错误的统一形状，码值取自 app/errors.py。"""
+
+    code: str
+    message: str
