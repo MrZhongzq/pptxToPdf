@@ -8,3 +8,5 @@ storage/
 *.db
 .pytest_cache/
 .vite/
+fonts-extra/
+.env
