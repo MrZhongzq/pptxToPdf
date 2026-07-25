@@ -9,7 +9,11 @@
 **/__pycache__
 **/*.pyc
 frontend/dist
-storage/
+# .dockerignore 的模式语义与 .gitignore 不同：不含 '/' 的模式经 filepath.Clean
+# 后只匹配根层，不会像 gitignore 那样匹配任意深度。config.py 的 storage_root
+# 默认是相对路径 Path("storage")，从 backend/ 启动服务就会产出 backend/storage/，
+# 里面的 originals/ 是 80–500MB 的用户文件，写 "storage/" 拦不住它。
+**/storage
 **/*.db
 fonts-extra/
 .superpowers
