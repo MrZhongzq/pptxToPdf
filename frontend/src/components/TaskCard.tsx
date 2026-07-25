@@ -14,7 +14,17 @@ const STATUS_LABEL: Record<TaskDto['status'], string> = {
 const EMU_PER_INCH = 914400
 
 export function TaskCard({ taskId }: { taskId: string }) {
-  const task = useTaskPolling(taskId)
+  const { task, pollingTimedOut } = useTaskPolling(taskId)
+
+  if (pollingTimedOut) {
+    return (
+      <div className="glass" style={{ padding: 16 }}>
+        <p role="alert" style={{ color: 'var(--g-danger)', margin: 0 }}>
+          任务状态长时间未更新，可能已中断。请重新上传。
+        </p>
+      </div>
+    )
+  }
 
   if (!task) {
     return (
