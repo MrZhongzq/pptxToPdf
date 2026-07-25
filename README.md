@@ -91,6 +91,9 @@ npm run dev       # 开发服务器在 5173，/api 已代理到 8000
 - SQLite 靠 WAL 支撑 api 与 worker 两个容器共享，**不要把 storage volume
   挂到 NFS 或对象存储 FUSE 上**，那种场景下文件锁不可靠
 - 前端产物需要单独构建部署，没有打进 compose
+- 转换结果只保留 24 小时（`PPTX2PDF_OUTPUT_TTL_HOURS`），过期自动清理，请
+  及时下载；过期后再请求下载会返回 `RESULT_EXPIRED`，需要重新上传。原始
+  pptx 在转换结束后立即删除，不论成败
 
 ## 分期
 
