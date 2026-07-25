@@ -1,0 +1,17 @@
+# docker-compose.yml 的 api/worker 两个服务 context 都是仓库根，
+# 而 README 要求在部署机上先跑一遍前端 npm ci / 后端 venv 安装，
+# node_modules（约 120M）、.venv（约 108M）因此必然存在于构建上下文里。
+# 每次 build 都把这些传给 daemon，在 ARM 机器上是分钟级的白等；
+# COPY backend/ ./ 还会把部署机上可能存在的本地 db/storage 打进镜像。
+.git
+**/node_modules
+**/.venv
+**/__pycache__
+**/*.pyc
+frontend/dist
+storage/
+**/*.db
+fonts-extra/
+.superpowers
+docs
+.env
