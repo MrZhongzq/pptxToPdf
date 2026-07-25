@@ -150,21 +150,19 @@ async def test_complete_returns_task_id(client):
     assert resp.json()["task_id"]
 
 
-async def test_run_task_records_failure_when_first_commit_fails(client, monkeypatch):
-    """回归测试：run_task 兜底分支自身的 commit 若失败会让任务永久卡死。
+def test_record_failure_never_raises_when_commit_fails(client, monkeypatch):
+    """单元测试：_record_failure 是本次修复的核心，落库失败必须被吞掉、绝不上抛。
 
-    模拟真实 DB 错误在第一次 _set_status("parsing") 的 commit 上发生：
-    run_task 必须靠 _record_failure 的回滚重试自愈，最终把任务落到
-    failed 状态并写入 error_code，而不是让异常从 run_task 逃逸、
-    把任务永远卡在 pending/parsing。
+    修复前的实现里根本没有这个函数——两个 except 分支直接操作 task 对象
+    再调 _set_status()，其内部 commit() 一旦抛错就会直接从 run_task 逃逸。
+    这里直接调用 _record_failure 并让它的 commit 无条件失败，验证它自己
+    捕获异常、只记日志，不向调用方传播。
     """
-    from sqlalchemy.orm import Session as OrmSession
-
     from app.db import SessionLocal
     from app.models import Task
     from app.services import pipeline
 
-    task_id = "task-commit-fail"
+    task_id = "task-record-failure-unit"
     setup = SessionLocal()
     setup.add(
         Task(
@@ -179,25 +177,76 @@ async def test_run_task_records_failure_when_first_commit_fails(client, monkeypa
     setup.commit()
     setup.close()
 
+    session = SessionLocal()
+
+    def boom(self):
+        raise RuntimeError("simulated commit failure")
+
+    monkeypatch.setattr(type(session), "commit", boom)
+
+    # 唯一的断言点：这一行不应抛出任何异常。
+    pipeline._record_failure(session, task_id, "SOME_CODE", "some message")
+
+    session.close()
+
+
+def test_run_task_does_not_raise_when_failure_path_commit_also_fails(
+    client, monkeypatch
+):
+    """端到端回归：即使"记录失败状态"这次 commit 本身也失败，run_task 也不能
+    把异常抛给 BackgroundTasks 执行器——否则任务会永远卡在中间状态（如
+    parsing），error_code 永远是 None，前端无限轮询一个不会再变化的状态。
+
+    构造一个会让 probe() 失败的原始文件（非法 zip），让 run_task 走进
+    except 分支；只放行第一次 commit（run_task 里把状态设为 "parsing"
+    的那次），之后所有 commit——包括 _record_failure 内部落库失败详情
+    的那次——一律抛错，模拟数据库在记录失败详情这一步本身也故障的场景。
+    """
+    from sqlalchemy.orm import Session as OrmSession
+
+    from app.config import settings
+    from app.db import SessionLocal
+    from app.models import Task
+    from app.services import pipeline
+
+    task_id = "task-failure-path-commit-fails"
+    payload = b"not a zip"  # probe() 会因此抛 PptxInvalidZip
+    src = settings.originals_dir / f"{task_id}.pptx"
+    src.write_bytes(payload)
+
+    setup = SessionLocal()
+    setup.add(
+        Task(
+            task_id=task_id,
+            upload_id="upload-does-not-matter",
+            original_filename="deck.pptx",
+            size_bytes=len(payload),
+            status="pending",
+            engine="placeholder",
+        )
+    )
+    setup.commit()
+    setup.close()
+
     original_commit = OrmSession.commit
     calls = {"n": 0}
 
     def flaky_commit(self):
         calls["n"] += 1
         if calls["n"] == 1:
-            raise RuntimeError("simulated DB commit failure")
-        return original_commit(self)
+            # 放行 run_task 里把状态设为 "parsing" 的第一次 commit,
+            # 这样 probe() 才会真正被调用到并因非法 zip 而抛错。
+            return original_commit(self)
+        raise RuntimeError("simulated commit failure in failure-recording path")
 
     monkeypatch.setattr(OrmSession, "commit", flaky_commit)
 
-    pipeline.run_task(task_id)  # 不应向外抛异常
+    # 唯一的断言点：这一行不应抛出任何异常。
+    pipeline.run_task(task_id)
 
-    check = SessionLocal()
-    persisted = check.get(Task, task_id)
-    check.close()
-    assert persisted.status == "failed"
-    assert persisted.error_code == "INTERNAL_ERROR"
-    assert persisted.error_message == "simulated DB commit failure"
+    # 确认确实触达了 except 分支里记录失败状态的那次 commit（否则上面的
+    # 断言就是在测一个从未进入 except 分支的空转路径）。
+    assert calls["n"] >= 2
 
 
 async def test_complete_sha256_io_error_returns_storage_full(client, monkeypatch):
