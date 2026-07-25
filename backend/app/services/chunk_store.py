@@ -1,4 +1,5 @@
 import shutil
+import uuid
 from pathlib import Path
 
 from app.errors import StorageFull, UploadIncomplete
@@ -21,9 +22,10 @@ class ChunkStore:
 
     def save_chunk(self, upload_id: str, index: int, data: bytes) -> None:
         target = self._path(upload_id, index)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_suffix(".tmp")
+        # 唯一后缀，避免同一 index 的真并发重传在 tmp 层交叉写
+        tmp = target.parent / f"{target.stem}.{uuid.uuid4().hex}.tmp"
         try:
+            target.parent.mkdir(parents=True, exist_ok=True)
             tmp.write_bytes(data)
             tmp.replace(target)  # 原子替换，重复投递天然幂等
         except OSError as exc:
@@ -53,9 +55,9 @@ class ChunkStore:
             preview = ", ".join(str(i) for i in missing[:10])
             raise UploadIncomplete(f"缺少 {len(missing)} 个块: {preview}")
 
-        dest.parent.mkdir(parents=True, exist_ok=True)
         written = 0
         try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
             with dest.open("wb") as out:
                 for index in range(total_chunks):
                     with self._path(upload_id, index).open("rb") as part:

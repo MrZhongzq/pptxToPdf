@@ -1,6 +1,9 @@
+import threading
+from pathlib import Path
+
 import pytest
 
-from app.errors import UploadIncomplete
+from app.errors import StorageFull, UploadIncomplete
 from app.services.chunk_store import ChunkStore
 
 
@@ -67,3 +70,58 @@ def test_purge_removes_all_chunks(storage_root):
     store.purge("u1")
 
     assert store.received_indices("u1") == set()
+
+
+def test_save_chunk_mkdir_failure_raises_storage_full(storage_root, monkeypatch):
+    store = ChunkStore(storage_root / "uploads")
+
+    def boom(self, *args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "mkdir", boom)
+
+    with pytest.raises(StorageFull) as exc:
+        store.save_chunk("u1", 0, b"data")
+
+    assert exc.value.code == "STORAGE_FULL"
+
+
+def test_assemble_mkdir_failure_raises_storage_full(storage_root, tmp_path, monkeypatch):
+    store = ChunkStore(storage_root / "uploads")
+    store.save_chunk("u1", 0, b"aaa")
+
+    def boom(self, *args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "mkdir", boom)
+
+    with pytest.raises(StorageFull) as exc:
+        store.assemble("u1", 1, tmp_path / "nested" / "out.bin")
+
+    assert exc.value.code == "STORAGE_FULL"
+
+
+def test_concurrent_duplicate_chunk_writes_do_not_interleave(storage_root, tmp_path):
+    store = ChunkStore(storage_root / "uploads")
+    size = 200_000
+    data_a = b"A" * size
+    data_b = b"B" * size
+    barrier = threading.Barrier(2)
+
+    def write(data):
+        barrier.wait()
+        store.save_chunk("u1", 0, data)
+
+    t1 = threading.Thread(target=write, args=(data_a,))
+    t2 = threading.Thread(target=write, args=(data_b,))
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    dest = tmp_path / "out.bin"
+    store.assemble("u1", 1, dest)
+    result = dest.read_bytes()
+
+    # 结果必须是两份数据中某一份的完整内容，不能是二者交叉撕裂后的产物
+    assert result in (data_a, data_b)
