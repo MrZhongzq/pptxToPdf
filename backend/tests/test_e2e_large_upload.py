@@ -5,13 +5,17 @@ from pptx.util import Emu
 from pypdf import PdfReader
 
 from app.config import settings
-from app.db import Base, engine
 
 SLIDES = 120
 
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
+    # Base/engine 延迟到函数体内导入，理由见 test_uploads_api.py 里同名 fixture
+    # 的注释：conftest.py 的 _isolate_app_db autouse fixture 重定向了
+    # app.db.engine，模块顶层 import 会绕过这个重定向。
+    from app.db import Base, engine
+
     monkeypatch.setattr(settings, "storage_root", tmp_path / "storage")
     # 简报原值 256 * 1024：120 张空白版式幻灯片实测仅约 110 KiB，
     # 256 KiB 块下只会切出 1 块，"assert total > 1" 必然失败，

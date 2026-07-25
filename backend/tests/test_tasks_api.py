@@ -5,11 +5,15 @@ from pptx.util import Emu
 from pypdf import PdfReader
 
 from app.config import settings
-from app.db import Base, engine
 
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
+    # Base/engine 延迟到函数体内导入，理由见 test_uploads_api.py 里同名 fixture
+    # 的注释：conftest.py 的 _isolate_app_db autouse fixture 重定向了
+    # app.db.engine，模块顶层 import 会绕过这个重定向。
+    from app.db import Base, engine
+
     monkeypatch.setattr(settings, "storage_root", tmp_path / "storage")
     monkeypatch.setattr(settings, "chunk_size", 64 * 1024)
     settings.ensure_dirs()
@@ -89,3 +93,52 @@ async def test_download_before_done_returns_409(client):
 
     resp = await client.get(f"/api/tasks/{task_id}/download")
     assert resp.status_code == 409
+
+
+async def test_run_task_walks_full_state_machine(client, sample_bytes):
+    """回归测试：Global Constraint 规定任务状态机固定为
+    pending -> parsing -> queued -> converting -> done，占位引擎瞬时完成
+    也必须走完全部状态——这条约束存在的唯一理由是二期接真引擎时前端不用改。
+
+    但 grep 全部测试，"queued" 和 "converting" 从未作为断言目标出现过：
+    把 pipeline.py 里那两行 _set_status(session, task, "queued") 和
+    "converting" 直接删掉，其余 44 个测试依然全绿。这里用 SQLAlchemy 的
+    attribute event 直接观测 Task.status 的赋值序列，堵住这个洞。
+    """
+    from sqlalchemy import event
+
+    from app.db import SessionLocal
+    from app.models import Task
+    from app.services import pipeline
+
+    task_id = "task-state-machine-sequence"
+    src = settings.originals_dir / f"{task_id}.pptx"
+    src.write_bytes(sample_bytes)
+
+    setup = SessionLocal()
+    setup.add(
+        Task(
+            task_id=task_id,
+            upload_id="upload-does-not-matter",
+            original_filename="deck.pptx",
+            size_bytes=len(sample_bytes),
+            status="pending",
+            engine="placeholder",
+        )
+    )
+    setup.commit()
+    setup.close()
+
+    transitions: list[str] = []
+
+    def _record(target, value, oldvalue, initiator):
+        if getattr(target, "task_id", None) == task_id:
+            transitions.append(value)
+
+    event.listen(Task.status, "set", _record)
+    try:
+        pipeline.run_task(task_id)
+    finally:
+        event.remove(Task.status, "set", _record)
+
+    assert transitions == ["parsing", "queued", "converting", "done"]
