@@ -15,9 +15,17 @@ FONT_SCAN_RE = re.compile(r"^ppt/(slides|slideMasters|slideLayouts|theme)/.+\.xm
 
 # 隐藏标记在根元素 <p:sld ... show="0"> 的属性上，属性顺序不固定，
 # 缺省即可见，只有显式 show="0" 才是隐藏。只在根元素的开标签内找，
-# 避免误配子元素里恰好也叫 show 的属性。
+# 避免误配子元素里恰好也叫 show 的属性——4096 字节的窗口通常能覆盖
+# 整份 slide XML（实测一页 slide 解压后仅 840 字节、窗口内 45 个 '<'
+# 全是子元素），不截断就会误判。
 SLIDE_HEAD_BYTES = 4096
-HIDDEN_ATTR_RE = re.compile(rb'\bshow\s*=\s*"0"')
+# 定位真正的元素开标签：OOXML slide XML 一律以 <?xml ...?> 声明开头，
+# 前面还可能有注释 / DOCTYPE，这些都不是根元素。排除 '<?' 与 '<!' 开头的
+# 结构，第一个匹配就是根元素开标签的起点。
+ROOT_TAG_START_RE = re.compile(rb"<(?!\?|!)[^\s/>]+")
+# 属性值引号 OOXML 生产者一律用双引号，单引号在 XML 里同样合法，
+# 既然用正则求鲁棒就一并覆盖。
+HIDDEN_ATTR_RE = re.compile(rb"""\bshow\s*=\s*["']0["']""")
 
 P_NS = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
 A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
@@ -67,11 +75,23 @@ def _is_slide_hidden(zf: zipfile.ZipFile, name: str) -> bool:
 
     根元素 <p:sld ...> 的开标签必然出现在文件最前面，500 页的 deck
     也不会让单页 XML 的开标签超过 4KB。
+
+    注意：不能直接 head.find(b">") 取第一个 '>'——slide XML 开头是
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>，第一个 '>'
+    落在 XML 声明的末尾，截出来的永远是声明本身，<p:sld> 开标签根本
+    进不了搜索窗口。必须先跳过声明定位到根元素开标签再截断。
     """
     with zf.open(name) as fh:
         head = fh.read(SLIDE_HEAD_BYTES)
-    end = head.find(b">")
-    root_tag = head[: end + 1] if end != -1 else head
+    m = ROOT_TAG_START_RE.search(head)
+    if m is None:
+        # 窗口里找不到任何元素开标签（截断、空文件、异常内容）：按可见处理，
+        # 理由同 _count_visible_slides 的异常分支——少算一页比多算一页危险。
+        return False
+    end = head.find(b">", m.start())
+    # end == -1 表示窗口内开标签尚未闭合，那么 m.start() 之后的全部内容
+    # 都还在开标签里（子元素必须等根标签闭合后才可能出现），整段可安全搜索。
+    root_tag = head[m.start() : end + 1] if end != -1 else head[m.start() :]
     return bool(HIDDEN_ATTR_RE.search(root_tag))
 
 
