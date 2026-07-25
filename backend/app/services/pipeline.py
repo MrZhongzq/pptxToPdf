@@ -9,22 +9,29 @@ from app.models import Task
 from app.services.engine_router import select_engine
 from app.services.engines import get_engine
 from app.services.pptx_probe import probe
-from app.services.retention import drop_original, purge_expired_outputs
+from app.services.retention import drop_original, purge_expired_outputs, reap_stale_tasks
 
 logger = logging.getLogger(__name__)
 
+BYTES_PER_MB = 1024 * 1024
 
-def compute_timeout_s(slide_count: int) -> float:
-    """按页数算转换超时。
+
+def compute_timeout_s(slide_count: int, size_bytes: int) -> float:
+    """按页数与文件体积算转换超时。
 
     固定值行不通：10 页与 500 页的合理耗时差一个数量级，
     定小了卡死大文件，定大了让僵死的任务占着 worker 不放。
+    只看页数也不够：真实负载里「单节课约 80MB」这类 40 页但内嵌大量
+    图片/视频的课件，光按页数算只拿到 max(180, 160)=180 秒，ARM 单核
+    解码这些位图很容易超时——所以加一个按体积（MB）的加成项。
     """
+    size_mb = size_bytes / BYTES_PER_MB
     return float(
         min(
             max(
                 settings.convert_timeout_base_s,
-                slide_count * settings.convert_timeout_per_slide_s,
+                slide_count * settings.convert_timeout_per_slide_s
+                + size_mb * settings.convert_timeout_per_mb_s,
             ),
             settings.convert_timeout_max_s,
         )
@@ -71,11 +78,12 @@ def run_task(task_id: str) -> None:
         try:
             _set_status(session, task, "parsing")
             meta = probe(src)
+            size_bytes = src.stat().st_size
             task.slide_count = meta.slide_count
             task.slide_width_emu = meta.slide_width_emu
             task.slide_height_emu = meta.slide_height_emu
             task.fonts_json = json.dumps(list(meta.fonts), ensure_ascii=False)
-            task.engine = select_engine(meta)
+            task.engine = select_engine(meta, size_bytes)
             logger.info(
                 "task parsed id=%s slides=%d engine=%s fonts=%s",
                 task_id, meta.slide_count, task.engine, list(meta.fonts)[:20],
@@ -84,7 +92,7 @@ def run_task(task_id: str) -> None:
             _set_status(session, task, "queued")
             _set_status(session, task, "converting")
 
-            timeout_s = compute_timeout_s(meta.slide_count)
+            timeout_s = compute_timeout_s(meta.slide_count, size_bytes)
             get_engine(task.engine).convert(src, meta, dest, timeout_s=timeout_s)
 
             task.output_path = str(dest.resolve())
@@ -108,4 +116,8 @@ def run_task(task_id: str) -> None:
         removed = purge_expired_outputs()
         if removed:
             logger.info("retention 清理了 %d 个过期输出", removed)
+        # 只在 api 启动时回收孤儿任务不够：worker 容器有内存上限，OOM 是
+        # 预期事件，work-horse 被杀后 api 未必会重启，回收器就可能永远不跑。
+        # 这里顺带触发一次，与上面 purge_expired_outputs() 同一个惰性模式。
+        reap_stale_tasks()
         session.close()

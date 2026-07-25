@@ -228,7 +228,7 @@ volumes:
 
 ### 6.3 不自动重试
 
-LibreOffice 转不动的文件重试还是转不动，只白占几分钟 CPU。直接标 `failed` 带错误码。唯一例外是 worker 进程被 kill（部署、OOM）导致的中断，RQ 会自动把 job 放回队列。
+LibreOffice 转不动的文件重试还是转不动，只白占几分钟 CPU。直接标 `failed` 带错误码。worker 进程被 kill（部署、OOM）导致的中断不是自动重试的例外——RQ 2.0 在不配 `Retry` 的情况下，work-horse 死亡或 job 超时都是直接移进 `FailedJobRegistry`，并不会自动把 job 放回队列。这意味着这类任务会永远停在 `converting`/`parsing` 等中间态，前端轮询也永远等不到终态更新。因此仍需要 §8 终审 I3 落地的孤儿任务回收器（`reap_stale_tasks`）兜底，而且不能只挂 api 启动时跑一次：`worker` 容器有内存上限、OOM 是预期事件，work-horse 被杀后 api 未必会重启（`restart: unless-stopped`），所以 `pipeline.run_task` 的 `finally` 里也惰性触发一次，两处互为兜底。
 
 ### 6.4 引擎选择位置
 

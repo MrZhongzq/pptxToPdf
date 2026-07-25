@@ -1,6 +1,5 @@
 import logging
 import sys
-from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -9,9 +8,9 @@ from fastapi.responses import JSONResponse
 
 from app.api import tasks, uploads
 from app.config import settings
-from app.db import SessionLocal, init_db
-from app.errors import AppError, TaskAbandoned, ValidationError
-from app.models import Task
+from app.db import init_db
+from app.errors import AppError, ValidationError
+from app.services.retention import reap_stale_tasks
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,8 +19,6 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-
-NON_TERMINAL = ("pending", "parsing", "queued", "converting")
 
 app = FastAPI(title="pptx2pdf", version="0.1.0")
 
@@ -62,42 +59,6 @@ def handle_validation_error(_: Request, exc: RequestValidationError) -> JSONResp
         status_code=err.http_status,
         content={"code": err.code, "message": err.message},
     )
-
-
-def reap_stale_tasks() -> int:
-    """把卡在非终态太久的任务标为失败，返回回收数量。
-
-    RQ 的 job 只活在 worker 进程里。进程被 kill（部署、OOM、崩溃）
-    时任务会永远停在中间态，而前端按异步轮询设计，会一直轮询一个
-    永不改变的状态。上游设计 §10.3 定的方向是显性要求用户重传。
-
-    时间比较用 naive UTC：SQLAlchemy 的 SQLite dialect 落库时会丢掉
-    时区信息，读回来是 naive，拿 aware datetime 去比会 TypeError。
-    """
-    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
-        minutes=settings.stale_task_minutes
-    )
-    session = SessionLocal()
-    try:
-        stale = (
-            session.query(Task)
-            .filter(Task.status.in_(NON_TERMINAL), Task.updated_at < cutoff)
-            .all()
-        )
-        for task in stale:
-            task.status = "failed"
-            task.error_code = TaskAbandoned.code
-            task.error_message = "任务在服务重启前未完成，请重新上传"
-        if stale:
-            session.commit()
-            logger.warning("回收了 %d 个孤儿任务", len(stale))
-        return len(stale)
-    except Exception:
-        logger.exception("回收孤儿任务失败")
-        session.rollback()
-        return 0
-    finally:
-        session.close()
 
 
 @app.on_event("startup")

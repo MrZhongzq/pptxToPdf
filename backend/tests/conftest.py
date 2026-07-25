@@ -28,6 +28,7 @@ def _isolate_app_db(tmp_path, monkeypatch):
     """
     import app.db as db_module
     import app.services.pipeline as pipeline_module
+    import app.services.retention as retention_module
 
     test_engine = create_engine(
         f"sqlite:///{tmp_path / 'isolated.db'}",
@@ -40,6 +41,11 @@ def _isolate_app_db(tmp_path, monkeypatch):
     monkeypatch.setattr(db_module, "engine", test_engine)
     monkeypatch.setattr(db_module, "SessionLocal", test_session_local)
     monkeypatch.setattr(pipeline_module, "SessionLocal", test_session_local)
+    # retention.reap_stale_tasks() 二期起也在 pipeline.run_task 的 finally 里
+    # 惰性触发（不再只挂 api 启动时）。retention.py 和 pipeline.py 一样在模块
+    # 顶层 `from app.db import SessionLocal`，同一个理由：只 patch
+    # db_module.SessionLocal 改不到这份早绑定的引用，得单独同步。
+    monkeypatch.setattr(retention_module, "SessionLocal", test_session_local)
 
     yield
 
@@ -52,7 +58,8 @@ def _force_placeholder_engine(monkeypatch):
     不是转换质量——把引擎选择固定回占位引擎，让这些测试继续有效。
     真实转换在测试机上验证，见计划的完成判据。"""
     monkeypatch.setattr(
-        "app.services.pipeline.select_engine", lambda meta: "placeholder"
+        "app.services.pipeline.select_engine",
+        lambda meta, size_bytes: "placeholder",
     )
 
 

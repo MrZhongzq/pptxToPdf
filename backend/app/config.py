@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     # 二期新增：转换超时（秒）
     convert_timeout_base_s: int = 180
     convert_timeout_per_slide_s: int = 4
+    convert_timeout_per_mb_s: int = 2
     convert_timeout_max_s: int = 1800
     soffice_bin: str = "soffice"
 
