@@ -8,13 +8,25 @@ services:
       timeout: 3s
       retries: 5
 
+  frontend:
+    build:
+      context: .
+      dockerfile: deploy/frontend.Dockerfile
+    restart: unless-stopped
+    ports:
+      # 唯一对外暴露的端口。默认 18993，用 WEB_PORT 覆盖。
+      - "${WEB_PORT:-18993}:80"
+    depends_on:
+      - api
+
   api:
     build:
       context: .
       dockerfile: deploy/api.Dockerfile
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      # 只绑到回环，供宿主机上 curl 排查用；对外走 frontend 的反向代理
+      - "127.0.0.1:8000:8000"
     volumes:
       - storage:/app/storage
     env_file:

@@ -33,17 +33,26 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-前端需要单独构建并交给 nginx 托管：
+起来之后访问 `http://<主机>:18993`。四个容器：`frontend`（nginx，唯一对外端口）、`api`、`worker` ×2、`redis`。
+
+**前端不需要单独构建**——`deploy/frontend.Dockerfile` 是多阶段镜像，在 node 容器里跑 `npm ci && npm run build`，产物拷进 nginx 镜像。部署机只要有 Docker 就够，不用装 Node。
+
+云主机还要放行端口（两层都要，少一层就连不上）：
 
 ```bash
-cd frontend && npm ci && npm run build
-# 产物在 frontend/dist/，参考 deploy/nginx.conf.example
+# 1. 主机防火墙。Oracle/AWS 的 Ubuntu 镜像默认只放行 22，
+#    且 INPUT 链末尾有一条 REJECT，新规则必须插在它前面
+sudo iptables -I INPUT 5 -p tcp --dport 18993 -j ACCEPT
+sudo netfilter-persistent save    # 没有这个命令就 apt install iptables-persistent
+
+# 2. 云平台的安全列表 / 安全组，在控制台加一条入站规则放行 18993/tcp
 ```
 
 ### 关键配置
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
+| `WEB_PORT` | 18993 | 对外 web 端口。api 只绑 `127.0.0.1:8000` 供宿主机排查，不对外 |
 | `WORKER_REPLICAS` | 2 | 并发转换数。4 核机器建议 2，留 1 核给上传 |
 | `PPTX2PDF_CONVERT_TIMEOUT_PER_SLIDE_S` | 4 | 每页超时系数。ARM 机器偏慢，转换总超时 = `min(max(180, 页数×4 + 体积MB×2), 1800)` 秒 |
 | `PPTX2PDF_CONVERT_TIMEOUT_PER_MB_S` | 2 | 每 MB 超时系数，覆盖「页数少但内嵌大量图片/视频」的重课件 |
@@ -91,7 +100,7 @@ npm run dev       # 开发服务器在 5173，/api 已代理到 8000
 - 任务列表只在 React state，刷新即丢，且没有列表端点可恢复
 - SQLite 靠 WAL 支撑 api 与 worker 两个容器共享，**不要把 storage volume
   挂到 NFS 或对象存储 FUSE 上**，那种场景下文件锁不可靠
-- 前端产物需要单独构建部署，没有打进 compose
+- 前端由 `frontend` 容器托管，镜像里是构建时的产物快照；改前端代码需要 `docker compose up -d --build frontend` 重新构建
 - 转换结果只保留 24 小时（`PPTX2PDF_OUTPUT_TTL_HOURS`），过期自动清理，请
   及时下载；过期后再请求下载会返回 `RESULT_EXPIRED`，需要重新上传。原始
   pptx 在转换结束后立即删除，不论成败
