@@ -6,8 +6,9 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db import get_session
-from app.errors import AppError
+from app.errors import AppError, ResultExpired
 from app.models import Task
 from app.schemas import TaskDto
 
@@ -76,13 +77,13 @@ def download(task_id: str, session: Session = Depends(get_session)) -> FileRespo
     if task.status != "done" or not task.output_path:
         raise TaskNotReady(f"任务状态为 {task.status}，尚无可下载结果")
 
-    output_path = Path(task.output_path)
-    if not output_path.is_file():
-        raise TaskNotReady(f"任务 {task_id} 的结果文件已不存在")
+    path = Path(task.output_path)
+    if not path.is_file():
+        # 任务确实成功过，但结果已被保留策略清理——这与「还没转完」
+        # 是两回事，前端要据此提示用户重新上传而不是继续等。
+        raise ResultExpired(
+            f"结果文件已超过 {settings.output_ttl_hours} 小时保留期被清理，请重新上传"
+        )
 
     stem = Path(task.original_filename).stem
-    return FileResponse(
-        output_path,
-        media_type="application/pdf",
-        filename=f"{stem}.pdf",
-    )
+    return FileResponse(str(path), media_type="application/pdf", filename=f"{stem}.pdf")
