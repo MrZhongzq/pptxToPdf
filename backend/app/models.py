@@ -37,7 +37,7 @@ class Task(Base):
     slide_height_emu: Mapped[int | None] = mapped_column(Integer, nullable=True)
     fonts_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="pending")
-    engine: Mapped[str] = mapped_column(String(32), default="placeholder")
+    engine: Mapped[str] = mapped_column(String(32), default="unassigned")
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     output_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)

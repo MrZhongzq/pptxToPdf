@@ -12,7 +12,7 @@ class PlaceholderEngine(ConversionEngine):
 
     name = "placeholder"
 
-    def convert(self, src: Path, meta: PptxMeta, dest: Path) -> None:
+    def convert(self, src: Path, meta: PptxMeta, dest: Path, *, timeout_s: float) -> None:
         width = meta.slide_width_emu / EMU_PER_POINT
         height = meta.slide_height_emu / EMU_PER_POINT
 

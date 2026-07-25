@@ -66,3 +66,33 @@ class PptxEncrypted(AppError):
 class StorageFull(AppError):
     code = "STORAGE_FULL"
     http_status = 507
+
+
+class ConversionFailed(AppError):
+    code = "CONVERSION_FAILED"
+    http_status = 500
+
+
+class ConversionTimeout(AppError):
+    code = "CONVERSION_TIMEOUT"
+    http_status = 504
+
+
+class ConversionPageMismatch(AppError):
+    code = "CONVERSION_PAGE_MISMATCH"
+    http_status = 500
+
+
+class EngineUnavailable(AppError):
+    code = "ENGINE_UNAVAILABLE"
+    http_status = 503
+
+
+class ResultExpired(AppError):
+    code = "RESULT_EXPIRED"
+    http_status = 410
+
+
+class TaskAbandoned(AppError):
+    code = "TASK_ABANDONED"
+    http_status = 410

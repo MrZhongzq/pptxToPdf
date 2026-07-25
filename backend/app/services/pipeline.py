@@ -51,7 +51,9 @@ def run_task(task_id: str) -> None:
             _set_status(session, task, "converting")
 
             dest = settings.outputs_dir / f"{task_id}.pdf"
-            get_engine(task.engine).convert(src, meta, dest)
+            get_engine(task.engine).convert(
+                src, meta, dest, timeout_s=settings.convert_timeout_base_s
+            )
 
             task.output_path = str(dest)
             _set_status(session, task, "done")
