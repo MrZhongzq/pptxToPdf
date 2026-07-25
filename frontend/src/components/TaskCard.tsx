@@ -1,4 +1,5 @@
-import { downloadUrl, type TaskDto } from '../lib/api'
+import { useState } from 'react'
+import { ApiError, fetchTaskFile, type TaskDto } from '../lib/api'
 import { formatBytes } from '../lib/chunking'
 import { useTaskPolling } from '../hooks/useTaskPolling'
 
@@ -13,8 +14,49 @@ const STATUS_LABEL: Record<TaskDto['status'], string> = {
 
 const EMU_PER_INCH = 914400
 
+// 解析 Content-Disposition: attachment; filename="foo.pdf" 里的文件名。
+// 后端目前只发不带 filename* 的简单形式，但顺手兼容一下引号缺省的情况。
+function filenameFromDisposition(disposition: string | null): string | null {
+  if (!disposition) return null
+  const match = /filename="?([^";]+)"?/i.exec(disposition)
+  return match ? match[1] : null
+}
+
 export function TaskCard({ taskId }: { taskId: string }) {
   const { task, pollingTimedOut } = useTaskPolling(taskId)
+  const [downloadError, setDownloadError] = useState<{ code: string; message: string } | null>(
+    null,
+  )
+
+  async function handleDownload() {
+    if (!task) return
+    setDownloadError(null)
+    try {
+      const resp = await fetchTaskFile(task.task_id)
+      const blob = await resp.blob()
+      const filename =
+        filenameFromDisposition(resp.headers.get('content-disposition')) ??
+        `${task.original_filename.replace(/\.[^./]+$/, '')}.pdf`
+
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setDownloadError({ code: err.code, message: err.message })
+      } else {
+        setDownloadError({
+          code: 'NETWORK_ERROR',
+          message: err instanceof Error ? err.message : '下载失败',
+        })
+      }
+    }
+  }
 
   if (pollingTimedOut) {
     return (
@@ -76,18 +118,26 @@ export function TaskCard({ taskId }: { taskId: string }) {
       )}
 
       {task.status === 'done' && (
-        <a
+        <button
+          type="button"
           className="glass-strong"
-          href={downloadUrl(task.task_id)}
+          onClick={handleDownload}
           style={{
             display: 'inline-block',
             padding: '8px 20px',
             color: 'var(--g-text)',
-            textDecoration: 'none',
+            border: 'none',
+            cursor: 'pointer',
           }}
         >
           下载 PDF
-        </a>
+        </button>
+      )}
+
+      {downloadError && (
+        <p role="alert" style={{ color: 'var(--g-danger)', fontSize: 14 }}>
+          {downloadError.code}：{downloadError.message}
+        </p>
       )}
     </div>
   )

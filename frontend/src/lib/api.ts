@@ -101,3 +101,24 @@ export async function getTask(taskId: string): Promise<TaskDto> {
 export function downloadUrl(taskId: string): string {
   return `/api/tasks/${taskId}/download`
 }
+
+/**
+ * 拉取转换结果文件的原始 Response，不解析成 JSON——调用方需要
+ * response.blob() 触发浏览器下载，以及读 Content-Disposition 拿文件名。
+ * 失败时（410 RESULT_EXPIRED / 409 TASK_NOT_READY 等）复用 parse() 同款
+ * 错误归一化逻辑，抛 ApiError 而不是把裸 JSON 错误体交给调用方当文件下载。
+ */
+export async function fetchTaskFile(taskId: string): Promise<Response> {
+  const resp = await fetch(downloadUrl(taskId))
+  if (resp.ok) return resp
+  let code = 'INTERNAL_ERROR'
+  let message = resp.statusText
+  try {
+    const body = await resp.json()
+    code = body.code ?? code
+    message = body.message ?? message
+  } catch {
+    // 响应体不是 JSON，保留状态文本
+  }
+  throw new ApiError(code, message, resp.status)
+}
