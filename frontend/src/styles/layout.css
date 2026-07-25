@@ -1,0 +1,35 @@
+.layout {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: var(--g-space);
+  display: grid;
+  gap: 24px;
+}
+
+/* 手机：单栏紧凑 */
+.layout > header h1 {
+  font-size: 24px;
+  margin: 8px 0;
+}
+
+/* 平板：单栏加宽，留白变大 */
+@media (min-width: 768px) {
+  .layout {
+    padding: 32px;
+    gap: 32px;
+  }
+  .layout > header h1 {
+    font-size: 32px;
+  }
+}
+
+/* 桌面：左上传右任务的双栏 */
+@media (min-width: 1024px) {
+  .layout {
+    grid-template-columns: 1fr 1fr;
+    align-items: start;
+  }
+  .layout > header {
+    grid-column: 1 / -1;
+  }
+}

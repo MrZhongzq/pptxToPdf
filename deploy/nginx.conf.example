@@ -1,0 +1,27 @@
+server {
+    listen 443 ssl http2;
+    server_name pptx.example.com;
+
+    # 分片上传后单次请求体只有 5 MiB，无需为 500MB 放宽。
+    # 留 16m 余量覆盖块加请求头。
+    client_max_body_size 16m;
+    client_body_timeout 120s;
+
+    # 前端静态资源
+    location / {
+        root /srv/pptx2pdf/frontend/dist;
+        try_files $uri $uri/ /index.html;
+    }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # 大文件下载不缓冲，避免占满内存
+        proxy_buffering off;
+        proxy_read_timeout 300s;
+    }
+}
