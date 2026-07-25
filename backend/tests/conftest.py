@@ -46,6 +46,16 @@ def _isolate_app_db(tmp_path, monkeypatch):
     test_engine.dispose()
 
 
+@pytest.fixture(autouse=True)
+def _force_placeholder_engine(monkeypatch):
+    """本机没有 LibreOffice。一期测试验证的是上传协议与状态机，
+    不是转换质量——把引擎选择固定回占位引擎，让这些测试继续有效。
+    真实转换在测试机上验证，见计划的完成判据。"""
+    monkeypatch.setattr(
+        "app.services.pipeline.select_engine", lambda meta: "placeholder"
+    )
+
+
 @pytest.fixture
 def session(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
