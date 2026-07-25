@@ -74,7 +74,7 @@
             }
           },
           "422": {
-            "description": "VALIDATION_ERROR / UPLOAD_CHECKSUM_MISMATCH / PPTX_*",
+            "description": "VALIDATION_ERROR / UPLOAD_CHECKSUM_MISMATCH",
             "content": {
               "application/json": {
                 "schema": {
@@ -175,7 +175,7 @@
             }
           },
           "422": {
-            "description": "VALIDATION_ERROR / UPLOAD_CHECKSUM_MISMATCH / PPTX_*",
+            "description": "VALIDATION_ERROR / UPLOAD_CHECKSUM_MISMATCH",
             "content": {
               "application/json": {
                 "schema": {
@@ -267,7 +267,7 @@
             }
           },
           "422": {
-            "description": "VALIDATION_ERROR / UPLOAD_CHECKSUM_MISMATCH / PPTX_*",
+            "description": "VALIDATION_ERROR / UPLOAD_CHECKSUM_MISMATCH",
             "content": {
               "application/json": {
                 "schema": {
@@ -359,7 +359,7 @@
             }
           },
           "422": {
-            "description": "VALIDATION_ERROR / UPLOAD_CHECKSUM_MISMATCH / PPTX_*",
+            "description": "VALIDATION_ERROR / UPLOAD_CHECKSUM_MISMATCH",
             "content": {
               "application/json": {
                 "schema": {

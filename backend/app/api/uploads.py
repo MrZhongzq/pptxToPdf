@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import get_session
 from app.errors import (
+    EngineUnavailable,
     StorageFull,
     UploadChecksumMismatch,
     UploadSessionExpired,
@@ -28,6 +29,7 @@ from app.schemas import (
 )
 from app.queue import enqueue_conversion
 from app.services.chunk_store import ChunkStore
+from app.services.retention import drop_original
 
 router = APIRouter(prefix="/api/uploads", tags=["uploads"])
 
@@ -37,7 +39,7 @@ UPLOAD_ERRORS = {
     409: {**_ERR, "description": "UPLOAD_INCOMPLETE / UPLOAD_SESSION_NOT_ACTIVE"},
     410: {**_ERR, "description": "UPLOAD_SESSION_EXPIRED"},
     413: {**_ERR, "description": "UPLOAD_SIZE_EXCEEDED"},
-    422: {**_ERR, "description": "VALIDATION_ERROR / UPLOAD_CHECKSUM_MISMATCH / PPTX_*"},
+    422: {**_ERR, "description": "VALIDATION_ERROR / UPLOAD_CHECKSUM_MISMATCH"},
     507: {**_ERR, "description": "STORAGE_FULL"},
 }
 
@@ -74,9 +76,9 @@ def _purge_expired(session: Session) -> None:
     """惰性清理：每次新建会话时顺带回收过期会话的块目录。
 
     注意范围：本函数只回收 uploads/ 下过期会话的块目录。originals/
-    （拼装后的原始 pptx）与 outputs/（转换产物 PDF）目前没有任何保留
-    策略——它们不会被这个函数、也不会被任何其它路径回收，磁盘会随
-    真实使用无限增长。详见 README「已知限制 / 一期技术债」一节。
+    （拼装后的原始 pptx）与 outputs/（转换产物 PDF）的保留策略由
+    services/retention.py 负责——run_task 结束时调 drop_original() 删原文件，
+    每次任务结束顺带调 purge_expired_outputs() 清过期 PDF。
     """
     now = datetime.now(timezone.utc)
     stale = (
@@ -216,5 +218,21 @@ def complete_upload(
     session.commit()
 
     store().purge(upload_id)
-    enqueue_conversion(task_id)
+    try:
+        enqueue_conversion(task_id)
+    except Exception as exc:
+        # Redis 不可达时 Queue.enqueue 抛的是 redis.exceptions.ConnectionError，
+        # 不是 AppError——main.py 的处理器接不住，会退化成裸文本 500，违反
+        # 错误契约。这里兜底捕获任意异常（队列实现将来可能换，不锁定具体
+        # 异常类型）。此时 upload 已标 completed、块目录已 purge、原文件
+        # 已落盘、task 行是 pending：任务永远不会入队，也就永远不会走到
+        # run_task 的 finally 里的 drop_original——这里是原文件唯一的删除
+        # 路径，必须显式调用，否则留下一份 80–500MB 的孤儿文件。
+        task.status = "failed"
+        task.error_code = EngineUnavailable.code
+        task.error_message = f"任务排队失败，转换服务暂不可用: {exc}"
+        session.commit()
+        drop_original(task_id)
+        raise EngineUnavailable(f"任务排队失败，转换服务暂不可用: {exc}") from exc
+
     return CompleteResponse(task_id=task_id)
