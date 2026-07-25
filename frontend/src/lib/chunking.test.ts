@@ -33,6 +33,12 @@ describe('sliceChunks', () => {
     const chunkSize = 5242880 // 5 MiB
     const chunks = sliceChunks(size, chunkSize)
 
+    // 循环条件写成 `start <= size` 而非 `start < size` 会在整除场景多产出
+    // 一个零长度尾块；下面的 totalLength/end 断言对此不敏感（多出的空块
+    // 贡献 0 长度，且 forEach 里 `i < chunks.length - 1` 会把它排除在
+    // 相邻性检查之外），必须显式断言块数才能拦住这个 mutation。
+    expect(chunks).toHaveLength(Math.ceil(size / chunkSize))
+
     const totalLength = chunks.reduce((sum, c) => sum + (c.end - c.start), 0)
     expect(totalLength).toBe(size)
 
@@ -52,6 +58,8 @@ describe('sliceChunks', () => {
     const size = 524288001 // 500 MiB + 1 byte
     const chunkSize = 5242880 // 5 MiB
     const chunks = sliceChunks(size, chunkSize)
+
+    expect(chunks).toHaveLength(Math.ceil(size / chunkSize))
 
     const totalLength = chunks.reduce((sum, c) => sum + (c.end - c.start), 0)
     expect(totalLength).toBe(size)
