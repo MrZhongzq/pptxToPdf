@@ -1,0 +1,39 @@
+.glass,
+.glass-strong {
+  position: relative;
+  border: 1px solid var(--g-border);
+  border-radius: var(--g-radius);
+  box-shadow: var(--g-shadow);
+  background: var(--g-surface);
+  backdrop-filter: blur(var(--g-blur)) saturate(180%);
+  -webkit-backdrop-filter: blur(var(--g-blur)) saturate(180%);
+}
+
+.glass-strong {
+  background: var(--g-surface-strong);
+  backdrop-filter: blur(var(--g-blur-strong)) saturate(200%);
+  -webkit-backdrop-filter: blur(var(--g-blur-strong)) saturate(200%);
+}
+
+/* 顶边高光，制造玻璃厚度感 */
+.glass::before,
+.glass-strong::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  border-radius: var(--g-radius) var(--g-radius) 0 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--g-highlight),
+    transparent
+  );
+  pointer-events: none;
+}
+
+.glass-inset {
+  border-radius: var(--g-radius-sm);
+  background: rgba(0, 0, 0, 0.18);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.4);
+}
