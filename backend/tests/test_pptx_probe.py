@@ -63,3 +63,31 @@ def test_probe_rejects_zip_without_presentation(tmp_path):
 
     with pytest.raises(PptxNotPresentation):
         probe(zpath)
+
+
+_PRESENTATION_XML_TEMPLATE = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+                xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <p:sldSz {attrs}/>
+</p:presentation>
+"""
+
+
+def test_probe_rejects_sldsz_missing_cx(tmp_path):
+    zpath = tmp_path / "missing_cx.pptx"
+    xml = _PRESENTATION_XML_TEMPLATE.format(attrs='cy="6858000"')
+    with zipfile.ZipFile(zpath, "w") as zf:
+        zf.writestr("ppt/presentation.xml", xml)
+
+    with pytest.raises(PptxNotPresentation):
+        probe(zpath)
+
+
+def test_probe_rejects_sldsz_non_numeric_cx(tmp_path):
+    zpath = tmp_path / "non_numeric_cx.pptx"
+    xml = _PRESENTATION_XML_TEMPLATE.format(attrs='cx="abc" cy="6858000"')
+    with zipfile.ZipFile(zpath, "w") as zf:
+        zf.writestr("ppt/presentation.xml", xml)
+
+    with pytest.raises(PptxNotPresentation):
+        probe(zpath)

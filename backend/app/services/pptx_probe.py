@@ -47,7 +47,13 @@ def _read_slide_size(zf: zipfile.ZipFile) -> tuple[int, int]:
     sld_sz = root.find(f"{P_NS}sldSz")
     if sld_sz is None:
         raise PptxNotPresentation("presentation.xml 缺少 sldSz")
-    return int(sld_sz.attrib["cx"]), int(sld_sz.attrib["cy"])
+    try:
+        return int(sld_sz.attrib["cx"]), int(sld_sz.attrib["cy"])
+    except (KeyError, ValueError) as exc:
+        raise PptxNotPresentation(
+            f"presentation.xml 的 sldSz 属性非法: cx={sld_sz.attrib.get('cx')!r}, "
+            f"cy={sld_sz.attrib.get('cy')!r} ({exc})"
+        ) from exc
 
 
 def _collect_fonts(zf: zipfile.ZipFile) -> tuple[str, ...]:
