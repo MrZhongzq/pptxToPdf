@@ -138,9 +138,17 @@ async def put_chunk(
             f"块 {index} 声明 {declared} 字节，超过块大小 {upload.chunk_size}"
         )
 
-    data = await request.body()
-    if len(data) > upload.chunk_size:  # Content-Length 可能缺失或撒谎，读后复验兜底
-        raise UploadSizeExceeded(f"块 {index} 为 {len(data)} 字节，超过块大小")
+    # 流式读取并在超限时立即中断。Content-Length 缺失时
+    # （Transfer-Encoding: chunked）await request.body() 是无上限的，
+    # 校验发生在整个 body already 进内存之后，起不到防护作用。
+    buffer = bytearray()
+    async for part in request.stream():
+        buffer.extend(part)
+        if len(buffer) > upload.chunk_size:
+            raise UploadSizeExceeded(
+                f"块 {index} 实际超过块大小 {upload.chunk_size} 字节"
+            )
+    data = bytes(buffer)
 
     chunks = store()
     chunks.save_chunk(upload_id, index, data)
