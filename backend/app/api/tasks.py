@@ -1,4 +1,5 @@
 import json
+from datetime import timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends
@@ -61,7 +62,11 @@ def get_task(task_id: str, session: Session = Depends(get_session)) -> TaskDto:
         fonts=_fonts(task),
         error_code=task.error_code,
         error_message=task.error_message,
-        created_at=task.created_at,
+        # SQLite 不真的保留时区信息，读回来的是 naive datetime；直接序列化会
+        # 输出不带 "Z" 后缀的 ISO 串，消费者一旦 new Date(...) 会按本地时区
+        # 解析，在 UTC+8 偏 8 小时。与 uploads.py 的 _load_active 里对
+        # expires_at 的同类补救保持一致处理。
+        created_at=task.created_at.replace(tzinfo=timezone.utc),
     )
 
 
