@@ -49,4 +49,4 @@ def test_get_engine_returns_placeholder():
 
 def test_get_engine_unknown_raises():
     with pytest.raises(KeyError):
-        get_engine("libreoffice")
+        get_engine("nonexistent-engine")

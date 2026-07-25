@@ -1,8 +1,10 @@
 from app.services.engines.base import ConversionEngine
+from app.services.engines.libreoffice import LibreOfficeEngine
 from app.services.engines.placeholder import PlaceholderEngine
 
 _ENGINES: dict[str, type[ConversionEngine]] = {
     PlaceholderEngine.name: PlaceholderEngine,
+    LibreOfficeEngine.name: LibreOfficeEngine,
 }
 
 
@@ -18,4 +20,4 @@ def get_engine(name: str) -> ConversionEngine:
     return _ENGINES[name]()
 
 
-__all__ = ["ConversionEngine", "PlaceholderEngine", "get_engine"]
+__all__ = ["ConversionEngine", "LibreOfficeEngine", "PlaceholderEngine", "get_engine"]
