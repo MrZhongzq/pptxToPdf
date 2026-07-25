@@ -1,0 +1,24 @@
+:root {
+  --g-bg-1: #0b1020;
+  --g-bg-2: #1b2145;
+  --g-bg-3: #3a1d5c;
+
+  --g-surface: rgba(255, 255, 255, 0.10);
+  --g-surface-strong: rgba(255, 255, 255, 0.16);
+  --g-border: rgba(255, 255, 255, 0.22);
+  --g-highlight: rgba(255, 255, 255, 0.45);
+
+  --g-text: rgba(255, 255, 255, 0.94);
+  --g-text-dim: rgba(255, 255, 255, 0.62);
+  --g-accent: #7cc4ff;
+  --g-danger: #ff8a8a;
+  --g-success: #86e2b0;
+
+  --g-blur: 24px;
+  --g-blur-strong: 40px;
+  --g-radius: 20px;
+  --g-radius-sm: 12px;
+
+  --g-shadow: 0 8px 32px rgba(0, 0, 0, 0.36);
+  --g-space: 16px;
+}
