@@ -1,35 +1,70 @@
+/*
+  移动优先三档。一期那版的问题是 grid 双栏但没约束内容宽度，
+  在 1440px 宽屏上内容全挤在左上角，右侧和下方留出大片空白。
+  这版给容器上限宽度并居中，两栏比例按内容需要分配。
+*/
+
 .layout {
-  max-width: 1200px;
+  max-width: 1120px;
   margin: 0 auto;
-  padding: var(--g-space);
+  padding: var(--space-5) var(--space-4) var(--space-7);
   display: grid;
-  gap: 24px;
+  gap: var(--space-5);
 }
 
-/* 手机：单栏紧凑 */
-.layout > header h1 {
-  font-size: 24px;
-  margin: 8px 0;
+.page-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-3);
 }
 
-/* 平板：单栏加宽，留白变大 */
+.page-title {
+  font-size: 22px;
+  font-weight: 650;
+}
+
+.page-sub {
+  font-size: 13px;
+  color: var(--c-text-dim);
+}
+
+.col {
+  display: grid;
+  gap: var(--space-4);
+  align-content: start;
+  min-width: 0; /* 防止长文件名把 grid 列撑破 */
+}
+
+.section-title {
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--c-text-faint);
+}
+
+/* 平板 */
 @media (min-width: 768px) {
   .layout {
-    padding: 32px;
-    gap: 32px;
+    padding: var(--space-6) var(--space-5) var(--space-7);
+    gap: var(--space-6);
   }
-  .layout > header h1 {
-    font-size: 32px;
+
+  .page-title {
+    font-size: 26px;
   }
 }
 
-/* 桌面：左上传右任务的双栏 */
+/* 桌面：左侧上传与选项，右侧任务列表。左栏略窄——它装的是固定表单，
+   而任务列表要容纳长文件名和多行状态。 */
 @media (min-width: 1024px) {
   .layout {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
     align-items: start;
   }
-  .layout > header {
+
+  .page-head {
     grid-column: 1 / -1;
   }
 }

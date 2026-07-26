@@ -567,6 +567,28 @@
         ],
         "title": "CompleteResponse"
       },
+      "ConversionOptions": {
+        "properties": {
+          "expand_animations": {
+            "type": "boolean",
+            "title": "Expand Animations",
+            "default": false
+          },
+          "pdf_outline": {
+            "type": "boolean",
+            "title": "Pdf Outline",
+            "default": false
+          },
+          "remap_margins": {
+            "type": "boolean",
+            "title": "Remap Margins",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "ConversionOptions",
+        "description": "转换后处理选项。\n\n后端目前只接收并落库，不实现任何一项——字段先定下来，\n将来实现时不用再改前后端契约。前端会在每项旁标注实现状态。"
+      },
       "CreateUploadRequest": {
         "properties": {
           "filename": {
@@ -591,6 +613,28 @@
               }
             ],
             "title": "Sha256"
+          },
+          "engine": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 32
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engine"
+          },
+          "options": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConversionOptions"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -723,6 +767,9 @@
             "type": "array",
             "title": "Fonts"
           },
+          "options": {
+            "$ref": "#/components/schemas/ConversionOptions"
+          },
           "error_code": {
             "anyOf": [
               {
@@ -762,6 +809,7 @@
           "slide_width_emu",
           "slide_height_emu",
           "fonts",
+          "options",
           "error_code",
           "error_message",
           "created_at"

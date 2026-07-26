@@ -59,7 +59,7 @@ def _force_placeholder_engine(monkeypatch):
     真实转换在测试机上验证，见计划的完成判据。"""
     monkeypatch.setattr(
         "app.services.pipeline.select_engine",
-        lambda meta, size_bytes: "placeholder",
+        lambda meta, size_bytes, requested=None: "placeholder",
     )
 
 

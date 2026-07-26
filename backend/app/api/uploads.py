@@ -22,6 +22,7 @@ from app.models import Task, Upload
 from app.schemas import (
     ChunkAck,
     CompleteResponse,
+    ConversionOptions,
     CreateUploadRequest,
     CreateUploadResponse,
     ErrorResponse,
@@ -113,6 +114,8 @@ def create_upload(
         sha256=body.sha256,
         chunk_size=settings.chunk_size,
         total_chunks=math.ceil(body.size / settings.chunk_size),
+        requested_engine=body.engine,
+        options_json=(body.options or ConversionOptions()).model_dump_json(),
         expires_at=datetime.now(timezone.utc)
         + timedelta(hours=settings.upload_ttl_hours),
     )
@@ -218,8 +221,12 @@ def complete_upload(
         upload_id=upload_id,
         original_filename=upload.filename,
         size_bytes=upload.size_bytes,
+        options_json=upload.options_json,
+        requested_engine=upload.requested_engine,
         status="pending",
     )
+    # engine 仍留 "unassigned"：用户指定的引擎名带在 upload 上，
+    # 由 run_task 在 probe 之后交给 select_engine 定夺后再写进 task。
     session.add(task)
     session.commit()
 

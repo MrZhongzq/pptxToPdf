@@ -83,10 +83,14 @@ def run_task(task_id: str) -> None:
             task.slide_width_emu = meta.slide_width_emu
             task.slide_height_emu = meta.slide_height_emu
             task.fonts_json = json.dumps(list(meta.fonts), ensure_ascii=False)
-            task.engine = select_engine(meta, size_bytes)
+            task.engine = select_engine(
+                meta, size_bytes, requested=task.requested_engine
+            )
             logger.info(
-                "task parsed id=%s slides=%d engine=%s fonts=%s",
-                task_id, meta.slide_count, task.engine, list(meta.fonts)[:20],
+                "task parsed id=%s slides=%d engine=%s(requested=%s) options=%s fonts=%s",
+                task_id, meta.slide_count, task.engine,
+                task.requested_engine or "auto", task.options_json,
+                list(meta.fonts)[:20],
             )
 
             _set_status(session, task, "queued")

@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import timezone
 from pathlib import Path
 
@@ -10,7 +11,9 @@ from app.config import settings
 from app.db import get_session
 from app.errors import AppError, ResultExpired
 from app.models import Task
-from app.schemas import ErrorResponse, TaskDto
+from app.schemas import ConversionOptions, ErrorResponse, TaskDto
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
@@ -55,6 +58,19 @@ def _fonts(task: Task) -> list[str]:
         raise AppError(f"任务 {task.task_id} 的字体元数据已损坏") from exc
 
 
+def _options(task: Task) -> ConversionOptions:
+    """options_json 与 _fonts 同理：落库后的数据不受类型系统保护，
+    损坏时归一化成默认选项而不是让裸异常穿透——后处理选项没有一项
+    已实现，读不出来时按全关处理不会丢失任何用户可感知的行为。"""
+    if not task.options_json:
+        return ConversionOptions()
+    try:
+        return ConversionOptions.model_validate_json(task.options_json)
+    except ValueError:
+        logger.warning("任务 %s 的选项数据已损坏，按默认值处理", task.task_id)
+        return ConversionOptions()
+
+
 @router.get("/{task_id}", response_model=TaskDto, responses=TASK_ERRORS)
 def get_task(task_id: str, session: Session = Depends(get_session)) -> TaskDto:
     task = _load(session, task_id)
@@ -68,6 +84,7 @@ def get_task(task_id: str, session: Session = Depends(get_session)) -> TaskDto:
         slide_width_emu=task.slide_width_emu,
         slide_height_emu=task.slide_height_emu,
         fonts=_fonts(task),
+        options=_options(task),
         error_code=task.error_code,
         error_message=task.error_message,
         # SQLite 不真的保留时区信息，读回来的是 naive datetime；直接序列化会
