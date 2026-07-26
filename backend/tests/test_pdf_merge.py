@@ -1,3 +1,4 @@
+import hashlib
 import os
 from pathlib import Path
 
@@ -119,9 +120,16 @@ def test_zero_page_shard_raises(tmp_path):
     b = _make_pdf(tmp_path / "b.pdf", ["P2"])
     dest = tmp_path / "merged.pdf"
 
-    with pytest.raises(ConversionFailed):
+    with pytest.raises(ConversionFailed) as exc:
         merge_pdfs([a, empty, b], dest)
     assert not dest.exists()
+    # 防回归：0 页检查必须停在"独立于读取异常处理"的位置。如果被挪回
+    # 读取阶段的 try 块里，会被 `except Exception` 二次包装——实测这种
+    # 二次包装会把两句话拼在一起（"分片 x 无法解析: 分片 x 是 0 页…"），
+    # 所以只断言含"0 页"不够（二次包装后仍然含"0 页"），必须同时断言
+    # 不含"无法解析"，才能真正抓住"被读取异常处理二次接管"这个回归。
+    assert "0 页" in str(exc.value)
+    assert "无法解析" not in str(exc.value)
 
 
 def test_write_phase_oserror_wrapped_as_conversion_failed(tmp_path):
@@ -275,3 +283,35 @@ def test_readback_failure_wrapped_and_dest_cleaned(tmp_path, monkeypatch):
         merge_pdfs([a], dest)
 
     assert not dest.exists()
+
+
+# --- 三轮复审补测：回读校验必须在 os.replace 之前对 tmp 校验，不能在 replace 之后对 dest 校验 ---
+
+
+def test_readback_failure_before_replace_preserves_preexisting_dest(tmp_path, monkeypatch):
+    """dest 位置预先存在一份上次成功合并的好文件；本次因 write() 静默写出
+    非法字节而在回读校验时失败。如果校验点选在 os.replace 之后（对 dest
+    回读），失败发生时 dest 早已被替换成坏文件，此时只能在"留一份坏文件"
+    和"连旧版本一起删掉"两个更差的选项里选——上一轮选了后者，比前者好，
+    但两个都不该被迫选。校验应该在 os.replace 之前对 tmp 回读：write()
+    已经成功返回、tmp 已就绪，完全可以先验证再替换，dest 上的旧文件从头
+    到尾不会被碰。用 sha256 逐字节比对，确认 dest 真的原封未动。"""
+    old = _make_pdf(tmp_path / "old_result_source.pdf", ["OLD"])
+    dest = tmp_path / "merged.pdf"
+    dest.write_bytes(old.read_bytes())  # 模拟 dest 位置已有一份好结果
+    old_digest = hashlib.sha256(dest.read_bytes()).hexdigest()
+
+    a = _make_pdf(tmp_path / "a.pdf", ["P1"])
+
+    def silently_corrupt_write(self, fh):
+        fh.write(b"not actually a pdf, but write() reports success")
+
+    monkeypatch.setattr(PdfWriter, "write", silently_corrupt_write)
+
+    with pytest.raises(ConversionFailed):
+        merge_pdfs([a], dest)
+
+    assert dest.exists()
+    assert hashlib.sha256(dest.read_bytes()).hexdigest() == old_digest
+    assert _texts(dest) == ["OLD"]
+    assert list(tmp_path.glob("*.tmp")) == []
