@@ -329,3 +329,126 @@ def test_split_preserves_mc_ignorable_and_its_namespace(deck_with_mc_ignorable, 
     )
     assert 'mc:Ignorable="p14"' in pres_xml
     assert probe(out[0]).slide_count == 3
+
+
+# ---------------------------------------------------------------------------
+# 第二轮代码审查追加：针对 _rewrite_presentation 正则手术本身的三个
+# 真实失效模式（均为合法 XML，均端到端跑 split_pptx 复现）：
+# A) r:id="rId2" 两侧带空格；B) 关系命名空间绑到非 "r:" 前缀；
+# C) <p:sldId> 非自闭合、挂 <p:extLst/> 子元素。
+# 详见 task-3-report.md「第二轮代码审查追加修复」一节。
+# ---------------------------------------------------------------------------
+
+
+def _rebuild_zip_with_presentation_xml(src: Path, new_pres_xml: str) -> None:
+    """原地重写 src 里的 ppt/presentation.xml，其余 part 原样保留。"""
+    with zipfile.ZipFile(src) as zin:
+        members = {n: zin.read(n) for n in zin.namelist()}
+    members["ppt/presentation.xml"] = new_pres_xml.encode("utf-8")
+    with zipfile.ZipFile(src, "w", zipfile.ZIP_DEFLATED) as zout:
+        for name, data in members.items():
+            zout.writestr(name, data)
+
+
+@pytest.fixture
+def deck_with_spaced_rid(tmp_path) -> Path:
+    """r:id="rIdN" 属性等号两侧带空格——XML 规范里 Eq ::= S? '=' S?，
+    这是合法写法。旧的 _RID_ATTR_RE 按 r:id="..." 硬匹配、找不到就走
+    「删除」兜底，会把 sldIdLst 整个删空，python-pptx 打开后是 0 页，
+    而且没有任何异常，纯粹静默失败。
+    """
+    prs = Presentation()
+    prs.slide_width, prs.slide_height = Emu(12192000), Emu(6858000)
+    for i in range(SLIDES):
+        s = prs.slides.add_slide(prs.slide_layouts[5])
+        s.shapes.title.text = f"PAGE-{i + 1}"
+    path = tmp_path / "deck_spaced_rid.pptx"
+    prs.save(path)
+
+    with zipfile.ZipFile(path) as zin:
+        pres_xml = zin.read("ppt/presentation.xml").decode("utf-8")
+    injected = pres_xml.replace('r:id="', 'r:id = "')
+    assert injected != pres_xml, "注入失败，说明 r:id=\" 的假设不对"
+    _rebuild_zip_with_presentation_xml(path, injected)
+    return path
+
+
+def test_split_handles_spaced_rid_attribute(deck_with_spaced_rid, tmp_path):
+    out = split_pptx(deck_with_spaced_rid, [(1, 3), (4, 8)], tmp_path / "shards")
+    assert probe(out[0]).slide_count == 3
+    assert probe(out[1]).slide_count == 5
+    assert len(Presentation(str(out[0])).slides) == 3
+    assert len(Presentation(str(out[1])).slides) == 5
+
+
+@pytest.fixture
+def deck_with_rel_prefix(tmp_path) -> Path:
+    """把 relationships 命名空间的前缀从惯例的 "r" 换成 "rel"——前缀
+    本身没有语义，命名空间靠 xmlns:rel="...relationships" 的 URI 绑定，
+    这是合法 XML，ElementTree（_slide_order/_read_rels）会正确解析。
+    但正则手术是按字面量 "r:id" 匹配的，遇到这种文件应该响亮失败，
+    不能把 sldIdLst 删空、静默产出 0 页 deck。
+    """
+    prs = Presentation()
+    prs.slide_width, prs.slide_height = Emu(12192000), Emu(6858000)
+    for i in range(SLIDES):
+        s = prs.slides.add_slide(prs.slide_layouts[5])
+        s.shapes.title.text = f"PAGE-{i + 1}"
+    path = tmp_path / "deck_rel_prefix.pptx"
+    prs.save(path)
+
+    with zipfile.ZipFile(path) as zin:
+        pres_xml = zin.read("ppt/presentation.xml").decode("utf-8")
+    injected = pres_xml.replace("xmlns:r=", "xmlns:rel=").replace("r:id=", "rel:id=")
+    assert injected != pres_xml, "注入失败，说明 xmlns:r=/r:id= 的假设不对"
+    assert "rel:id=" in injected
+    _rebuild_zip_with_presentation_xml(path, injected)
+    return path
+
+
+def test_split_raises_on_unrecognized_rid_prefix(deck_with_rel_prefix, tmp_path):
+    """响亮失败好过静默产出一份 0 页的空 deck。"""
+    with pytest.raises(ValueError):
+        split_pptx(deck_with_rel_prefix, [(1, 3), (4, 8)], tmp_path / "shards")
+
+
+@pytest.fixture
+def deck_with_non_self_closing_sldid(tmp_path) -> Path:
+    """<p:sldId> 挂 <p:extLst/> 子元素时不是自闭合标签（ECMA-376 的
+    CT_SlideIdListEntry 允许 extLst），这是合法但少见的形式。只认
+    自闭合形式的正则会完全匹配不上，一条都删不掉，留下指向已删关系
+    的孤儿 rId——python-pptx 打开分片时会直接抛
+    KeyError: "no relationship with key 'rIdN'"。
+    """
+    prs = Presentation()
+    prs.slide_width, prs.slide_height = Emu(12192000), Emu(6858000)
+    for i in range(SLIDES):
+        s = prs.slides.add_slide(prs.slide_layouts[5])
+        s.shapes.title.text = f"PAGE-{i + 1}"
+    path = tmp_path / "deck_extlst.pptx"
+    prs.save(path)
+
+    with zipfile.ZipFile(path) as zin:
+        pres_xml = zin.read("ppt/presentation.xml").decode("utf-8")
+    injected = re.sub(
+        r"<p:sldId([^>]*?)/>",
+        r"<p:sldId\1><p:extLst/></p:sldId>",
+        pres_xml,
+    )
+    assert injected != pres_xml, "注入失败，说明 <p:sldId .../> 的假设不对"
+    assert "<p:extLst/></p:sldId>" in injected
+    _rebuild_zip_with_presentation_xml(path, injected)
+    return path
+
+
+def test_split_handles_non_self_closing_sldid(deck_with_non_self_closing_sldid, tmp_path):
+    out = split_pptx(
+        deck_with_non_self_closing_sldid, [(1, 3), (4, 8)], tmp_path / "shards"
+    )
+    assert probe(out[0]).slide_count == 3
+    assert probe(out[1]).slide_count == 5
+    # 无孤儿 rId：能被 python-pptx 打开且页数正确。若正则没匹配上、
+    # 留下指向已删关系的孤儿 rId，这里会抛
+    # KeyError: "no relationship with key 'rIdN'"。
+    assert len(Presentation(str(out[0])).slides) == 3
+    assert len(Presentation(str(out[1])).slides) == 5

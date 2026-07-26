@@ -128,15 +128,26 @@ def _slide_order(zf: zipfile.ZipFile) -> list[tuple[str, str]]:
     return order
 
 
-# 定位 <p:sldId .../> 这类自闭合、无嵌套的简单元素：前缀不固定（约定
-# 俗成是 "p"，但正则不假设），\b 保证 "sldId" 后面不会连着 "Lst" 之类
-# 别的标签名（sldIdLst 是它的父元素，绝不能被这条正则误删）。
-_SLD_ID_RE = re.compile(rb"<[A-Za-z0-9]*:?sldId\b[^>]*?/>")
-_RID_ATTR_RE = re.compile(rb'r:id=["\']([^"\']+)["\']')
+# 定位 <p:sldId .../> 元素，覆盖两种合法形式：自闭合（PowerPoint/
+# python-pptx 都这么写）和非自闭合（ECMA-376 的 CT_SlideIdListEntry
+# 允许挂 <p:extLst/> 子元素，这种情况下 sldId 不是自闭合标签）。
+# \b 保证 "sldId" 后面不会连着 "Lst" 之类别的标签名（sldIdLst 是它的
+# 父元素，绝不能被这条正则误删）。re.DOTALL 是必须的——extLst 子元素
+# 之间可能有换行，不开 DOTALL 的话 "." 跨不过去，非自闭合分支会失配。
+_SLD_ID_RE = re.compile(
+    rb"<(\w+:)?sldId\b[^>]*?(?:/>|>.*?</(\w+:)?sldId\s*>)",
+    re.DOTALL,
+)
+# r:id 前缀是约定俗成，不是 XML 规范强制的——命名空间靠 xmlns:r="..."
+# 的 URI 绑定，理论上可以绑到任何前缀（如 xmlns:rel=...）。这条正则
+# 按字面量 "r:id" 匹配，遇到别的前缀会主动识别不出来，交给下面
+# _drop_if_unkept 的兜底逻辑响亮失败，而不是猜。属性值前后允许空白
+# （XML 规范 Eq ::= S? '=' S?），所以 \s* 是必须的，不是可选的健壮性。
+_RID_ATTR_RE = re.compile(rb'r:id\s*=\s*["\']([^"\']+)["\']')
 
 
 def _rewrite_presentation(raw: bytes, keep_rids: set[str]) -> bytes:
-    """只删除 keep_rids 之外的 <p:sldId .../> 元素，其余字节原样不动。
+    """只删除 keep_rids 之外的 <p:sldId ...> 元素，其余字节原样不动。
 
     不用 ET 往返。真实 PowerPoint 产出的 presentation.xml 根元素常见
     形如 `<p:presentation ... xmlns:p14="..." mc:Ignorable="p14">`：
@@ -144,18 +155,50 @@ def _rewrite_presentation(raw: bytes, keep_rids: set[str]) -> bytes:
     「实际被用到」的命名空间，于是 xmlns:p14 声明会被静默丢弃，而
     mc:Ignorable="p14" 却原样留下，变成指向一个作用域内未声明前缀的
     引用，违反 MCE（Markup Compatibility and Extensibility）规范。
-    sldId 是自闭合、无嵌套的简单元素，用正则定位删除足够安全，且不
-    触碰其余任何字节——根元素的全部 xmlns 声明、mc:Ignorable、
-    standalone="yes" 都原样保留。
+    sldId 元素结构简单，用正则定位删除足够安全，且不触碰其余任何
+    字节——根元素的全部 xmlns 声明、mc:Ignorable、standalone="yes"
+    都原样保留。
+
+    正则手术天生是「按我们理解的形状匹配」，理解错了就会静默产出
+    错误结果——这条代价在这份函数里被两道防线堵住，缺一不可：
+
+    1. 匹配到一个 sldId 元素却解析不出 r:id（例如命名空间绑到了
+       "rel:" 而不是惯例的 "r:"），说明我们对这份文件的理解有问题：
+       "元素还在、只是没读出 rId，那就当作该删" 这种兜底是 A/B 两类
+       真实失效模式的直接成因——它会把 sldIdLst 整个删空，产出一份
+       python-pptx 打开后是 0 页的 deck，而且没有任何异常，是纯粹的
+       静默失败。所以改成响亮失败：抛 ValueError，而不是假装删除
+       是安全的默认动作。
+    2. 即便 1 没触发，也不能保证正则真的找全了所有该找的元素（比如
+       未来出现我们没预料到的第四种变体、regex 因为某种嵌套结构
+       没匹配上）。所以重写完之后再数一遍剩余的 sldId 元素个数，
+       必须恰好等于 len(keep_rids)，不等就抛异常——这是防住"匹配
+       不完整"这整类问题的最后一道闸门，不依赖我们提前想全所有
+       可能的变体。
     """
 
     def _drop_if_unkept(m: "re.Match[bytes]") -> bytes:
-        rid_m = _RID_ATTR_RE.search(m.group(0))
-        if rid_m and rid_m.group(1).decode("ascii") in keep_rids:
-            return m.group(0)
-        return b""
+        element = m.group(0)
+        rid_m = _RID_ATTR_RE.search(element)
+        if rid_m is None:
+            raise ValueError(
+                "presentation.xml 的 sldId 元素解析不出 r:id，"
+                "正则手术对这份文件的结构失效——为避免静默产出页数"
+                f"错误的分片而中止。未能解析的片段: {element[:200]!r}"
+            )
+        rid = rid_m.group(1).decode("utf-8", errors="replace")
+        return element if rid in keep_rids else b""
 
-    return _SLD_ID_RE.sub(_drop_if_unkept, raw)
+    result = _SLD_ID_RE.sub(_drop_if_unkept, raw)
+
+    remaining = len(list(_SLD_ID_RE.finditer(result)))
+    if remaining != len(keep_rids):
+        raise ValueError(
+            f"presentation.xml 重写后剩余 {remaining} 个 sldId，"
+            f"期望 {len(keep_rids)} 个——正则手术的匹配结果与预期不符，"
+            "为避免产出页数错误的分片而中止。"
+        )
+    return result
 
 
 def _rewrite_rels(raw: bytes, keep_parts: set[str], base_part: str) -> bytes:
