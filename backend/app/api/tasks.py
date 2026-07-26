@@ -111,3 +111,17 @@ def download(task_id: str, session: Session = Depends(get_session)) -> FileRespo
 
     stem = Path(task.original_filename).stem
     return FileResponse(str(path), media_type="application/pdf", filename=f"{stem}.pdf")
+
+
+# HEAD 必须显式注册：Starlette 的 Route 会给 GET 自动补 HEAD，FastAPI 的
+# APIRoute 不会——实测直接返回 405。前端下载前用 HEAD 做轻量预检，好在
+# 真正传几十 MB 之前就拿到 410 RESULT_EXPIRED / 409 TASK_NOT_READY。
+#
+# include_in_schema=False：契约里 GET 已经描述了这个端点，HEAD 只是同一资源
+# 的元数据查询；写进 schema 会和 GET 撞 operation id，也给读契约的人添噪音。
+@router.head("/{task_id}/download", include_in_schema=False)
+def download_head(
+    task_id: str, session: Session = Depends(get_session)
+) -> FileResponse:
+    # 复用 GET 的全部校验：Starlette 的 FileResponse 认得 HEAD，只回头不回体。
+    return download(task_id, session)
