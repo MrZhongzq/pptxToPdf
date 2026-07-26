@@ -280,10 +280,32 @@ def select_engine(meta, size_bytes, requested=None) -> str:
 
 ## 8. 前端改动
 
+### 8.1 基础
+
 - `STATUS_LABEL` 增加 `splitting`（「拆分中」）与 `merging`（「合并中」）
 - `useTaskPolling` 的 `TERMINAL` 集合不变（仍是 `done` / `failed`）
-- `TaskDto` 增加 `shard_total: int | None` 与 `shard_done: int`（后者由 `GET /api/tasks/{id}` 现算，见 §3.1），任务卡片在 `shard_total` 非空时显示「已完成 7 / 12 片」
+- `TaskDto` 增加 `shard_total: int | None` 与 `shard_done: int`（后者由 `GET /api/tasks/{id}` 现算，见 §3.1）
 - 新错误码 `SHARD_TOO_LARGE` 由既有的错误展示逻辑自动覆盖，无需特殊处理
+
+### 8.2 长耗时任务必须一眼可辨
+
+切片转换是数十次 HTTP 往返、几分钟到十几分钟的活。如果它和一个 12 秒转完的普通任务长得一样，用户点完就干等，体验最差。所以要在**两个时机**给出信号。
+
+**时机一：上传前预判。** 用户选中 Graph 引擎、且文件超过 `GRAPH_MAX_SHARD_BYTES`（40MB）时，在上传区下方立刻显示提示：
+
+> 此文件较大，Graph 通道会将其切分后分批转换，耗时可能达到十几分钟。改用 LibreOffice 通常在一分钟内完成。
+
+这一层只能按**文件大小**判断——上传前拿不到页数（那要 probe 之后才知道）。所以它是启发式的：可能提示了最终没切片（页数少、体积恰好卡线），也可能没提示却切了（页数超 80 但体积小）。这个不准确是可接受的，它的作用是在用户还能改主意的时候给出警告，而不是精确预测。
+
+**时机二：任务卡片的视觉区分。** `shard_total` 非空时：
+
+- 卡片左边框用 `--c-notable`（新增的紫色语义色）4px 竖条，与普通任务一眼分开
+- 状态区显示「已完成 7 / 12 片」而不只是「转换中」
+- 进度条从不定长动画改为按 `shard_done / shard_total` 的确定比例
+
+新增设计令牌 `--c-notable` / `--c-notable-soft`（浅色主题下 `#7c3aed` / `#f3ecfe`，深色下 `#a78bfa` / `#2a1f3d`），用途固定为「这个任务会比你预期的久」。
+
+**不做倒计时或剩余时间估算。** Graph 每片的耗时受服务端排队与文件复杂度影响，波动可能达数倍，给出一个不断跳变的「剩余 3 分钟」比不给更糟。分片计数本身已经是可信的进度信号。
 
 ## 9. 测试策略
 
