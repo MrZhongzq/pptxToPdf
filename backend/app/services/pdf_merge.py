@@ -1,5 +1,7 @@
 import logging
+import os
 from pathlib import Path
+from uuid import uuid4
 
 from pypdf import PdfReader, PdfWriter
 
@@ -21,30 +23,49 @@ def merge_pdfs(parts: list[Path], dest: Path) -> int:
         raise ConversionFailed("没有可合并的分片")
 
     writer = PdfWriter()
+    for part in parts:
+        if not part.is_file():
+            raise ConversionFailed(f"分片结果缺失: {part.name}")
+        try:
+            reader = PdfReader(str(part))
+        except Exception as exc:
+            raise ConversionFailed(f"分片 {part.name} 无法解析: {exc}") from exc
+
+        # 每个分片对应原 deck 一段非空闭区间页范围，贡献 0 页在语义上
+        # 恒为错误（Graph 对某片返回结构合法但空的 PDF 是真实可能的：
+        # 配额截断、渲染失败仍回 200）。这种残缺比页序错乱更隐蔽——
+        # 文件能打开、能预览、页序看着连贯，只是缺了中间一段，翻两页
+        # 看不出来，只有对照原稿页数才能发现。
+        before = len(writer.pages)
+        for page in reader.pages:
+            writer.add_page(page)
+        if len(writer.pages) == before:
+            raise ConversionFailed(f"分片 {part.name} 是 0 页，合并会产出残缺结果")
+
+    # 写临时文件再原子替换到 dest：
+    # 1) 上面的读取循环从不触碰 dest/tmp，所以缺失/损坏/空页分片报错时，
+    #    dest 位置原有的文件（例如上一次成功合并的结果）分毫不动——
+    #    失败的重试不应该把「有结果」退化成「什么都没有」。
+    # 2) 写阶段一旦失败（包括 mkdir/写文件抛出的任何 OSError，例如磁盘满），
+    #    只需要清理自己的 tmp；os.replace 是操作系统级原子操作，dest 永远
+    #    要么是完整旧版要么是完整新版，不存在半个 PDF 的中间态。
+    tmp = dest.parent / f"{dest.stem}.{uuid4().hex}.tmp"
     try:
-        for part in parts:
-            if not part.is_file():
-                raise ConversionFailed(f"分片结果缺失: {part.name}")
-            try:
-                reader = PdfReader(str(part))
-                for page in reader.pages:
-                    writer.add_page(page)
-            except ConversionFailed:
-                raise
-            except Exception as exc:
-                raise ConversionFailed(
-                    f"分片 {part.name} 无法解析: {exc}"
-                ) from exc
-
         dest.parent.mkdir(parents=True, exist_ok=True)
-        with dest.open("wb") as fh:
+        with tmp.open("wb") as fh:
             writer.write(fh)
-    except Exception:
-        # 半个合并结果比没有更糟：后续的页数校验会拿它当有效产物。
-        dest.unlink(missing_ok=True)
-        raise
+        os.replace(tmp, dest)
+    except OSError as exc:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            # 善后动作不能顶掉病因：清理失败也要让原始异常照常传出去。
+            pass
+        raise ConversionFailed(f"合并写入失败: {exc}") from exc
 
-    total = len(writer.pages)
+    # 返回值只用来给下游做页数校验；只数内存里 writer.pages 是自我认证，
+    # 检不出「写出来的文件和内存里不一致」——回读落盘文件才靠得住。
+    total = len(PdfReader(str(dest)).pages)
     logger.info(
         "merged %d 片 -> %d 页 %.1fMB",
         len(parts), total, dest.stat().st_size / 1024 / 1024,
