@@ -96,3 +96,13 @@ class ResultExpired(AppError):
 class TaskAbandoned(AppError):
     code = "TASK_ABANDONED"
     http_status = 410
+
+
+class ShardTooLarge(AppError):
+    code = "SHARD_TOO_LARGE"
+    http_status = 422
+
+
+class GraphNotConfigured(AppError):
+    code = "GRAPH_NOT_CONFIGURED"
+    http_status = 503

@@ -46,11 +46,35 @@ class Task(Base):
     # 分开存，是为了让 run_task 保持只吃 task_id 就能自包含运行，
     # 不必回头去查 Upload 表。
     requested_engine: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # 切片总数。None 表示不切片，走单次转换的原路径。
+    # 不存已完成计数：多个分片并发完成时自增同一行在 SQLite 上要么加锁
+    # 要么丢更新，而 TaskShard.status 本来就是这件事的唯一真相源。
+    shard_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="pending")
     engine: Mapped[str] = mapped_column(String(32), default="unassigned")
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     output_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class TaskShard(Base):
+    __tablename__ = "task_shards"
+
+    shard_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(36), index=True)
+    index: Mapped[int] = mapped_column(Integer)
+    """0-based，决定合并顺序。"""
+    page_start: Mapped[int] = mapped_column(Integer)
+    page_end: Mapped[int] = mapped_column(Integer)
+    """原 deck 的页范围，1-based 闭区间。"""
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    output_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow

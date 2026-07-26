@@ -28,6 +28,15 @@ class Settings(BaseSettings):
     convert_timeout_max_s: int = 1800
     soffice_bin: str = "soffice"
 
+    # 三期：Graph 引擎
+    secret_key: str | None = None
+    """Fernet 主密钥（32 字节 urlsafe base64）。未配置则 Graph 引擎不可用——
+    不设默认值兜底，那等于没加密。"""
+    graph_max_pages_per_shard: int = 80
+    graph_max_shard_bytes: int = 40 * MIB
+    graph_request_timeout_s: int = 50
+    graph_max_retries: int = 3
+
     # 二期新增：故障注入，默认全关
     debug_force_timeout: bool = False
     debug_force_engine_failure: bool = False
@@ -56,8 +65,12 @@ class Settings(BaseSettings):
     def outputs_dir(self) -> Path:
         return self.storage_root / "outputs"
 
+    @property
+    def shards_dir(self) -> Path:
+        return self.storage_root / "shards"
+
     def ensure_dirs(self) -> None:
-        for d in (self.uploads_dir, self.originals_dir, self.outputs_dir):
+        for d in (self.uploads_dir, self.originals_dir, self.outputs_dir, self.shards_dir):
             d.mkdir(parents=True, exist_ok=True)
 
 
