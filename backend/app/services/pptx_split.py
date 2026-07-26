@@ -1,5 +1,6 @@
 import logging
 import posixpath
+import re
 import shutil
 import zipfile
 from pathlib import Path
@@ -12,8 +13,10 @@ PKG_RELS = "_rels/.rels"
 
 P_NS = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
 R_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
-REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
-CT_NS = "{http://schemas.openxmlformats.org/package/2006/content-types}"
+REL_NS_URI = "http://schemas.openxmlformats.org/package/2006/relationships"
+CT_NS_URI = "http://schemas.openxmlformats.org/package/2006/content-types"
+REL_NS = "{" + REL_NS_URI + "}"
+CT_NS = "{" + CT_NS_URI + "}"
 
 SLIDE_REL_TYPE = (
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide"
@@ -32,6 +35,23 @@ def _rels_path(part: str) -> str:
     """ppt/slides/slide1.xml -> ppt/slides/_rels/slide1.xml.rels"""
     d, name = posixpath.split(part)
     return posixpath.join(d, "_rels", name + ".rels") if d else f"_rels/{name}.rels"
+
+
+def _owner_part(rels_name: str) -> str:
+    """_rels_path 的反函数：
+    ppt/slides/_rels/slide1.xml.rels -> ppt/slides/slide1.xml
+    _rels/.rels -> ""（包级）。
+
+    Relationship 的 Target 是相对于它的 owner part 所在目录解析的
+    （见 _resolve），_rewrite_rels 需要知道 owner 才能正确判断某条
+    Relationship 该不该被删——不能只有 presentation.xml.rels 用对了
+    base_part，其余 .rels（slide 自己的、包级的）也一样需要。
+    """
+    d = posixpath.dirname(rels_name)
+    base = posixpath.basename(rels_name)
+    name = base[: -len(".rels")]
+    parent_dir = posixpath.dirname(d)
+    return posixpath.join(parent_dir, name) if name else parent_dir
 
 
 def _resolve(base_part: str, target: str) -> str:
@@ -59,7 +79,24 @@ def _read_rels(zf: zipfile.ZipFile, part: str) -> list[tuple[str, str, str]]:
 
 
 def _collect(zf: zipfile.ZipFile, part: str, keep: set[str]) -> None:
-    """从 part 出发递归收集依赖的所有 part（含它自己的 .rels）。"""
+    """从 part 出发递归收集依赖的所有 part（含它自己的 .rels）。
+
+    不递归 SLIDE_REL_TYPE：保留的 slide 正文里可能有指向「另一页」的
+    内部超链接（PowerPoint「链接到幻灯片」、动作按钮、目录跳转，
+    生成的关系 <Relationship Type=".../slide" Target="slideN.xml"/>
+    与 sldIdLst 里的 slide 关系用的是同一个 SLIDE_REL_TYPE）。如果不
+    过滤，range 外的整页（连同它的 media）会顺着这条关系被拖进当前
+    分片，还会级联到被拖入页自己的跳转目标。分片边界只能由 ranges
+    决定，不能被 deck 内部的超链接改写。
+
+    取舍：跳过之后，若跳转目标恰好不在这次分片的 keep_parts 里，
+    _rewrite_rels 会把发起跳转的 slide 自己的 .rels 里那条
+    Relationship 删掉，而它的正文里 r:id="rIdN" 还留着，变成悬空
+    引用。接受这个代价——悬空 rId 只是让这一条超链接失效（PDF 转换
+    环境会当成失效内容忽略），而不过滤的后果是分片的物理 slide part
+    数量和 range 长度对不上、probe().slide_count 与后续引擎的输出
+    页数校验必然失败。两害相权取其轻，宁可丢一条内部超链接。
+    """
     if part in keep:
         return
     keep.add(part)
@@ -68,6 +105,8 @@ def _collect(zf: zipfile.ZipFile, part: str, keep: set[str]) -> None:
         keep.add(rels_name)
     for _rid, rel_type, target in _read_rels(zf, part):
         if rel_type in DROP_REL_TYPES:
+            continue
+        if rel_type == SLIDE_REL_TYPE:
             continue
         if target not in keep:
             _collect(zf, target, keep)
@@ -89,14 +128,34 @@ def _slide_order(zf: zipfile.ZipFile) -> list[tuple[str, str]]:
     return order
 
 
+# 定位 <p:sldId .../> 这类自闭合、无嵌套的简单元素：前缀不固定（约定
+# 俗成是 "p"，但正则不假设），\b 保证 "sldId" 后面不会连着 "Lst" 之类
+# 别的标签名（sldIdLst 是它的父元素，绝不能被这条正则误删）。
+_SLD_ID_RE = re.compile(rb"<[A-Za-z0-9]*:?sldId\b[^>]*?/>")
+_RID_ATTR_RE = re.compile(rb'r:id=["\']([^"\']+)["\']')
+
+
 def _rewrite_presentation(raw: bytes, keep_rids: set[str]) -> bytes:
-    """只保留 keep_rids 对应的 sldId 条目，其余原样不动。"""
-    root = ET.fromstring(raw)
-    lst = root.find(f"{P_NS}sldIdLst")
-    for sld in list(lst):
-        if sld.get(f"{R_NS}id") not in keep_rids:
-            lst.remove(sld)
-    return ET.tostring(root, xml_declaration=True, encoding="UTF-8")
+    """只删除 keep_rids 之外的 <p:sldId .../> 元素，其余字节原样不动。
+
+    不用 ET 往返。真实 PowerPoint 产出的 presentation.xml 根元素常见
+    形如 `<p:presentation ... xmlns:p14="..." mc:Ignorable="p14">`：
+    presentation.xml 里通常没有任何 p14: 元素，ET.tostring 只序列化
+    「实际被用到」的命名空间，于是 xmlns:p14 声明会被静默丢弃，而
+    mc:Ignorable="p14" 却原样留下，变成指向一个作用域内未声明前缀的
+    引用，违反 MCE（Markup Compatibility and Extensibility）规范。
+    sldId 是自闭合、无嵌套的简单元素，用正则定位删除足够安全，且不
+    触碰其余任何字节——根元素的全部 xmlns 声明、mc:Ignorable、
+    standalone="yes" 都原样保留。
+    """
+
+    def _drop_if_unkept(m: "re.Match[bytes]") -> bytes:
+        rid_m = _RID_ATTR_RE.search(m.group(0))
+        if rid_m and rid_m.group(1).decode("ascii") in keep_rids:
+            return m.group(0)
+        return b""
+
+    return _SLD_ID_RE.sub(_drop_if_unkept, raw)
 
 
 def _rewrite_rels(raw: bytes, keep_parts: set[str], base_part: str) -> bytes:
@@ -104,7 +163,13 @@ def _rewrite_rels(raw: bytes, keep_parts: set[str], base_part: str) -> bytes:
 
     rId 一律不重编号：保留的 slide XML 内部有 r:embed="rId3" 这类引用，
     重编号就要同步改写每个 slide 的正文，那是引入 bug 的捷径。
+
+    .rels 文档结构扁平、不带 MCE 标记，可以放心用 ET 往返，但要在
+    tostring 之前重新登记默认命名空间的前缀，否则 ET 会把
+    `xmlns="...relationships"` 序列化成 `xmlns:ns0="...relationships"`
+    这种合法但不是原始写法的形式。
     """
+    ET.register_namespace("", REL_NS_URI)
     root = ET.fromstring(raw)
     for rel in list(root):
         if rel.get("TargetMode") == "External":
@@ -116,7 +181,11 @@ def _rewrite_rels(raw: bytes, keep_parts: set[str], base_part: str) -> bytes:
 
 
 def _rewrite_content_types(raw: bytes, keep_parts: set[str]) -> bytes:
-    """删掉未保留 part 的 Override。Default（按扩展名）全部保留。"""
+    """删掉未保留 part 的 Override。Default（按扩展名）全部保留。
+
+    同 _rewrite_rels，序列化前重新登记默认命名空间前缀，理由同上。
+    """
+    ET.register_namespace("", CT_NS_URI)
     root = ET.fromstring(raw)
     for node in list(root):
         if node.tag == f"{CT_NS}Override":
@@ -186,10 +255,23 @@ def split_pptx(
                         zout.writestr(
                             name, _rewrite_presentation(zin.read(name), keep_rids)
                         )
-                    elif name == pres_rels_name:
+                    elif name.endswith(".rels"):
+                        # 不能只特判 pres_rels_name：DROP_REL_TYPES 排除
+                        # 掉的 part（notesSlide / comments / thumbnail）
+                        # 各自的宿主 part 仍然保留在这个分片里
+                        # （slide 本身没被删，只是它指向 notesSlide 的
+                        # 那条关系被删；docProps/thumbnail.jpeg 的宿主
+                        # 是包级 _rels/.rels）。如果这里只重写
+                        # presentation.xml.rels，其余所有 .rels
+                        # （slide 自己的、slideLayout/slideMaster 的、
+                        # 包级的）会被 else 分支逐字节原样搬过去，里面
+                        # 指向已删 part 的 Relationship 一条不剩地留下，
+                        # 变成 OPC 不允许的悬空引用。
                         zout.writestr(
                             name,
-                            _rewrite_rels(zin.read(name), keep_parts, PRESENTATION),
+                            _rewrite_rels(
+                                zin.read(name), keep_parts, _owner_part(name)
+                            ),
                         )
                     elif name == "[Content_Types].xml":
                         zout.writestr(
