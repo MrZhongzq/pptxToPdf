@@ -202,3 +202,76 @@ def test_cleanup_failure_does_not_mask_original_error(tmp_path, monkeypatch):
     with pytest.raises(ConversionFailed) as exc:
         merge_pdfs([a], dest)
     assert "simulated replace failure" in str(exc.value)
+
+
+# --- 二轮复审补测：N1/N2/N3，均为审查员实测构造出的输入，13 个既有用例的断言一个字都没改 ---
+
+
+def _make_encrypted_pdf(path):
+    """pypdf 是惰性解析：PdfReader(...) 构造时只读 xref/trailer，一份加密/
+    受保护的 PDF 在构造阶段完全正常，只有访问 .pages 时才会炸出
+    FileNotDecryptedError。这是 N1 的直接复现素材——租户侧 M365 的敏感度
+    标签/IRM 可能让导出的 PDF 带保护，这条路径是真实可达的。"""
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    writer.encrypt(user_password="secret")
+    with path.open("wb") as fh:
+        writer.write(fh)
+    return path
+
+
+def test_encrypted_shard_raises_conversion_failed_not_bare_pypdf_error(tmp_path):
+    """N1：加密分片必须报 ConversionFailed，而不是让 pypdf 的
+    FileNotDecryptedError 裸着逃出去——这正是 I1 想在写阶段堵上的同一类
+    失败模式，只是这次出现在读阶段。"""
+    a = _make_pdf(tmp_path / "a.pdf", ["P1"])
+    encrypted = _make_encrypted_pdf(tmp_path / "encrypted.pdf")
+    dest = tmp_path / "merged.pdf"
+
+    with pytest.raises(ConversionFailed) as exc:
+        merge_pdfs([a, encrypted], dest)
+    assert exc.value.code == "CONVERSION_FAILED"
+    assert not dest.exists()
+
+
+def test_write_phase_non_oserror_wrapped_and_no_orphan_tmp(tmp_path, monkeypatch):
+    """N2：writer.write() 除了 IO 层的 OSError（磁盘满等），还可能抛
+    pypdf 自身的非 OSError 异常（PdfWriteError/DependencyError/ValueError
+    之类）。若写阶段只捕 OSError，这类异常既不会被包装成
+    ConversionFailed，也不会触发 tmp 清理——tmp 文件会在输出目录里
+    累积成孤儿文件。"""
+    a = _make_pdf(tmp_path / "a.pdf", ["P1"])
+    dest = tmp_path / "merged.pdf"
+
+    def boom_write(self, fh):
+        raise ValueError("pypdf internal failure, not an OSError")
+
+    monkeypatch.setattr(PdfWriter, "write", boom_write)
+
+    with pytest.raises(ConversionFailed):
+        merge_pdfs([a], dest)
+
+    assert not dest.exists()
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_readback_failure_wrapped_and_dest_cleaned(tmp_path, monkeypatch):
+    """N3：write() 本身不报错，但吐出的字节根本不是合法 PDF——os.replace
+    因此顺利完成，dest 落地成功，只有回读阶段才会发现「写出来的东西读不
+    出页数」。这道检查恰好是 M1 要新增的价值（回读校验取代内存自证），
+    但检出后不能把裸的 pypdf 异常抛出去，也不能把这份已确认读不出来的
+    坏文件留在 dest 上（否则用户看到的是一个"存在但打不开"的下载结果）。"""
+    a = _make_pdf(tmp_path / "a.pdf", ["P1"])
+    dest = tmp_path / "merged.pdf"
+
+    def silently_corrupt_write(self, fh):
+        # 不抛异常——模拟"写成功了，但内容本身不是合法 PDF"这种
+        # os.replace 会顺利放行、只有回读才能揪出来的失败模式。
+        fh.write(b"not actually a pdf, but write() reports success")
+
+    monkeypatch.setattr(PdfWriter, "write", silently_corrupt_write)
+
+    with pytest.raises(ConversionFailed):
+        merge_pdfs([a], dest)
+
+    assert not dest.exists()

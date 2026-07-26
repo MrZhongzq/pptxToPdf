@@ -26,10 +26,6 @@ def merge_pdfs(parts: list[Path], dest: Path) -> int:
     for part in parts:
         if not part.is_file():
             raise ConversionFailed(f"分片结果缺失: {part.name}")
-        try:
-            reader = PdfReader(str(part))
-        except Exception as exc:
-            raise ConversionFailed(f"分片 {part.name} 无法解析: {exc}") from exc
 
         # 每个分片对应原 deck 一段非空闭区间页范围，贡献 0 页在语义上
         # 恒为错误（Graph 对某片返回结构合法但空的 PDF 是真实可能的：
@@ -37,8 +33,18 @@ def merge_pdfs(parts: list[Path], dest: Path) -> int:
         # 文件能打开、能预览、页序看着连贯，只是缺了中间一段，翻两页
         # 看不出来，只有对照原稿页数才能发现。
         before = len(writer.pages)
-        for page in reader.pages:
-            writer.add_page(page)
+        try:
+            # pypdf 是惰性解析：PdfReader(...) 构造时只读 xref/trailer，
+            # 页对象要到访问 .pages 才真正解析。加密/受保护的分片在构造
+            # 阶段完全正常，只有在下面这个迭代里才会炸出
+            # FileNotDecryptedError——所以页迭代必须和构造包在同一个
+            # try 里，只包住构造行会让这类异常裸着逃出去。
+            reader = PdfReader(str(part))
+            for page in reader.pages:
+                writer.add_page(page)
+        except Exception as exc:
+            raise ConversionFailed(f"分片 {part.name} 无法解析: {exc}") from exc
+
         if len(writer.pages) == before:
             raise ConversionFailed(f"分片 {part.name} 是 0 页，合并会产出残缺结果")
 
@@ -55,7 +61,11 @@ def merge_pdfs(parts: list[Path], dest: Path) -> int:
         with tmp.open("wb") as fh:
             writer.write(fh)
         os.replace(tmp, dest)
-    except OSError as exc:
+    except Exception as exc:
+        # 这里故意用 Exception 而不是 OSError：writer.write() 除了 IO
+        # 层的 OSError（磁盘满等），还可能抛 pypdf 自身的
+        # PdfWriteError/DependencyError/ValueError 之类非 OSError 异常，
+        # 窄了会让 tmp 文件既不清理也不包装，永久留在输出目录里。
         try:
             tmp.unlink(missing_ok=True)
         except OSError:
@@ -65,7 +75,15 @@ def merge_pdfs(parts: list[Path], dest: Path) -> int:
 
     # 返回值只用来给下游做页数校验；只数内存里 writer.pages 是自我认证，
     # 检不出「写出来的文件和内存里不一致」——回读落盘文件才靠得住。
-    total = len(PdfReader(str(dest)).pages)
+    # 回读本身也要照 libreoffice.py 的 _verify_output 房规办：失败要
+    # 包装成 ConversionFailed，且要清掉这份已确认读不出来的坏 dest，
+    # 不能留一份「摆在那儿看着像结果、实际读不出页数」的文件。
+    try:
+        total = len(PdfReader(str(dest)).pages)
+    except Exception as exc:
+        dest.unlink(missing_ok=True)
+        raise ConversionFailed(f"合并结果回读校验失败: {exc}") from exc
+
     logger.info(
         "merged %d 片 -> %d 页 %.1fMB",
         len(parts), total, dest.stat().st_size / 1024 / 1024,
