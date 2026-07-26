@@ -79,3 +79,24 @@ class TaskShard(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+
+
+class GraphCredential(Base):
+    """Azure AD 与 SharePoint 中转库的配置。单行表，id 恒为 1。
+
+    三期只读（引擎用），四期的管理页面负责写入。client_secret 加密存储，
+    主密钥在环境变量里——数据库文件在 volume 里，误备份或误提交都会泄露
+    一个能操作 SharePoint 站点的凭证。
+    """
+
+    __tablename__ = "graph_credentials"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    tenant_id: Mapped[str] = mapped_column(String(64))
+    client_id: Mapped[str] = mapped_column(String(64))
+    client_secret_encrypted: Mapped[str] = mapped_column(Text)
+    site_id: Mapped[str] = mapped_column(String(256))
+    drive_path: Mapped[str] = mapped_column(String(256), default="pptx2pdf-staging")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
