@@ -1,15 +1,35 @@
 """Graph 引擎的纯逻辑单测。
 
 不碰网络、不需要 Azure 凭证——覆盖的是错误响应到项目错误码的映射、
-重试判定、退避时长计算、URL 拼装这几类可以用构造出来的假 httpx.Response
-验证的逻辑。真正发请求的编排代码（_access_token/_upload/_cleanup/convert
-里调 client.request 的部分）留到四期用真实租户验证，见任务报告。
+重试判定、退避时长计算、URL 拼装、PDF 输出校验这几类可以用构造出来的假
+httpx.Response / 假 client 验证的逻辑。
+
+审查轮之后，"假 client" 的边界比第一版画得更宽：`_request_with_retry` /
+`_upload_chunks` / `_create_upload_session` / `_access_token` 这些方法把
+client 作为参数接收，用一个不到 30 行、纯 Python、不联网的假 client
+（只实现 .request/.post/.delete，回放预先构造好的 httpx.Response）就能
+完整验证请求次数、sleep 序列、终态异常类型、正文是否保留——这些都是
+我们自己的控制流，不是 Graph 语义，所以可以测、也应该测。真正依赖 Graph
+真实响应行为的部分（token 端点的真实返回结构、uploadUrl 的真实格式、
+`?format=pdf` 的真实 302/403 行为）仍然留到四期用真实租户验证，见
+task-6-report.md。
 """
+import time
+from urllib.parse import quote
+
 import httpx
 import pytest
+from reportlab.pdfgen import canvas
 
+import app.services.engines.graph as graph_module
 from app.config import settings
-from app.errors import ConversionFailed, EngineUnavailable, GraphNotConfigured
+from app.errors import (
+    ConversionFailed,
+    ConversionPageMismatch,
+    ConversionTimeout,
+    EngineUnavailable,
+    GraphNotConfigured,
+)
 from app.services.engines.graph import (
     GRAPH_ROOT,
     TOKEN_SKEW_S,
@@ -21,9 +41,13 @@ from app.services.engines.graph import (
     _item_base_url,
     _raise_for_status,
     _retry_wait_seconds,
+    _staging_filename,
     _token_is_fresh,
     _upload_session_url,
+    _verify_pdf_output,
+    _wrap_transport_errors,
 )
+from app.services.pptx_probe import PptxMeta
 
 
 def _resp(status_code: int, headers: dict | None = None, body: bytes = b"") -> httpx.Response:
@@ -35,6 +59,63 @@ def _resp(status_code: int, headers: dict | None = None, body: bytes = b"") -> h
     )
 
 
+def _write_pdf(path, pages: int) -> None:
+    c = canvas.Canvas(str(path), pagesize=(200, 200))
+    for _ in range(pages):
+        c.drawString(10, 10, "x")
+        c.showPage()
+    c.save()
+
+
+def _meta(slide_count: int) -> PptxMeta:
+    return PptxMeta(
+        slide_count=slide_count, slide_width_emu=9144000, slide_height_emu=6858000, fonts=()
+    )
+
+
+class _FakeClient:
+    """假 client：只实现 GraphEngine 用到的 .request/.delete，不联网、不
+    认识 Graph 语义，只回放预先构造好的响应序列（或抛出预先构造好的传输
+    异常）。用来验证我们自己的循环控制流，不是 Graph 的行为。"""
+
+    def __init__(self, responses=None, *, delete_result=None, delete_error=None):
+        self._responses = list(responses or [])
+        self.calls: list[tuple[str, str, dict]] = []
+        self.delete_calls: list[str] = []
+        self._delete_result = delete_result
+        self._delete_error = delete_error
+
+    def request(self, method, url, **kwargs):
+        self.calls.append((method, url, kwargs))
+        return self._responses.pop(0)
+
+    def delete(self, url, **kwargs):
+        self.delete_calls.append(url)
+        if self._delete_error is not None:
+            raise self._delete_error
+        return self._delete_result
+
+
+def _clock(*values):
+    """返回值序列的假 time.monotonic：用完 values 之后一直重复最后一个，
+    避免测试因为多算了一次 monotonic() 调用就 StopIteration。"""
+    values = list(values)
+
+    def _next():
+        if len(values) > 1:
+            return values.pop(0)
+        return values[0]
+
+    return _next
+
+
+@pytest.fixture
+def sleep_calls(monkeypatch):
+    calls: list[float] = []
+    monkeypatch.setattr(graph_module.time, "sleep", lambda s: calls.append(s))
+    return calls
+
+
 # ---- UPLOAD_CHUNK 必须是 320 KiB 的整数倍 ----
 
 
@@ -42,7 +123,8 @@ def test_upload_chunk_is_multiple_of_320kib():
     # Graph 的 createUploadSession 硬性要求：非末片的每个分块长度必须是
     # 320 KiB 的整数倍。8*1024*1024（brief 里最初的字面量）并不满足这个
     # 约束（8388608 / 327680 = 25.6），是会在四期真机联调时才暴露的
-    # 分块失败。用不变量测试挡住任何未来改回不合规值的回归。
+    # 分块失败（官方文档："Using a fragment size that doesn't divide
+    # evenly by 320 KiB results in errors committing some files"）。
     assert UPLOAD_UNIT == 320 * 1024
     assert UPLOAD_CHUNK % UPLOAD_UNIT == 0
     assert UPLOAD_CHUNK > 0
@@ -66,8 +148,6 @@ def test_token_not_fresh_when_already_expired():
 
 
 def test_token_not_fresh_within_skew_margin():
-    # 还没真正过期，但已经进了 TOKEN_SKEW_S 的安全边际——同样要判定为
-    # 不新鲜，否则可能拿着一个请求发出去就过期的 token 起飞。
     now = 1_000_000.0
     expires_at = now + TOKEN_SKEW_S - 1
     assert _token_is_fresh("tok", expires_at, now) is False
@@ -76,11 +156,10 @@ def test_token_not_fresh_within_skew_margin():
 def test_token_boundary_at_exact_skew_margin_is_not_fresh():
     now = 1_000_000.0
     expires_at = now + TOKEN_SKEW_S
-    # 严格小于判定：now < expires_at - TOKEN_SKEW_S ==> now < now，False
     assert _token_is_fresh("tok", expires_at, now) is False
 
 
-# ---- 重试与退避判定 ----
+# ---- 重试与退避判定（单次） ----
 
 
 def test_429_uses_retry_after_header():
@@ -113,9 +192,118 @@ def test_2xx_does_not_retry(status):
 
 @pytest.mark.parametrize("status", [400, 401, 403, 404, 409, 422])
 def test_non_429_4xx_does_not_retry(status):
-    # 4xx（除 429）是请求本身的问题——重试无意义，立即失败。
     resp = _resp(status)
     assert _retry_wait_seconds(resp.status_code, resp.headers, attempt=0) is None
+
+
+# ---- 重试循环控制流（假 client，不联网） ----
+
+
+def test_request_with_retry_returns_first_success_without_sleeping(sleep_calls):
+    client = _FakeClient([_resp(200)])
+    resp = GraphEngine()._request_with_retry(
+        client, "GET", "https://x", deadline=time.monotonic() + 100
+    )
+    assert resp.status_code == 200
+    assert len(client.calls) == 1
+    assert sleep_calls == []
+
+
+def test_request_with_retry_retries_5xx_then_succeeds(monkeypatch, sleep_calls):
+    monkeypatch.setattr(settings, "graph_max_retries", 3)
+    client = _FakeClient([_resp(500), _resp(500), _resp(200)])
+    resp = GraphEngine()._request_with_retry(
+        client, "GET", "https://x", deadline=time.monotonic() + 1000
+    )
+    assert resp.status_code == 200
+    assert len(client.calls) == 3
+    assert sleep_calls == [2.0, 4.0]
+
+
+def test_request_with_retry_exhausts_retries_raises_engine_unavailable_with_body(
+    monkeypatch, sleep_calls
+):
+    # I4：重试耗尽后是"服务暂时不可用"（EngineUnavailable/503），不是
+    # ConversionFailed——用户看到"转换失败"的合理反应是换个文件重传，
+    # 而限流期间重传必然再失败，真正该给的是"稍后重试"。
+    monkeypatch.setattr(settings, "graph_max_retries", 3)
+    client = _FakeClient([_resp(500, body=b"OfficeConversion_Fatal detail")] * 3)
+    with pytest.raises(EngineUnavailable) as exc:
+        GraphEngine()._request_with_retry(
+            client, "GET", "https://x", deadline=time.monotonic() + 1000
+        )
+    assert len(client.calls) == 3
+    # I2 点 3：最后一次尝试后不 sleep——3 次请求只对应 2 次退避等待。
+    assert sleep_calls == [2.0, 4.0]
+    # I3：正文没有被重试耗尽路径吞掉。
+    assert "500" in str(exc.value)
+    assert "OfficeConversion_Fatal detail" in str(exc.value)
+
+
+def test_request_with_retry_gives_up_immediately_when_budget_already_exhausted(
+    sleep_calls,
+):
+    # I1/I2：timeout_s 预算耗尽时不重试直接抛，不把预算耗在必然超时的
+    # 等待上——这里预算在发第一个请求之前就已经耗尽，连请求都不该发。
+    client = _FakeClient([_resp(500)])
+    with pytest.raises(ConversionTimeout):
+        GraphEngine()._request_with_retry(
+            client, "GET", "https://x", deadline=time.monotonic() - 1
+        )
+    assert client.calls == []
+    assert sleep_calls == []
+
+
+def test_request_with_retry_gives_up_before_sleep_when_budget_runs_out_mid_loop(
+    monkeypatch, sleep_calls
+):
+    monkeypatch.setattr(settings, "graph_max_retries", 3)
+    # 第一次 remaining 检查（发请求前）还有预算，能发出请求；拿到 429
+    # 之后、真正 sleep 之前的第二次检查预算已经耗尽——不能真的调
+    # time.sleep(600)，必须直接放弃。
+    monkeypatch.setattr(graph_module.time, "monotonic", _clock(0.0, 5.0))
+    client = _FakeClient([_resp(429, headers={"Retry-After": "600"})])
+    with pytest.raises(ConversionTimeout):
+        GraphEngine()._request_with_retry(client, "GET", "https://x", deadline=1.0)
+    assert len(client.calls) == 1
+    assert sleep_calls == []
+
+
+def test_request_with_retry_caps_retry_after_wait_to_remaining_budget(
+    monkeypatch, sleep_calls
+):
+    # SharePoint 限流常见 Retry-After 60~300 秒；不能无条件采信，上限取
+    # 剩余预算。这里剩余预算 5 秒，Retry-After 说 600 秒，应该只睡 5 秒。
+    monkeypatch.setattr(settings, "graph_max_retries", 3)
+    monkeypatch.setattr(graph_module.time, "monotonic", _clock(0.0))
+    client = _FakeClient([_resp(429, headers={"Retry-After": "600"}), _resp(200)])
+    resp = GraphEngine()._request_with_retry(client, "GET", "https://x", deadline=5.0)
+    assert resp.status_code == 200
+    assert sleep_calls == [5.0]
+
+
+def test_request_with_retry_wraps_transport_error_as_engine_unavailable(sleep_calls):
+    class _ExplodingClient:
+        def request(self, method, url, **kwargs):
+            raise httpx.ConnectError("boom")
+
+    with pytest.raises(EngineUnavailable):
+        GraphEngine()._request_with_retry(
+            _ExplodingClient(), "GET", "https://x", deadline=time.monotonic() + 100
+        )
+
+
+def test_request_with_retry_reraises_timeout_exception_for_caller_to_convert():
+    # httpx 的真实超时异常要原样抛出去，让 convert() 转成 ConversionTimeout
+    # （现有行为），不能在这里被 HTTPError 的宽异常处理吞掉或错误分类。
+    class _TimingOutClient:
+        def request(self, method, url, **kwargs):
+            raise httpx.ReadTimeout("timeout")
+
+    with pytest.raises(httpx.ReadTimeout):
+        GraphEngine()._request_with_retry(
+            _TimingOutClient(), "GET", "https://x", deadline=time.monotonic() + 100
+        )
 
 
 # ---- URL / 路径拼装 ----
@@ -127,6 +315,14 @@ def test_upload_session_url_joins_drive_path_and_filename():
         f"{GRAPH_ROOT}/sites/site-1/drive/root:/pptx2pdf-staging/deck.pptx:"
         "/createUploadSession"
     )
+
+
+def test_upload_session_url_percent_encodes_drive_path_and_filename():
+    # M4：drive_path 来自四期管理员配置，含空格/# 会把 URL 截断。
+    url = _upload_session_url("site-1", "my staging", "a b#c.pptx")
+    assert " " not in url
+    assert quote("my staging", safe="/") in url
+    assert quote("a b#c.pptx", safe="") in url
 
 
 def test_content_url_requests_pdf_format():
@@ -142,18 +338,12 @@ def test_item_base_url():
 
 def test_content_range_headers_first_chunk():
     headers = _content_range_headers(offset=0, length=100, total=500)
-    assert headers == {
-        "Content-Range": "bytes 0-99/500",
-        "Content-Length": "100",
-    }
+    assert headers == {"Content-Range": "bytes 0-99/500", "Content-Length": "100"}
 
 
 def test_content_range_headers_last_chunk():
     headers = _content_range_headers(offset=400, length=100, total=500)
-    assert headers == {
-        "Content-Range": "bytes 400-499/500",
-        "Content-Length": "100",
-    }
+    assert headers == {"Content-Range": "bytes 400-499/500", "Content-Length": "100"}
 
 
 def test_content_range_headers_single_byte_block():
@@ -161,12 +351,25 @@ def test_content_range_headers_single_byte_block():
     assert headers["Content-Range"] == "bytes 10-10/11"
 
 
+# ---- 中转文件名唯一化（I8） ----
+
+
+def test_staging_filename_is_unique_and_preserves_original_name(tmp_path):
+    src = tmp_path / "001.pptx"
+    a = _staging_filename(src)
+    b = _staging_filename(src)
+    assert a != b
+    assert a.endswith("001.pptx")
+    assert b.endswith("001.pptx")
+    assert a != "001.pptx"
+
+
 # ---- Graph 响应 -> 项目错误码映射 ----
 
 
 def test_raise_for_status_passes_through_ok_status():
     resp = _resp(201)
-    _raise_for_status(resp, frozenset({200, 201}), ConversionFailed, "上传失败")  # 不应抛
+    _raise_for_status(resp, frozenset({200, 201}), ConversionFailed, "上传失败")
 
 
 def test_raise_for_status_raises_configured_error_class():
@@ -179,8 +382,6 @@ def test_raise_for_status_raises_configured_error_class():
 
 
 def test_raise_for_status_uses_caller_supplied_error_class():
-    # 认证失败要落 EngineUnavailable，不是 ConversionFailed——不同调用点
-    # 语义不同，_raise_for_status 必须尊重调用方传入的异常类型。
     resp = _resp(401, body=b"invalid_client")
     with pytest.raises(EngineUnavailable):
         _raise_for_status(resp, frozenset({200}), EngineUnavailable, "Azure 认证失败")
@@ -190,10 +391,212 @@ def test_raise_for_status_truncates_long_body():
     resp = _resp(400, body=b"x" * 500)
     with pytest.raises(ConversionFailed) as exc:
         _raise_for_status(resp, frozenset({200}), ConversionFailed, "失败")
-    # brief 的参考实现里各处都是 resp.text[:200]，这里断言截断确实生效，
-    # 不会把整段 500 字节的响应体糊进异常消息。
     body_in_message = str(exc.value).split("：", 1)[1]
     assert len(body_in_message) <= 200
+
+
+def test_wrap_transport_errors_hides_raw_exception_text():
+    # I5：httpx 异常消息可能带上预授权 uploadUrl 或其他请求细节，只暴露
+    # 异常类型名，足够排障又不会把这些细节泄露到用户可见的 error_message。
+    exc = httpx.ConnectError("boom detail with maybe a secret uploadUrl")
+    wrapped = _wrap_transport_errors(exc, EngineUnavailable, "Graph 请求失败")
+    assert isinstance(wrapped, EngineUnavailable)
+    assert "boom detail" not in str(wrapped)
+    assert "ConnectError" in str(wrapped)
+    assert "Graph 请求失败" in str(wrapped)
+
+
+# ---- PDF 输出校验（C1） ----
+
+
+def test_verify_pdf_output_passes_when_pages_match(tmp_path):
+    dest = tmp_path / "out.pdf"
+    _write_pdf(dest, 3)
+    _verify_pdf_output(dest, _meta(3), tmp_path / "src.pptx")  # 不应抛
+    assert dest.exists()
+
+
+def test_verify_pdf_output_raises_page_mismatch_and_deletes_file(tmp_path):
+    # 这条防的正是三期存在的理由：Graph 逼近 100 页硬上限时可能返回
+    # 200 + 被截断的 PDF，只有页数比对能发现。
+    dest = tmp_path / "out.pdf"
+    _write_pdf(dest, 2)
+    with pytest.raises(ConversionPageMismatch):
+        _verify_pdf_output(dest, _meta(5), tmp_path / "src.pptx")
+    assert not dest.exists()
+
+
+def test_verify_pdf_output_raises_when_file_missing(tmp_path):
+    with pytest.raises(ConversionFailed):
+        _verify_pdf_output(tmp_path / "missing.pdf", _meta(1), tmp_path / "src.pptx")
+
+
+def test_verify_pdf_output_raises_and_deletes_when_empty(tmp_path):
+    dest = tmp_path / "out.pdf"
+    dest.write_bytes(b"")
+    with pytest.raises(ConversionFailed):
+        _verify_pdf_output(dest, _meta(1), tmp_path / "src.pptx")
+    assert not dest.exists()
+
+
+def test_verify_pdf_output_raises_and_deletes_when_unparseable(tmp_path):
+    # 302 落到登录页/错误页而不是真 PDF 时，size > 0 但根本不是 PDF。
+    dest = tmp_path / "out.pdf"
+    dest.write_bytes(b"<html>not a pdf, e.g. a login page</html>")
+    with pytest.raises(ConversionFailed):
+        _verify_pdf_output(dest, _meta(1), tmp_path / "src.pptx")
+    assert not dest.exists()
+
+
+# ---- _access_token（假 client，不联网） ----
+
+
+def test_access_token_returns_cached_token_without_calling_client():
+    engine = GraphEngine()
+    engine._token = "cached"
+    engine._token_expires_at = time.time() + 3600
+
+    class _ExplodingClient:
+        def post(self, *a, **kw):
+            raise AssertionError("不该调用 client.post——token 还新鲜")
+
+    token = engine._access_token(_ExplodingClient(), "tid", "cid", "secret")
+    assert token == "cached"
+
+
+def test_access_token_fetches_and_caches_new_token():
+    class _StubClient:
+        def post(self, url, **kwargs):
+            return _resp(200, body=b'{"access_token": "tok-1", "expires_in": 3600}')
+
+    engine = GraphEngine()
+    token = engine._access_token(_StubClient(), "tid", "cid", "secret")
+    assert token == "tok-1"
+    assert engine._token == "tok-1"
+
+
+def test_access_token_raises_engine_unavailable_on_non_200():
+    class _StubClient:
+        def post(self, url, **kwargs):
+            return _resp(401, body=b"invalid_client")
+
+    with pytest.raises(EngineUnavailable):
+        GraphEngine()._access_token(_StubClient(), "tid", "cid", "secret")
+
+
+def test_access_token_wraps_transport_error_as_engine_unavailable():
+    # I5：DNS 失败/代理断连/网络抖动都是高频事件，不能让裸 httpx 异常
+    # 穿到 pipeline 的兜底变成 INTERNAL_ERROR。
+    class _StubClient:
+        def post(self, url, **kwargs):
+            raise httpx.ReadTimeout("timeout")
+
+    with pytest.raises(EngineUnavailable):
+        GraphEngine()._access_token(_StubClient(), "tid", "cid", "secret")
+
+
+# ---- _create_upload_session / _upload_chunks（假 client，不联网） ----
+
+
+def test_create_upload_session_returns_upload_url_and_uses_unique_staging_name(
+    tmp_path,
+):
+    src = tmp_path / "001.pptx"
+    src.write_bytes(b"x")
+    client = _FakeClient([_resp(201, body=b'{"uploadUrl": "https://upload.example/abc"}')])
+    url = GraphEngine()._create_upload_session(
+        client,
+        {"Authorization": "Bearer t"},
+        "site-1",
+        "staging",
+        src,
+        deadline=time.monotonic() + 100,
+    )
+    assert url == "https://upload.example/abc"
+    method, called_url, _kwargs = client.calls[0]
+    assert method == "POST"
+    assert "/sites/site-1/drive/root:/staging/" in called_url
+    # I8：中转文件名带唯一前缀，不是裸的 src.name。
+    assert called_url != _upload_session_url("site-1", "staging", "001.pptx")
+    assert called_url.endswith("001.pptx:/createUploadSession")
+
+
+def test_upload_chunks_advances_offset_and_returns_item_id_on_final_chunk(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(graph_module, "UPLOAD_CHUNK", 4)
+    src = tmp_path / "deck.pptx"
+    src.write_bytes(b"0123456789")  # 10 字节 -> 4/4/2 三块
+    client = _FakeClient(
+        [
+            _resp(202),
+            _resp(202),
+            _resp(201, body=b'{"id": "item-42"}'),
+        ]
+    )
+    item_id = GraphEngine()._upload_chunks(
+        client, "https://upload.example/abc", src, deadline=time.monotonic() + 100
+    )
+    assert item_id == "item-42"
+    assert len(client.calls) == 3
+    ranges = [kwargs["headers"]["Content-Range"] for _, _, kwargs in client.calls]
+    assert ranges == ["bytes 0-3/10", "bytes 4-7/10", "bytes 8-9/10"]
+
+
+def test_upload_chunks_raises_immediately_for_zero_byte_source(tmp_path):
+    # M5：0 字节源文件此前会报"上传完成但未返回 driveItem id"，
+    # 跟真实原因（while 循环一次都没进）对不上，误导排障。
+    src = tmp_path / "empty.pptx"
+    src.write_bytes(b"")
+    client = _FakeClient([])
+    with pytest.raises(ConversionFailed) as exc:
+        GraphEngine()._upload_chunks(
+            client, "https://upload.example/abc", src, deadline=time.monotonic() + 100
+        )
+    assert client.calls == []
+    assert "0 字节" in str(exc.value)
+
+
+def test_upload_chunks_propagates_failure_so_caller_can_cancel_session(tmp_path):
+    src = tmp_path / "deck.pptx"
+    src.write_bytes(b"0123456789")
+    client = _FakeClient([_resp(403, body=b"forbidden")])
+    with pytest.raises(ConversionFailed):
+        GraphEngine()._upload_chunks(
+            client, "https://upload.example/abc", src, deadline=time.monotonic() + 100
+        )
+
+
+def test_upload_chunks_retries_5xx_on_a_single_chunk(tmp_path, monkeypatch, sleep_calls):
+    # I7：分块 PUT 现在也走 _request_with_retry，一次 502 不该让整个
+    # 40MB 分片的转换直接失败。范围裁决只做重试（重传整块），不做断点
+    # 续传——见 I7 的裁决说明。
+    monkeypatch.setattr(graph_module, "UPLOAD_CHUNK", 10)
+    monkeypatch.setattr(settings, "graph_max_retries", 3)
+    src = tmp_path / "deck.pptx"
+    src.write_bytes(b"0123456789")  # 10 字节，一块打完
+    client = _FakeClient([_resp(502), _resp(201, body=b'{"id": "item-9"}')])
+    item_id = GraphEngine()._upload_chunks(
+        client, "https://upload.example/abc", src, deadline=time.monotonic() + 100
+    )
+    assert item_id == "item-9"
+    assert len(client.calls) == 2
+    assert sleep_calls == [2.0]
+
+
+# ---- _cancel_upload_session（C2，假 client，不联网） ----
+
+
+def test_cancel_upload_session_calls_delete_on_upload_url():
+    client = _FakeClient(delete_result=_resp(204))
+    GraphEngine()._cancel_upload_session(client, "https://upload.example/abc")
+    assert client.delete_calls == ["https://upload.example/abc"]
+
+
+def test_cancel_upload_session_swallows_transport_errors():
+    # 清理失败不能掩盖原始的转换失败原因——合并模块踩过这个坑。
+    client = _FakeClient(delete_error=httpx.ConnectError("boom"))
+    GraphEngine()._cancel_upload_session(client, "https://upload.example/abc")  # 不应抛
 
 
 # ---- convert() 在凭证缺失时的行为：不碰 HTTP 就能验证 ----
@@ -205,62 +608,55 @@ def test_convert_raises_graph_not_configured_without_touching_http(
     """没配置凭证时，convert 必须在建 httpx.Client 之前就因
     load_credentials 抛 GraphNotConfigured——这条路径完全不涉及网络，
     可以在没有 Azure 账号的机器上跑。"""
-    import app.services.engines.graph as graph_module
-    from app.services.pptx_probe import PptxMeta
-
     monkeypatch.setattr(settings, "secret_key", None)
 
-    meta = PptxMeta(
-        slide_count=1, slide_width_emu=9144000, slide_height_emu=6858000, fonts=()
-    )
-    engine = graph_module.GraphEngine()
+    engine = GraphEngine()
     with pytest.raises(GraphNotConfigured):
         engine.convert(
             tmp_path / "deck.pptx",
-            meta,
+            _meta(1),
             tmp_path / "out.pdf",
             timeout_s=50,
         )
 
 
-def test_convert_raises_graph_not_configured_when_no_row_saved(
-    tmp_path, monkeypatch
-):
+def test_graph_module_session_local_is_patched_by_conftest():
+    """M1：本测试不做任何自己的 SessionLocal monkeypatch，直接断言
+    conftest 的 autouse 隔离 fixture 已经把 graph 模块的 SessionLocal
+    重定向了。上一版没有这条测试——`test_convert_raises_graph_not_configured_
+    when_no_row_saved` 自己又 monkeypatch 了一次，把 conftest 的 patch 覆盖
+    掉，审查员删掉 conftest 那一行、131 个测试仍然全绿。这条测试就是补上的
+    那道防线：conftest 的 patch 不生效时，这里必须失败。"""
+    import app.db as db_module
+
+    assert graph_module.SessionLocal is db_module.SessionLocal
+
+
+def test_convert_raises_graph_not_configured_when_no_row_saved(tmp_path, monkeypatch):
     """密钥配好了，但管理页面还没填过凭证行——同样要在碰 HTTP 之前失败。
     这条路径比上一条更深：secret_key 检查会过，得真的查一次
-    GraphCredential 表才会发现没有行。用来确认 conftest 里对
-    app.services.engines.graph.SessionLocal 的隔离 patch 真的生效——
-    没生效的话这里查的就是开发者本机的 pptx2pdf.db。"""
-    import app.services.engines.graph as graph_module
-    from app.services.pptx_probe import PptxMeta
+    GraphCredential 表才会发现没有行。
+
+    不再自己 monkeypatch graph_module.SessionLocal——那样做会把 conftest
+    的隔离 patch 覆盖掉，让这条测试即使 conftest 的 patch 被删掉也照样
+    通过（审查员的变异测试证实了这一点）。这里改成直接在 conftest 已经
+    指向的隔离引擎（db_module.engine）上建表，真正依赖 conftest 的 patch
+    ——patch 被删掉的话，graph_module.SessionLocal 会指回未建表的生产
+    engine，这里会变成 `OperationalError: no such table` 而不是
+    GraphNotConfigured，测试就会失败。"""
+    import app.db as db_module
+    from app.db import Base
 
     monkeypatch.setattr(
         settings, "secret_key", "8I3F3CqPwlEsmMDLbEIVSXd8oXlmqkOMWFnDPbNXKvA="
     )
+    Base.metadata.create_all(db_module.engine)
 
-    # 需要真的执行一次 SELECT 才会发现没有凭证行，所以这条路径必须有
-    # 建好表的库——conftest 的 autouse 隔离 fixture 只重定向了引擎，没建表
-    # （那是给 API 级测试用的，表由 FastAPI 启动事件建）。这里单独建一个
-    # 有表的 sqlite 库，再把 graph_module.SessionLocal 指过去。
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
-
-    from app.db import Base
-
-    iso_engine = create_engine(f"sqlite:///{tmp_path / 'iso.db'}")
-    Base.metadata.create_all(iso_engine)
-    monkeypatch.setattr(
-        graph_module, "SessionLocal", sessionmaker(bind=iso_engine, expire_on_commit=False)
-    )
-
-    meta = PptxMeta(
-        slide_count=1, slide_width_emu=9144000, slide_height_emu=6858000, fonts=()
-    )
-    engine = graph_module.GraphEngine()
+    engine = GraphEngine()
     with pytest.raises(GraphNotConfigured):
         engine.convert(
             tmp_path / "deck.pptx",
-            meta,
+            _meta(1),
             tmp_path / "out.pdf",
             timeout_s=50,
         )

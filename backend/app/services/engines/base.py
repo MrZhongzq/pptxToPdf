@@ -7,7 +7,14 @@ EMU_PER_POINT = 12700
 
 
 class ConversionEngine(ABC):
-    """转换引擎抽象。不得访问数据库，不得认识 HTTP。"""
+    """转换引擎抽象。不得访问数据库——凭证应由上层读好注入，引擎自己开
+    DB 会话是已知的设计问题（Graph 引擎目前违反了这条，记在 ledger 里
+    交给 Task 8 收敛，见 graph.py 的说明，这里不提前动它）。
+
+    "不得认识 HTTP" 这条已经不成立：Graph 引擎本质是调远程转换服务，
+    必然要说 HTTP，就像 LibreOffice 引擎必然要说 subprocess 一样——
+    调用哪种外部机制是具体引擎的实现细节，不是这层抽象要限制的东西。
+    """
 
     name: str
 
