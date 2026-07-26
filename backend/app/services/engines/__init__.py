@@ -23,8 +23,9 @@ def get_engine(name: str) -> ConversionEngine:
 
 
 def available_engines() -> list[str]:
-    """已注册的引擎名。注册不等于可用——graph 目前是会抛
-    EngineUnavailable 的桩实现，见 graph.py 的说明。"""
+    """已注册的引擎名。注册不等于可用——graph 三期起是真实实现，但没配置
+    Azure 凭证时会抛 GraphNotConfigured（不是 EngineUnavailable），
+    见 graph.py 和 graph_credentials.py 的说明。"""
     return sorted(_ENGINES)
 
 
