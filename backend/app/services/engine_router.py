@@ -1,5 +1,6 @@
 import logging
 
+from app.config import settings
 from app.services.pptx_probe import PptxMeta
 
 logger = logging.getLogger(__name__)
@@ -24,4 +25,12 @@ def select_engine(
     if requested:
         logger.info("engine 由用户指定: %s", requested)
         return requested
+    # 自动判定不选切片路径：切片意味着数十次 HTTP 往返与几分钟等待，
+    # 作为默认行为太重。用户显式选 Graph 且文件超限时才切片——那是
+    # 他知情的选择（见上面 requested 分支，切片判断在 run_task 里）。
+    if (
+        meta.slide_count <= settings.graph_max_pages_per_shard
+        and size_bytes <= settings.graph_max_shard_bytes
+    ):
+        return "graph"
     return DEFAULT_ENGINE
