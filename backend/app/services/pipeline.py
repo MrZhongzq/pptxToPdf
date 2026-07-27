@@ -4,11 +4,12 @@ from datetime import datetime, timezone
 
 from app.config import settings
 from app.db import SessionLocal
-from app.errors import AppError
+from app.errors import AppError, GraphNotConfigured
 from app.models import Task
 from app.queue import enqueue_shards
 from app.services.engine_router import select_engine
 from app.services.engines import get_engine
+from app.services.graph_credentials import is_graph_configured
 from app.services.pptx_probe import probe
 from app.services.retention import drop_original, purge_expired_outputs, reap_stale_tasks
 from app.services.shard_planner import SHARDED_ENGINES, needs_sharding
@@ -85,8 +86,17 @@ def run_task(task_id: str) -> None:
             task.slide_width_emu = meta.slide_width_emu
             task.slide_height_emu = meta.slide_height_emu
             task.fonts_json = json.dumps(list(meta.fonts), ensure_ascii=False)
+            # 是否已配置 Graph 只影响 auto 分支（select_engine 内部保证
+            # requested 分支绝不受这个信号影响）——三期没有凭证写入路径，
+            # 这里在三期部署里恒为 False，auto 因此恒选 libreoffice；
+            # 下面的分片分支复用同一个值做早退检查（I2），避免整轮切片
+            # 之后才在每个子 job 里第一次发现凭证没配置。
+            graph_configured = is_graph_configured(session)
             task.engine = select_engine(
-                meta, size_bytes, requested=task.requested_engine
+                meta,
+                size_bytes,
+                requested=task.requested_engine,
+                graph_configured=graph_configured,
             )
             logger.info(
                 "task parsed id=%s slides=%d engine=%s(requested=%s) options=%s fonts=%s",
@@ -107,6 +117,19 @@ def run_task(task_id: str) -> None:
                 # import 放在函数里打断 pipeline ←→ shard_pipeline 的环
                 # （shard_pipeline 顶层要用本模块的 compute_timeout_s）。
                 from app.services.shard_pipeline import discard_shards, prepare_shards
+
+                if not graph_configured:
+                    # I2：凭证检查必须在切片之前做。不然一个 500 页的 deck
+                    # 会先完整切一轮（最多 480MB 落盘、commit 几十行
+                    # TaskShard、入队几十个 RQ job），才在每个子 job 里
+                    # 第一次读凭证时发现根本没配置——用户等几分钟磁盘写
+                    # 近 1GB，换来一句本可以在毫秒内给出的错误。
+                    # graph_configured 在上面已经算过一次，这里复用同一个
+                    # 值，不再多打一次 DB。
+                    raise GraphNotConfigured(
+                        "尚未配置 Azure 凭证，无法执行需要切片的 Graph 转换。"
+                        "请在管理页面配置凭证，或改用 LibreOffice 引擎重新上传"
+                    )
 
                 shard_ids = prepare_shards(session, task, src, size_bytes)
                 try:

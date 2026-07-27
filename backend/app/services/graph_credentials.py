@@ -66,6 +66,23 @@ def load_credentials(session: Session) -> GraphCredentialData:
     )
 
 
+def is_graph_configured(session: Session) -> bool:
+    """轻量布尔判定，给自动路由（engine_router.select_engine）用：
+    Graph 凭证是否已经配置到可用状态，不抛异常。
+
+    直接复用 load_credentials 并吞掉 GraphNotConfigured——不重新实现一遍
+    "密钥在不在、行在不在、解密通不通" 这三条判据，避免两套判定标准
+    早晚彼此不一致。三期没有凭证写入路径（管理页面是四期的事），所以
+    这里在三期部署里恒为 False，auto 分支因此恒选 libreoffice；这正是
+    调用方期望的行为——不应该自动选一个当前部署里必然不可用的引擎。
+    """
+    try:
+        load_credentials(session)
+        return True
+    except GraphNotConfigured:
+        return False
+
+
 def save_credentials(
     session: Session,
     *,

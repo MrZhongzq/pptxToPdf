@@ -30,7 +30,7 @@ def get_engine(name: str, *, session: Session | None = None) -> ConversionEngine
     传不传都无所谓。
     """
     cls = _ENGINES[name]
-    if cls is GraphEngine:
+    if issubclass(cls, GraphEngine):
         if session is None:
             raise ValueError(
                 "get_engine('graph', ...) 需要传入 session 才能加载凭证；"

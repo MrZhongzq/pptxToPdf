@@ -67,7 +67,11 @@ def _force_placeholder_engine(monkeypatch):
     真实转换在测试机上验证，见计划的完成判据。"""
     monkeypatch.setattr(
         "app.services.pipeline.select_engine",
-        lambda meta, size_bytes, requested=None: "placeholder",
+        # graph_configured= 是 Task 8 审查后新增的关键字参数（I1）：真实
+        # select_engine 现在要求调用方传它，pipeline.run_task 总是会传，
+        # 这个假替身必须照单全收，否则不是这里要测的东西也会被这个
+        # 签名不匹配的 TypeError 挡住。
+        lambda meta, size_bytes, requested=None, graph_configured=False: "placeholder",
     )
 
 

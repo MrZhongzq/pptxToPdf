@@ -24,8 +24,13 @@ class CreateUploadRequest(BaseModel):
     filename: str = Field(min_length=1, max_length=512)
     size: int = Field(ge=1)
     sha256: str | None = Field(default=None, pattern=r"^[0-9a-fA-F]{64}$")
-    engine: str | None = Field(default=None, max_length=32)
-    """用户指定的引擎；None 表示交给 select_engine 自动判定。"""
+    engine: str | None = Field(default=None, min_length=1, max_length=32)
+    """用户指定的引擎；None 表示交给 select_engine 自动判定。
+
+    min_length=1：`engine=""` 之前会被 pipeline 的 `if requested:` 当成
+    "没指定"而悄悄滑进 auto 分支——空字符串是客户端传参错误，不是"我没
+    意见"，应该在请求校验这一层就挡掉，而不是被空字符串的假值悄悄吞掉。
+    """
     options: ConversionOptions | None = None
 
 

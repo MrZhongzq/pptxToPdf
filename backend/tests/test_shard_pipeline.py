@@ -27,8 +27,10 @@ import app.services.pipeline as pipeline_module
 import app.services.retention as retention_module
 import app.services.shard_pipeline as shard_module
 from app.config import settings
-from app.errors import ConversionTimeout, ShardBudgetExceeded, ShardTooLarge
+from app.errors import ConversionTimeout, GraphNotConfigured, ShardBudgetExceeded, ShardTooLarge
 from app.models import Task, TaskShard
+from app.services.engine_router import select_engine as real_select_engine
+from app.services.graph_credentials import save_credentials
 from app.services.pipeline import compute_timeout_s
 from app.services.retention import reap_stale_tasks
 from app.services.shard_pipeline import (
@@ -41,6 +43,14 @@ from app.services.shard_pipeline import (
 MIB = 1024 * 1024
 
 DECK_SLIDES = 8
+
+# 审查轮之后（I2）：run_task 进分片分支前会真的查一次 Graph 是否配置
+# （is_graph_configured(session)），这行检查独立于 get_engine 有没有被
+# fake 掉——所以 wired_pipeline 系的测试即便全程用假引擎，也得先在凭证表
+# 里放一行能通过 load_credentials 的记录，否则会在 prepare_shards 之前
+# 就被新加的早退检查拦下。这里用固定的假 Fernet key，凭证内容本身没人
+# 校验，只要求解密成功。
+GRAPH_TEST_SECRET_KEY = "8I3F3CqPwlEsmMDLbEIVSXd8oXlmqkOMWFnDPbNXKvA="
 
 
 # ---------------------------------------------------------------- 素材构造
@@ -697,6 +707,28 @@ def _make_task(session, deck: Path, task_id: str = "T3") -> Task:
     return task
 
 
+def _make_fresh_task(
+    session, deck: Path, task_id: str, requested_engine: str | None
+) -> Task:
+    """跟 _make_task 不同：不预置 engine/slide_count，让 run_task 自己走
+    probe + select_engine 全流程决定——C1 的红线测试要验证的正是这条
+    "requested_engine 字段真的传到了 select_engine 的 requested= 形参"
+    的接线，预置好 engine 字段会绕过这条接线，测不出漏传的问题。"""
+    src = settings.originals_dir / f"{task_id}.pptx"
+    shutil.copyfile(deck, src)
+    task = Task(
+        task_id=task_id,
+        upload_id="U-fresh",
+        original_filename="deck.pptx",
+        size_bytes=src.stat().st_size,
+        requested_engine=requested_engine,
+        status="pending",
+    )
+    session.add(task)
+    session.commit()
+    return task
+
+
 def test_prepare_shards_creates_rows_and_files(session, storage, deck, monkeypatch):
     monkeypatch.setattr(settings, "graph_max_pages_per_shard", 2)
     task = _make_task(session, deck)
@@ -846,7 +878,22 @@ def wired_pipeline(session, storage, monkeypatch):
     monkeypatch.setattr(retention_module, "SessionLocal", lambda: session)
     monkeypatch.setattr(shard_module, "SessionLocal", lambda: session)
     monkeypatch.setattr(
-        pipeline_module, "select_engine", lambda meta, size_bytes, requested=None: "graph"
+        pipeline_module,
+        "select_engine",
+        lambda meta, size_bytes, requested=None, graph_configured=False: "graph",
+    )
+    # I2：run_task 进分片分支前会真的调 is_graph_configured(session)——这个
+    # 假 select_engine 不会替 run_task 挡住这一步，得让它在真实凭证表里
+    # 查到能通过的一行，否则这里所有测试都会在 prepare_shards 之前被新增
+    # 的早退检查拦下（见 GRAPH_TEST_SECRET_KEY 的说明）。
+    monkeypatch.setattr(settings, "secret_key", GRAPH_TEST_SECRET_KEY)
+    save_credentials(
+        session,
+        tenant_id="tid",
+        client_id="cid",
+        client_secret="secret",
+        site_id="site-1",
+        drive_path="staging",
     )
     enqueued: list[tuple[str, list[str]]] = []
     monkeypatch.setattr(
@@ -971,6 +1018,117 @@ def test_run_task_cleans_up_when_enqueue_fails(session, deck, wired_pipeline, mo
     assert session.query(TaskShard).filter(TaskShard.task_id == "T7").count() == 0
     assert task.shard_total is None
     assert not shard_dir("T7").exists()
+
+
+# --------------------------------------------- C1: requested_engine 必须真的传到 select_engine
+
+
+def test_run_task_requested_graph_wins_even_when_auto_would_pick_libreoffice(
+    session, deck, storage, monkeypatch
+):
+    """审查 Critical C1：`Task.requested_engine` 这个字段必须真的传到
+    `select_engine` 的 `requested=` 形参。此前全仓所有 run_task 测试都靠
+    `_force_placeholder_engine`/`wired_pipeline` 把 `select_engine` 整个换
+    成忽略 `requested` 的常量 lambda，`requested_engine` 从未在任何断言里
+    起过作用——如果 `pipeline.py` 里 `select_engine(meta, size_bytes,
+    requested=task.requested_engine, ...)` 那个 `requested=` 被删掉，
+    207 个测试一条不红。
+
+    这里刻意不 patch select_engine，让真实实现跑；只 fake get_engine
+    （避免真 HTTP/子进程）。deck 页数刻意设成超过自动路由阈值，让"如果
+    requested 被漏传"和"正确传了"这两种情况给出不同结果——这才是有区分力
+    的测试，不是恰好碰巧结果一样。
+    """
+    monkeypatch.setattr(pipeline_module, "SessionLocal", lambda: session)
+    monkeypatch.setattr(retention_module, "SessionLocal", lambda: session)
+    monkeypatch.setattr(shard_module, "SessionLocal", lambda: session)
+    # conftest 的 _force_placeholder_engine 是 autouse 的，会把 select_engine
+    # 整个换成忽略 requested 的常量 lambda——这里必须再 patch 回真实实现，
+    # 否则测的就不是 requested= 这条接线本身了。
+    monkeypatch.setattr(pipeline_module, "select_engine", real_select_engine)
+    # 8 页的 deck 超过这个阈值——如果 requested 被漏传，auto 分支会判定
+    # 页数超限，选出 libreoffice；正确传了的话，requested="graph" 直接
+    # 短路掉 auto 判定，结果是 graph。
+    monkeypatch.setattr(settings, "graph_max_pages_per_shard", 2)
+    monkeypatch.setattr(
+        pipeline_module,
+        "enqueue_shards",
+        lambda task_id, shard_ids: None,
+    )
+    _install_engine(monkeypatch, _FakeEngine(), target=pipeline_module)
+
+    _make_fresh_task(session, deck, task_id="TC1A", requested_engine="graph")
+
+    pipeline_module.run_task("TC1A")
+
+    task = session.get(Task, "TC1A")
+    assert task.engine == "graph"  # 没有被 auto 判定悄悄换成 libreoffice
+
+
+def test_run_task_requested_libreoffice_wins_even_when_auto_would_pick_graph(
+    session, deck, storage, monkeypatch
+):
+    """C1 的镜像场景：显式选 libreoffice，deck 又小又在阈值内、Graph 也
+    配置好了——auto 分支如果被误调用会选 graph，但 requested= 必须让它
+    连 auto 判定都不经过，直接短路成 libreoffice。"""
+    monkeypatch.setattr(pipeline_module, "SessionLocal", lambda: session)
+    monkeypatch.setattr(retention_module, "SessionLocal", lambda: session)
+    monkeypatch.setattr(shard_module, "SessionLocal", lambda: session)
+    monkeypatch.setattr(pipeline_module, "select_engine", real_select_engine)
+    monkeypatch.setattr(settings, "secret_key", GRAPH_TEST_SECRET_KEY)
+    save_credentials(
+        session,
+        tenant_id="tid",
+        client_id="cid",
+        client_secret="secret",
+        site_id="site-1",
+        drive_path="staging",
+    )
+    engine = _FakeEngine(pages=DECK_SLIDES)
+    asked = _install_engine(monkeypatch, engine, target=pipeline_module)
+
+    _make_fresh_task(session, deck, task_id="TC1B", requested_engine="libreoffice")
+
+    pipeline_module.run_task("TC1B")
+
+    task = session.get(Task, "TC1B")
+    assert task.engine == "libreoffice"
+    assert asked == ["libreoffice"]  # 真的用假引擎转了一次，不是断言个寂寞
+    assert task.status == "done"
+
+
+# --------------------------------------------- I2: 分片前的凭证早退检查
+
+
+def test_run_task_fails_before_splitting_when_graph_not_configured(
+    session, deck, storage, monkeypatch
+):
+    """审查 Important I2：凭证检查必须在切片之前做，不能等 prepare_shards
+    整轮切完（落盘 + commit TaskShard 行 + 入队）才在子 job 里第一次发现
+    没配置。用一个会在被调用时立刻失败的 `prepare_shards` 桩断言它压根
+    没被调用——如果早退检查被删掉或挪到 prepare_shards 之后，这里必须
+    变红。"""
+    monkeypatch.setattr(pipeline_module, "SessionLocal", lambda: session)
+    monkeypatch.setattr(retention_module, "SessionLocal", lambda: session)
+    monkeypatch.setattr(shard_module, "SessionLocal", lambda: session)
+    monkeypatch.setattr(pipeline_module, "select_engine", real_select_engine)
+    monkeypatch.setattr(settings, "graph_max_pages_per_shard", 2)  # 强制走分片分支
+    monkeypatch.setattr(settings, "secret_key", None)  # 未配置
+
+    def _prepare_shards_must_not_be_called(*a, **kw):
+        raise AssertionError("凭证未配置时不该切片——早退检查必须先失败")
+
+    monkeypatch.setattr(shard_module, "prepare_shards", _prepare_shards_must_not_be_called)
+
+    _make_fresh_task(session, deck, task_id="TC-I2", requested_engine="graph")
+
+    pipeline_module.run_task("TC-I2")
+
+    task = session.get(Task, "TC-I2")
+    assert task.status == "failed"
+    assert task.error_code == "GRAPH_NOT_CONFIGURED"
+    assert task.shard_total is None  # prepare_shards 真的没跑
+    assert not shard_dir("TC-I2").exists()
 
 
 def _shards(session, task_id: str) -> list[TaskShard]:
