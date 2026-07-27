@@ -4,6 +4,11 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+SHARDED_ENGINES: frozenset[str] = frozenset({"graph"})
+"""需要切片的引擎。下面这两个阈值是 Graph 的硬限制（100 页上限、45 秒同步
+窗口），LibreOffice 在本地跑没有这类约束，拿这套阈值去切它只会平白多出
+切片/合并两道出错面。"""
+
 
 def needs_sharding(slide_count: int, size_bytes: int) -> bool:
     """超过任一维度就需要切片。"""

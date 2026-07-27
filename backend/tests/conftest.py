@@ -30,6 +30,7 @@ def _isolate_app_db(tmp_path, monkeypatch):
     import app.services.engines.graph as graph_module
     import app.services.pipeline as pipeline_module
     import app.services.retention as retention_module
+    import app.services.shard_pipeline as shard_pipeline_module
 
     test_engine = create_engine(
         f"sqlite:///{tmp_path / 'isolated.db'}",
@@ -51,6 +52,10 @@ def _isolate_app_db(tmp_path, monkeypatch):
     # SessionLocal` 后自建 session 读凭证——同一类早绑定问题，不补的话任何
     # 直接调用 GraphEngine.convert 的测试都会静默连到开发者本机真实库。
     monkeypatch.setattr(graph_module, "SessionLocal", test_session_local)
+    # 三期的分片流水线同样在模块顶层 `from app.db import SessionLocal`——
+    # convert_shard / merge_shards 是 RQ 子 job 的入口，各自自开会话，
+    # 不补这一条它们会静默连到开发者本机真实库。
+    monkeypatch.setattr(shard_pipeline_module, "SessionLocal", test_session_local)
 
     yield
 
