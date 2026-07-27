@@ -125,7 +125,11 @@ def run_task(task_id: str) -> None:
                 return
 
             timeout_s = compute_timeout_s(meta.slide_count, size_bytes)
-            get_engine(task.engine).convert(src, meta, dest, timeout_s=timeout_s)
+            # session= 让 get_engine 在需要时（graph 引擎）就地读凭证并注入
+            # 构造函数——引擎本身不允许碰数据库，见 engines/base.py。
+            get_engine(task.engine, session=session).convert(
+                src, meta, dest, timeout_s=timeout_s
+            )
 
             task.output_path = str(dest.resolve())
             _set_status(session, task, "done")

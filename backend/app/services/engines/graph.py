@@ -9,7 +9,6 @@ import httpx
 from pypdf import PdfReader
 
 from app.config import settings
-from app.db import SessionLocal
 from app.errors import (
     AppError,
     ConversionFailed,
@@ -18,7 +17,7 @@ from app.errors import (
     EngineUnavailable,
 )
 from app.services.engines.base import ConversionEngine
-from app.services.graph_credentials import load_credentials
+from app.services.graph_credentials import GraphCredentialData
 from app.services.pptx_probe import PptxMeta
 
 logger = logging.getLogger(__name__)
@@ -183,13 +182,28 @@ class GraphEngine(ConversionEngine):
     预算耗尽提前放弃、清理路径）都能用不到 30 行的假 client 验证，见
     tests/test_graph_engine.py。四期拿到真实租户凭证后的验证计划见
     task-6-report.md。
+
+    凭证不再由这个类自己读：Task 8 把 `SessionLocal()` + `load_credentials()`
+    移到了 `app.services.engines.get_engine()`——那里持有调用方
+    （pipeline.run_task / shard_pipeline.convert_shard）传下来的 session，
+    读好凭证后经这里的构造函数注入。这个类因此完全不碰数据库，
+    base.py 里"引擎不得访问数据库"的约束才是真的。`credentials` 允许为
+    None 只是为了让 `_request_with_retry` / `_access_token` 这类不涉及
+    凭证的纯控制流测试能继续 `GraphEngine()` 免参构造；真正调用 `convert()`
+    时如果没有注入凭证，视为调用方接线错误，直接报 RuntimeError（不是
+    GraphNotConfigured——那是"用户没配置"，这里是"程序员忘了注入"，两码事）。
     """
 
     name = "graph"
 
-    def __init__(self) -> None:
+    def __init__(self, credentials: GraphCredentialData | None = None) -> None:
+        self._credentials = credentials
         self._token: str | None = None
         self._token_expires_at: float = 0.0
+
+    @property
+    def credentials(self) -> GraphCredentialData | None:
+        return self._credentials
 
     # ---- 认证 ----
 
@@ -412,11 +426,16 @@ class GraphEngine(ConversionEngine):
     def convert(
         self, src: Path, meta: PptxMeta, dest: Path, *, timeout_s: float
     ) -> None:
-        session = SessionLocal()
-        try:
-            creds = load_credentials(session)
-        finally:
-            session.close()
+        if self._credentials is None:
+            # 正常路径下不可能走到这——get_engine() 总是先注入凭证再返回
+            # 实例。走到这里说明有人绕过 get_engine 直接构造了 GraphEngine
+            # 又忘了注入，是接线错误而不是"用户没配置"，报 RuntimeError
+            # 而不是 GraphNotConfigured，避免和真实的未配置场景混淆。
+            raise RuntimeError(
+                "GraphEngine 在没有注入 credentials 的情况下被调用了 convert()："
+                "调用方必须先用 get_engine('graph', session=...) 构造实例"
+            )
+        creds = self._credentials
 
         dest.parent.mkdir(parents=True, exist_ok=True)
         started = time.monotonic()

@@ -27,7 +27,6 @@ def _isolate_app_db(tmp_path, monkeypatch):
     总能赶在任何测试代码触碰 engine 之前生效。
     """
     import app.db as db_module
-    import app.services.engines.graph as graph_module
     import app.services.pipeline as pipeline_module
     import app.services.retention as retention_module
     import app.services.shard_pipeline as shard_pipeline_module
@@ -48,10 +47,9 @@ def _isolate_app_db(tmp_path, monkeypatch):
     # 顶层 `from app.db import SessionLocal`，同一个理由：只 patch
     # db_module.SessionLocal 改不到这份早绑定的引用，得单独同步。
     monkeypatch.setattr(retention_module, "SessionLocal", test_session_local)
-    # GraphEngine.convert 三期起同样在模块顶层 `from app.db import
-    # SessionLocal` 后自建 session 读凭证——同一类早绑定问题，不补的话任何
-    # 直接调用 GraphEngine.convert 的测试都会静默连到开发者本机真实库。
-    monkeypatch.setattr(graph_module, "SessionLocal", test_session_local)
+    # GraphEngine 不再需要在这里补丁：Task 8 把它的凭证读取移到了
+    # engines/get_engine()，GraphEngine 本身已经完全不碰 SessionLocal
+    # （模块里已经没有这个名字，补丁会直接 AttributeError）。
     # 三期的分片流水线同样在模块顶层 `from app.db import SessionLocal`——
     # convert_shard / merge_shards 是 RQ 子 job 的入口，各自自开会话，
     # 不补这一条它们会静默连到开发者本机真实库。

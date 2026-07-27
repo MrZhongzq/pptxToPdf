@@ -38,7 +38,6 @@ from app.errors import (
     ConversionPageMismatch,
     ConversionTimeout,
     EngineUnavailable,
-    GraphNotConfigured,
 )
 from app.services.engines.graph import (
     GRAPH_ROOT,
@@ -57,6 +56,7 @@ from app.services.engines.graph import (
     _verify_pdf_output,
     _wrap_transport_errors,
 )
+from app.services.graph_credentials import GraphCredentialData
 from app.services.pptx_probe import PptxMeta
 
 
@@ -190,30 +190,19 @@ class _FakeGraphClient:
 
 
 @pytest.fixture
-def graph_credentials_ready(monkeypatch):
-    """让 convert() 能顺利过 load_credentials 这一关，走到真正编排 HTTP
-    请求的代码——凭证内容是假的，_FakeGraphClient 不校验它，只是要让
-    流程不在 GraphNotConfigured 就打住。"""
-    import app.db as db_module
-    from app.db import Base
-    from app.services.graph_credentials import save_credentials
-
-    monkeypatch.setattr(
-        settings, "secret_key", "8I3F3CqPwlEsmMDLbEIVSXd8oXlmqkOMWFnDPbNXKvA="
+def graph_credentials() -> GraphCredentialData:
+    """Task 8 把凭证加载移出了 convert()：GraphEngine 现在直接从构造函数
+    接收已经读好的凭证，convert() 级别的测试不再需要搭一套 DB
+    （create_all + save_credentials）才能让流程走到 HTTP 编排那一段——
+    凭证内容本来就是假的，_FakeGraphClient 也不校验它，直接构造
+    GraphCredentialData 就够。"""
+    return GraphCredentialData(
+        tenant_id="tid",
+        client_id="cid",
+        client_secret="secret",
+        site_id="site-1",
+        drive_path="staging",
     )
-    Base.metadata.create_all(db_module.engine)
-    session = db_module.SessionLocal()
-    try:
-        save_credentials(
-            session,
-            tenant_id="tid",
-            client_id="cid",
-            client_secret="secret",
-            site_id="site-1",
-            drive_path="staging",
-        )
-    finally:
-        session.close()
 
 
 def _patch_client(monkeypatch, fake_client) -> None:
@@ -728,60 +717,22 @@ def test_cancel_upload_session_swallows_transport_errors():
 
 
 # ---- convert() 在凭证缺失时的行为：不碰 HTTP 就能验证 ----
+#
+# "用户没配置 Graph 凭证" 这条路径（GraphNotConfigured）已经不再是
+# GraphEngine.convert() 的责任——Task 8 把凭证加载移到了
+# app.services.engines.get_engine()，那里的 load_credentials(session)
+# 才是真正判定"配没配置"的地方，覆盖见 tests/test_engines_registry.py
+# 和 tests/test_graph_credentials.py。这里只需要守住 GraphEngine 自己的
+# 那一半契约：如果调用方绕开 get_engine 直接构造实例又忘了注入凭证，
+# 必须是一个说得清楚原因的错误，不是访问 None.tenant_id 时的 AttributeError。
 
 
-def test_convert_raises_graph_not_configured_without_touching_http(
-    tmp_path, monkeypatch
-):
-    """没配置凭证时，convert 必须在建 httpx.Client 之前就因
-    load_credentials 抛 GraphNotConfigured——这条路径完全不涉及网络，
-    可以在没有 Azure 账号的机器上跑。"""
-    monkeypatch.setattr(settings, "secret_key", None)
-
-    engine = GraphEngine()
-    with pytest.raises(GraphNotConfigured):
-        engine.convert(
-            tmp_path / "deck.pptx",
-            _meta(1),
-            tmp_path / "out.pdf",
-            timeout_s=50,
-        )
-
-
-def test_graph_module_session_local_is_patched_by_conftest():
-    """M1：本测试不做任何自己的 SessionLocal monkeypatch，直接断言
-    conftest 的 autouse 隔离 fixture 已经把 graph 模块的 SessionLocal
-    重定向了。上一版没有这条测试——`test_convert_raises_graph_not_configured_
-    when_no_row_saved` 自己又 monkeypatch 了一次，把 conftest 的 patch 覆盖
-    掉，审查员删掉 conftest 那一行、131 个测试仍然全绿。这条测试就是补上的
-    那道防线：conftest 的 patch 不生效时，这里必须失败。"""
-    import app.db as db_module
-
-    assert graph_module.SessionLocal is db_module.SessionLocal
-
-
-def test_convert_raises_graph_not_configured_when_no_row_saved(tmp_path, monkeypatch):
-    """密钥配好了，但管理页面还没填过凭证行——同样要在碰 HTTP 之前失败。
-    这条路径比上一条更深：secret_key 检查会过，得真的查一次
-    GraphCredential 表才会发现没有行。
-
-    不再自己 monkeypatch graph_module.SessionLocal——那样做会把 conftest
-    的隔离 patch 覆盖掉，让这条测试即使 conftest 的 patch 被删掉也照样
-    通过（审查员的变异测试证实了这一点）。这里改成直接在 conftest 已经
-    指向的隔离引擎（db_module.engine）上建表，真正依赖 conftest 的 patch
-    ——patch 被删掉的话，graph_module.SessionLocal 会指回未建表的生产
-    engine，这里会变成 `OperationalError: no such table` 而不是
-    GraphNotConfigured，测试就会失败。"""
-    import app.db as db_module
-    from app.db import Base
-
-    monkeypatch.setattr(
-        settings, "secret_key", "8I3F3CqPwlEsmMDLbEIVSXd8oXlmqkOMWFnDPbNXKvA="
-    )
-    Base.metadata.create_all(db_module.engine)
-
-    engine = GraphEngine()
-    with pytest.raises(GraphNotConfigured):
+def test_convert_raises_clear_error_when_constructed_without_credentials(tmp_path):
+    """正常路径下这走不到——get_engine() 总是先注入凭证再返回实例。
+    这里测的是"万一被绕过"：必须是可读的 RuntimeError，而不是
+    None.tenant_id 这种远离真实原因的 AttributeError。"""
+    engine = GraphEngine()  # 没有注入凭证
+    with pytest.raises(RuntimeError, match="credentials"):
         engine.convert(
             tmp_path / "deck.pptx",
             _meta(1),
@@ -794,7 +745,7 @@ def test_convert_raises_graph_not_configured_when_no_row_saved(tmp_path, monkeyp
 
 
 def test_convert_wires_output_verification_rejects_html_as_pdf(
-    tmp_path, monkeypatch, graph_credentials_ready, sleep_calls
+    tmp_path, monkeypatch, graph_credentials, sleep_calls
 ):
     """C1 的接线守护：如果 convert() 里 `_verify_pdf_output(dest, meta,
     src)` 这行调用被删掉，Graph 返回的 HTML（302 落到登录页时的典型
@@ -809,12 +760,12 @@ def test_convert_wires_output_verification_rejects_html_as_pdf(
     dest = tmp_path / "out.pdf"
 
     with pytest.raises(ConversionFailed):
-        GraphEngine().convert(src, _meta(1), dest, timeout_s=50)
+        GraphEngine(graph_credentials).convert(src, _meta(1), dest, timeout_s=50)
     assert not dest.exists()
 
 
 def test_convert_wires_output_verification_rejects_page_count_mismatch(
-    tmp_path, monkeypatch, graph_credentials_ready, sleep_calls
+    tmp_path, monkeypatch, graph_credentials, sleep_calls
 ):
     """同上，另一种故障形状：返回的是真 PDF，但页数比 meta.slide_count
     少（Graph 逼近 100 页硬上限时的典型截断）。"""
@@ -826,12 +777,12 @@ def test_convert_wires_output_verification_rejects_page_count_mismatch(
     dest = tmp_path / "out.pdf"
 
     with pytest.raises(ConversionPageMismatch):
-        GraphEngine().convert(src, _meta(5), dest, timeout_s=50)
+        GraphEngine(graph_credentials).convert(src, _meta(5), dest, timeout_s=50)
     assert not dest.exists()
 
 
 def test_convert_wires_cancel_upload_session_when_a_chunk_fails_midway(
-    tmp_path, monkeypatch, graph_credentials_ready, sleep_calls
+    tmp_path, monkeypatch, graph_credentials, sleep_calls
 ):
     """C2 的接线守护：如果 convert() 的 finally 里
     `elif upload_url: self._cancel_upload_session(...)` 被删掉，这里
@@ -848,7 +799,7 @@ def test_convert_wires_cancel_upload_session_when_a_chunk_fails_midway(
     dest = tmp_path / "out.pdf"
 
     with pytest.raises(ConversionFailed):
-        GraphEngine().convert(src, _meta(1), dest, timeout_s=50)
+        GraphEngine(graph_credentials).convert(src, _meta(1), dest, timeout_s=50)
 
     delete_calls = [url for method, url, _ in fake.calls if method == "DELETE"]
     assert any("PREAUTH-SECRET" in url for url in delete_calls), (
@@ -857,7 +808,7 @@ def test_convert_wires_cancel_upload_session_when_a_chunk_fails_midway(
 
 
 def test_convert_treats_timeout_s_as_wall_clock_budget(
-    tmp_path, monkeypatch, graph_credentials_ready, sleep_calls
+    tmp_path, monkeypatch, graph_credentials, sleep_calls
 ):
     """I1/I2 的接线守护：如果 convert() 里 `deadline = started +
     timeout_s` 被改回"退回无预算"（比如 `started + 1e9`），这里必须
@@ -876,7 +827,7 @@ def test_convert_treats_timeout_s_as_wall_clock_budget(
 
     started = time.monotonic()
     with pytest.raises(ConversionTimeout):
-        GraphEngine().convert(src, _meta(1), dest, timeout_s=3)
+        GraphEngine(graph_credentials).convert(src, _meta(1), dest, timeout_s=3)
     elapsed = time.monotonic() - started
 
     assert elapsed < 1.0, f"耗时 {elapsed:.2f}s——预算该在毫秒级内放弃，不是睡到快超时"
@@ -884,7 +835,7 @@ def test_convert_treats_timeout_s_as_wall_clock_budget(
 
 
 def test_convert_wires_cleanup_of_transit_file_on_success(
-    tmp_path, monkeypatch, graph_credentials_ready, sleep_calls
+    tmp_path, monkeypatch, graph_credentials, sleep_calls
 ):
     """如果 convert() 的 finally 里 `self._cleanup(...)` 调用被删掉，
     成功路径上传到 SharePoint 中转库的 pptx 会永远留在共享站点里——
@@ -896,7 +847,7 @@ def test_convert_wires_cleanup_of_transit_file_on_success(
     src.write_bytes(b"pptx bytes")
     dest = tmp_path / "out.pdf"
 
-    GraphEngine().convert(src, _meta(1), dest, timeout_s=50)
+    GraphEngine(graph_credentials).convert(src, _meta(1), dest, timeout_s=50)
 
     assert dest.exists()
     cleanup_calls = [

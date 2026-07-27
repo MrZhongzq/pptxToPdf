@@ -265,8 +265,12 @@ def convert_shard(shard_id: str) -> None:
             # 退避重试会因为预算不足而一次都不重试。
             timeout_s = compute_timeout_s(meta.slide_count, src.stat().st_size)
             # 用 Task.engine，不做任何回退——用户显式选了 Graph 而条件不满足
-            # 时必须明确报错，绝不能偷偷改用别的引擎。
-            get_engine(task.engine).convert(src, meta, dest, timeout_s=timeout_s)
+            # 时必须明确报错，绝不能偷偷改用别的引擎。session= 让 get_engine
+            # 在需要时（graph 引擎）就地读凭证并注入构造函数，引擎本身不碰
+            # 数据库，见 engines/base.py。
+            get_engine(task.engine, session=session).convert(
+                src, meta, dest, timeout_s=timeout_s
+            )
             shard.output_path = str(dest.resolve())
             shard.status = "done"
             session.commit()

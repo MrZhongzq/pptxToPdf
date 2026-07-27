@@ -8,8 +8,9 @@ EMU_PER_POINT = 12700
 
 class ConversionEngine(ABC):
     """转换引擎抽象。不得访问数据库——凭证应由上层读好注入，引擎自己开
-    DB 会话是已知的设计问题（Graph 引擎目前违反了这条，记在 ledger 里
-    交给 Task 8 收敛，见 graph.py 的说明，这里不提前动它）。
+    DB 会话是已知的设计问题（Graph 引擎曾经违反过这条：Task 8 把
+    `SessionLocal()` + `load_credentials()` 移到了 `get_engine()`，
+    GraphEngine 现在经构造函数接收已经读好的凭证，见 graph.py 的说明）。
 
     "不得认识 HTTP" 这条已经不成立：Graph 引擎本质是调远程转换服务，
     必然要说 HTTP，就像 LibreOffice 引擎必然要说 subprocess 一样——

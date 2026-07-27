@@ -156,10 +156,15 @@ class _FakeEngine:
 
 def _install_engine(monkeypatch, engine: _FakeEngine, target=shard_module) -> list[str]:
     """接管 get_engine，并把请求过的引擎名记下来——"有没有偷偷换引擎"
-    是本期的红线，必须可断言。"""
+    是本期的红线，必须可断言。
+
+    `**_kwargs` 吞掉 `session=`：真实 get_engine 现在需要 session 才能给
+    graph 引擎注入凭证（Task 8），但这里假引擎完全绕过了凭证加载这条路径，
+    调用方仍然会传 session= 过来，必须接住而不是 TypeError。
+    """
     asked: list[str] = []
 
-    def _fake_get_engine(name: str):
+    def _fake_get_engine(name: str, **_kwargs):
         asked.append(name)
         return engine
 
@@ -644,6 +649,33 @@ def test_convert_shard_ignores_missing_shard(use_test_session):
     convert_shard("nope")  # 不许抛
 
 
+def test_convert_shard_fails_loudly_when_graph_not_configured(
+    session, one_shard, use_test_session, monkeypatch
+):
+    """红线覆盖分片路径：每个分片是独立 RQ job，各自调用 get_engine("graph",
+    session=...)，凭证检查必须在每个分片里都生效，不能只在非分片路径测过。
+
+    刻意不用 _install_engine——要走真实的 get_engine，验证 convert_shard
+    里 `session=session` 这个接线真的传下去了。额外 patch httpx.Client 到
+    会炸的桩，证明没有任何 HTTP 请求被发出。"""
+    import app.services.engines.graph as graph_module
+
+    monkeypatch.setattr(settings, "secret_key", None)  # 未配置
+
+    def _boom(*a, **kw):
+        raise AssertionError("不该发出任何 HTTP 请求——凭证检查必须先失败")
+
+    monkeypatch.setattr(graph_module.httpx, "Client", _boom)
+
+    convert_shard("SA")
+
+    shard = session.get(TaskShard, "SA")
+    assert shard.status == "failed"
+    assert shard.error_code == "GRAPH_NOT_CONFIGURED"
+    # 分片失败不许连带把主任务标终态——那是汇总 job 的职责
+    assert session.get(Task, "T2").status == "converting"
+
+
 # ---------------------------------------------------------------- prepare_shards
 
 
@@ -881,6 +913,41 @@ def test_run_task_fails_loudly_instead_of_falling_back(
     assert task.engine == "graph"  # 引擎没有被悄悄换掉
     assert engine.calls == []
     assert asked == []
+    assert wired_pipeline == []
+
+
+def test_run_task_fails_loudly_when_graph_not_configured(
+    session, deck, wired_pipeline, monkeypatch
+):
+    """项目红线：用户显式选了 Graph，但 Azure 凭证根本没配置——必须明确
+    报错，绝不能悄悄换成 LibreOffice 或占位引擎。
+
+    刻意不用 _install_engine：这条测试要走真实的 get_engine("graph",
+    session=...) 路径，验证 Task 8 从 GraphEngine.convert() 移出来的
+    load_credentials 调用真的在 run_task 里被触发了，而不是只在
+    test_engines_registry.py 里单独测过、run_task 那行接线却被删掉也没人
+    发现。额外 patch httpx.Client 到会炸的桩，证明这条路径连 HTTP 都没碰到
+    就已经失败——不是"发了请求、认证失败"，是根本没准备好就报错。
+    """
+    import app.services.engines.graph as graph_module
+
+    monkeypatch.setattr(settings, "graph_max_pages_per_shard", 100)
+    monkeypatch.setattr(settings, "graph_max_shard_bytes", 500 * 1024 * 1024)
+    monkeypatch.setattr(settings, "secret_key", None)  # 未配置
+
+    def _boom(*a, **kw):
+        raise AssertionError("不该发出任何 HTTP 请求——凭证检查必须先失败")
+
+    monkeypatch.setattr(graph_module.httpx, "Client", _boom)
+
+    task = _make_task(session, deck, task_id="T9")
+
+    pipeline_module.run_task("T9")
+
+    task = session.get(Task, "T9")
+    assert task.status == "failed"
+    assert task.error_code == "GRAPH_NOT_CONFIGURED"
+    assert task.engine == "graph"  # 引擎没有被悄悄换掉
     assert wired_pipeline == []
 
 
