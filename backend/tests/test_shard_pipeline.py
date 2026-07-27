@@ -600,3 +600,139 @@ def test_prepare_shards_rejects_when_resplit_exceeds_shard_cap(
 
     assert session.query(TaskShard).filter(TaskShard.task_id == "T3").count() == 0
     assert not shard_dir("T3").exists()
+
+
+# ---------------------------------------------------------------- run_task 接线
+
+
+@pytest.fixture
+def wired_pipeline(session, storage, monkeypatch):
+    """把 run_task 需要的三个外部依赖接到测试会话上，再把入队换成记录器。"""
+    monkeypatch.setattr(pipeline_module, "SessionLocal", lambda: session)
+    monkeypatch.setattr(retention_module, "SessionLocal", lambda: session)
+    monkeypatch.setattr(shard_module, "SessionLocal", lambda: session)
+    monkeypatch.setattr(
+        pipeline_module, "select_engine", lambda meta, size_bytes, requested=None: "graph"
+    )
+    enqueued: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        pipeline_module,
+        "enqueue_shards",
+        lambda task_id, shard_ids: enqueued.append((task_id, list(shard_ids))),
+    )
+    return enqueued
+
+
+def test_run_task_routes_to_sharded_path(session, deck, wired_pipeline, monkeypatch):
+    """接线断言：删掉 run_task 里的 prepare_shards 调用，行不会建；
+    删掉 enqueue_shards 调用，记录器是空的。两者任一都会让本测试变红。"""
+    monkeypatch.setattr(settings, "graph_max_pages_per_shard", 2)
+    task = _make_task(session, deck, task_id="T4")
+    engine = _FakeEngine()
+    asked = _install_engine(monkeypatch, engine, target=pipeline_module)
+
+    pipeline_module.run_task("T4")
+
+    assert task.shard_total == 4
+    assert session.query(TaskShard).filter(TaskShard.task_id == "T4").count() == 4
+    assert wired_pipeline == [("T4", [s.shard_id for s in _shards(session, "T4")])]
+    # 分片路径不走单次转换
+    assert engine.calls == []
+    assert asked == []
+    # 任务留在 converting，等汇总 job 落终态
+    assert session.get(Task, "T4").status == "converting"
+
+
+def test_run_task_keeps_single_conversion_when_not_sharding(
+    session, deck, wired_pipeline, monkeypatch
+):
+    monkeypatch.setattr(settings, "graph_max_pages_per_shard", 100)
+    monkeypatch.setattr(settings, "graph_max_shard_bytes", 500 * 1024 * 1024)
+    task = _make_task(session, deck, task_id="T5")
+    engine = _FakeEngine(pages=DECK_SLIDES)
+    _install_engine(monkeypatch, engine, target=pipeline_module)
+
+    pipeline_module.run_task("T5")
+
+    assert wired_pipeline == []
+    assert task.shard_total is None
+    assert len(engine.calls) == 1
+    assert session.get(Task, "T5").status == "done"
+
+
+def test_run_task_fails_loudly_instead_of_falling_back(
+    session, deck, wired_pipeline, monkeypatch
+):
+    """用户显式选了 Graph 而条件不满足时必须明确报错，
+    绝不能偷偷改用 LibreOffice。"""
+    monkeypatch.setattr(settings, "graph_max_pages_per_shard", DECK_SLIDES)
+    monkeypatch.setattr(settings, "graph_max_shard_bytes", 1)
+    task = _make_task(session, deck, task_id="T6")
+    engine = _FakeEngine()
+    asked = _install_engine(monkeypatch, engine, target=pipeline_module)
+
+    pipeline_module.run_task("T6")
+
+    task = session.get(Task, "T6")
+    assert task.status == "failed"
+    assert task.error_code == "SHARD_TOO_LARGE"
+    assert task.engine == "graph"  # 引擎没有被悄悄换掉
+    assert engine.calls == []
+    assert asked == []
+    assert wired_pipeline == []
+
+
+def _shards(session, task_id: str) -> list[TaskShard]:
+    return (
+        session.query(TaskShard)
+        .filter(TaskShard.task_id == task_id)
+        .order_by(TaskShard.index)
+        .all()
+    )
+
+
+# ---------------------------------------------------------------- 队列接线
+
+
+def test_enqueue_shards_uses_dependency_with_allow_failure(monkeypatch):
+    """allow_failure=True 是必须的：默认的 False 会让任一分片失败时汇总 job
+    永远停在 DeferredJobRegistry 里不执行，任务卡死在 converting。"""
+    from unittest.mock import Mock
+
+    from rq.job import Dependency, Job
+
+    import app.queue as queue_module
+    from app.services.shard_pipeline import convert_shard as cs
+    from app.services.shard_pipeline import merge_shards as ms
+
+    class _FakeQueue:
+        """只记录 enqueue 调用，不碰 Redis。返回真 Job 实例——Dependency
+        会拒绝非 Job/str 的对象，用假对象测不到真实约束。"""
+
+        def __init__(self) -> None:
+            self.calls: list[tuple] = []
+
+        def enqueue(self, func, *args, **kwargs):
+            job = Job(id=f"job-{len(self.calls)}", connection=Mock())
+            self.calls.append((func, args, kwargs, job))
+            return job
+
+    q = _FakeQueue()
+    monkeypatch.setattr(queue_module, "get_queue", lambda: q)
+
+    queue_module.enqueue_shards("T9", ["a", "b", "c"])
+
+    assert len(q.calls) == 4
+    for i, sid in enumerate(["a", "b", "c"]):
+        func, args, kwargs, _job = q.calls[i]
+        assert func is cs
+        assert args == (sid,)
+        assert kwargs["job_timeout"] > 0
+
+    func, args, kwargs, _job = q.calls[3]
+    assert func is ms
+    assert args == ("T9",)
+    dep = kwargs["depends_on"]
+    assert isinstance(dep, Dependency)
+    assert dep.allow_failure is True
+    assert dep.dependencies == [c[3] for c in q.calls[:3]]

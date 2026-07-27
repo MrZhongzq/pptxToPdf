@@ -6,10 +6,12 @@ from app.config import settings
 from app.db import SessionLocal
 from app.errors import AppError
 from app.models import Task
+from app.queue import enqueue_shards
 from app.services.engine_router import select_engine
 from app.services.engines import get_engine
 from app.services.pptx_probe import probe
 from app.services.retention import drop_original, purge_expired_outputs, reap_stale_tasks
+from app.services.shard_planner import SHARDED_ENGINES, needs_sharding
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +97,24 @@ def run_task(task_id: str) -> None:
 
             _set_status(session, task, "queued")
             _set_status(session, task, "converting")
+
+            if task.engine in SHARDED_ENGINES and needs_sharding(
+                meta.slide_count, size_bytes
+            ):
+                # 分片路径：本 job 到此为止，终态由汇总 job 落。切不动时
+                # prepare_shards 抛 ShardTooLarge / ShardBudgetExceeded，
+                # 走下面的 AppError 分支明确失败——绝不静默改用别的引擎。
+                # import 放在函数里打断 pipeline ←→ shard_pipeline 的环
+                # （shard_pipeline 顶层要用本模块的 compute_timeout_s）。
+                from app.services.shard_pipeline import prepare_shards
+
+                shard_ids = prepare_shards(session, task, src, size_bytes)
+                enqueue_shards(task_id, shard_ids)
+                logger.info(
+                    "task sharded id=%s shards=%d，转换与合并交给子 job",
+                    task_id, len(shard_ids),
+                )
+                return
 
             timeout_s = compute_timeout_s(meta.slide_count, size_bytes)
             get_engine(task.engine).convert(src, meta, dest, timeout_s=timeout_s)
