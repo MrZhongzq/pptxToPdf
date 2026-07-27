@@ -13,8 +13,18 @@ client 作为参数接收，用一个不到 30 行、纯 Python、不联网的�
 真实响应行为的部分（token 端点的真实返回结构、uploadUrl 的真实格式、
 `?format=pdf` 的真实 302/403 行为）仍然留到四期用真实租户验证，见
 task-6-report.md。
+
+第二轮复审又把边界往上推了一层：光测被拆出来的子函数不够，`convert()`
+自己有没有真的调用它们（把校验结果用上、把 upload_url 存住、把清理
+挂在 finally 里）是另一层风险——一行接线被删掉，子函数的测试全绿也发现
+不了。`_FakeGraphClient` 就是为此加的：撑起 token/createUploadSession/
+分片 PUT/内容 GET/两种清理调用的完整出站记录，配合 monkeypatch
+`httpx.Client` 本身，让 `GraphEngine.convert()` 完整跑一遍而不碰真实
+网络或 Azure 凭证（凭证是假的，`load_credentials` 只要求解密成功，
+不要求内容有效）。
 """
 import time
+from io import BytesIO
 from urllib.parse import quote
 
 import httpx
@@ -67,6 +77,18 @@ def _write_pdf(path, pages: int) -> None:
     c.save()
 
 
+def _pdf_bytes(pages: int) -> bytes:
+    """跟 _write_pdf 一样，但直接产出字节——用来当 _FakeGraphClient 的
+    content GET 响应体，不需要真的落盘。"""
+    buf = BytesIO()
+    c = canvas.Canvas(buf, pagesize=(200, 200))
+    for _ in range(pages):
+        c.drawString(10, 10, "x")
+        c.showPage()
+    c.save()
+    return buf.getvalue()
+
+
 def _meta(slide_count: int) -> PptxMeta:
     return PptxMeta(
         slide_count=slide_count, slide_width_emu=9144000, slide_height_emu=6858000, fonts=()
@@ -94,6 +116,108 @@ class _FakeClient:
         if self._delete_error is not None:
             raise self._delete_error
         return self._delete_result
+
+
+class _FakeGraphClient:
+    """`convert()` 级别的假 client：撑起 token / createUploadSession /
+    分片 PUT / 内容 GET / 两种清理调用（permanentDelete + 降级 DELETE +
+    取消上传会话的 DELETE {uploadUrl}）的完整出站记录，用 URL/方法路由到
+    预先配置好的响应。不联网、不认识真实 Graph 语义，只用来验证
+    `convert()` 自己有没有真的调用到已经测过的那些子函数——上一轮只测了
+    子函数本身，`convert()` 这层接线（有没有调用 _verify_pdf_output、
+    有没有把 upload_url 存住、有没有把 deadline 传下去、有没有在
+    finally 里挂清理）完全没有回归守护，这个假 client 就是补这道守护
+    用的。跟 monkeypatch `httpx.Client` 本身配合，让 convert() 完整跑
+    一遍。"""
+
+    def __init__(
+        self,
+        *,
+        token_response=None,
+        create_session_response=None,
+        chunk_responses=None,
+        content_response=None,
+        cleanup_response=None,
+        cleanup_fallback_response=None,
+        cancel_response=None,
+    ):
+        self.calls: list[tuple[str, str, dict]] = []
+        self.token_response = token_response or _resp(
+            200, body=b'{"access_token": "tok", "expires_in": 3600}'
+        )
+        self.create_session_response = create_session_response or _resp(
+            201, body=b'{"uploadUrl": "https://upload.example/PREAUTH-SECRET"}'
+        )
+        self.chunk_responses = list(
+            chunk_responses
+            if chunk_responses is not None
+            else [_resp(201, body=b'{"id": "item-1"}')]
+        )
+        self.content_response = content_response or _resp(200, body=_pdf_bytes(1))
+        self.cleanup_response = cleanup_response or _resp(204)
+        self.cleanup_fallback_response = cleanup_fallback_response or _resp(204)
+        self.cancel_response = cancel_response or _resp(204)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def post(self, url, **kwargs):
+        self.calls.append(("POST", url, kwargs))
+        if url.endswith("/oauth2/v2.0/token"):
+            return self.token_response
+        if url.endswith("/permanentDelete"):
+            return self.cleanup_response
+        raise AssertionError(f"_FakeGraphClient: 没配置的 POST {url}")
+
+    def request(self, method, url, **kwargs):
+        self.calls.append((method, url, kwargs))
+        if method == "POST" and url.endswith(":/createUploadSession"):
+            return self.create_session_response
+        if method == "PUT":
+            return self.chunk_responses.pop(0)
+        if method == "GET" and "format=pdf" in url:
+            return self.content_response
+        raise AssertionError(f"_FakeGraphClient: 没配置的 {method} {url}")
+
+    def delete(self, url, **kwargs):
+        self.calls.append(("DELETE", url, kwargs))
+        if "PREAUTH-SECRET" in url:
+            return self.cancel_response
+        return self.cleanup_fallback_response
+
+
+@pytest.fixture
+def graph_credentials_ready(monkeypatch):
+    """让 convert() 能顺利过 load_credentials 这一关，走到真正编排 HTTP
+    请求的代码——凭证内容是假的，_FakeGraphClient 不校验它，只是要让
+    流程不在 GraphNotConfigured 就打住。"""
+    import app.db as db_module
+    from app.db import Base
+    from app.services.graph_credentials import save_credentials
+
+    monkeypatch.setattr(
+        settings, "secret_key", "8I3F3CqPwlEsmMDLbEIVSXd8oXlmqkOMWFnDPbNXKvA="
+    )
+    Base.metadata.create_all(db_module.engine)
+    session = db_module.SessionLocal()
+    try:
+        save_credentials(
+            session,
+            tenant_id="tid",
+            client_id="cid",
+            client_secret="secret",
+            site_id="site-1",
+            drive_path="staging",
+        )
+    finally:
+        session.close()
+
+
+def _patch_client(monkeypatch, fake_client) -> None:
+    monkeypatch.setattr(graph_module.httpx, "Client", lambda *a, **kw: fake_client)
 
 
 def _clock(*values):
@@ -269,17 +393,21 @@ def test_request_with_retry_gives_up_before_sleep_when_budget_runs_out_mid_loop(
     assert sleep_calls == []
 
 
-def test_request_with_retry_caps_retry_after_wait_to_remaining_budget(
+def test_request_with_retry_gives_up_without_sleeping_when_wait_exceeds_remaining_budget(
     monkeypatch, sleep_calls
 ):
-    # SharePoint 限流常见 Retry-After 60~300 秒；不能无条件采信，上限取
-    # 剩余预算。这里剩余预算 5 秒，Retry-After 说 600 秒，应该只睡 5 秒。
+    # 本轮修的一行 bug：wait >= remaining 时不该先把剩余预算睡光再放弃
+    # ——那一觉必然无用（睡完预算肯定是 0，接下来必然放弃）。切片场景下
+    # 12 个分片各占一个 worker 空睡几百秒是可观的运力损失。这里剩余预算
+    # 5 秒，Retry-After 说 600 秒，正确行为是不睡、直接放弃，不是睡 5 秒
+    # 再重试（那是上一轮的旧行为，已被这次审查判定为浪费）。
     monkeypatch.setattr(settings, "graph_max_retries", 3)
     monkeypatch.setattr(graph_module.time, "monotonic", _clock(0.0))
-    client = _FakeClient([_resp(429, headers={"Retry-After": "600"}), _resp(200)])
-    resp = GraphEngine()._request_with_retry(client, "GET", "https://x", deadline=5.0)
-    assert resp.status_code == 200
-    assert sleep_calls == [5.0]
+    client = _FakeClient([_resp(429, headers={"Retry-After": "600"})])
+    with pytest.raises(ConversionTimeout):
+        GraphEngine()._request_with_retry(client, "GET", "https://x", deadline=5.0)
+    assert len(client.calls) == 1
+    assert sleep_calls == []
 
 
 def test_request_with_retry_wraps_transport_error_as_engine_unavailable(sleep_calls):
@@ -660,3 +788,120 @@ def test_convert_raises_graph_not_configured_when_no_row_saved(tmp_path, monkeyp
             tmp_path / "out.pdf",
             timeout_s=50,
         )
+
+
+# ---- convert() 接线层守护：子函数测过不等于 convert() 真的调用了它们 ----
+
+
+def test_convert_wires_output_verification_rejects_html_as_pdf(
+    tmp_path, monkeypatch, graph_credentials_ready, sleep_calls
+):
+    """C1 的接线守护：如果 convert() 里 `_verify_pdf_output(dest, meta,
+    src)` 这行调用被删掉，Graph 返回的 HTML（302 落到登录页时的典型
+    形状）会被原样写成 .pdf 然后被当成转换成功——这里必须变红。"""
+    fake = _FakeGraphClient(
+        content_response=_resp(200, body=b"<html>login page, not a pdf</html>")
+    )
+    _patch_client(monkeypatch, fake)
+
+    src = tmp_path / "deck.pptx"
+    src.write_bytes(b"pptx bytes")
+    dest = tmp_path / "out.pdf"
+
+    with pytest.raises(ConversionFailed):
+        GraphEngine().convert(src, _meta(1), dest, timeout_s=50)
+    assert not dest.exists()
+
+
+def test_convert_wires_output_verification_rejects_page_count_mismatch(
+    tmp_path, monkeypatch, graph_credentials_ready, sleep_calls
+):
+    """同上，另一种故障形状：返回的是真 PDF，但页数比 meta.slide_count
+    少（Graph 逼近 100 页硬上限时的典型截断）。"""
+    fake = _FakeGraphClient(content_response=_resp(200, body=_pdf_bytes(2)))
+    _patch_client(monkeypatch, fake)
+
+    src = tmp_path / "deck.pptx"
+    src.write_bytes(b"pptx bytes")
+    dest = tmp_path / "out.pdf"
+
+    with pytest.raises(ConversionPageMismatch):
+        GraphEngine().convert(src, _meta(5), dest, timeout_s=50)
+    assert not dest.exists()
+
+
+def test_convert_wires_cancel_upload_session_when_a_chunk_fails_midway(
+    tmp_path, monkeypatch, graph_credentials_ready, sleep_calls
+):
+    """C2 的接线守护：如果 convert() 的 finally 里
+    `elif upload_url: self._cancel_upload_session(...)` 被删掉，这里
+    必须变红——直接断言出站请求里真的有 DELETE {uploadUrl}，不是只信
+    _upload_chunks/_cancel_upload_session 各自的单测。"""
+    monkeypatch.setattr(graph_module, "UPLOAD_CHUNK", 4)
+    fake = _FakeGraphClient(
+        chunk_responses=[_resp(202), _resp(403, body=b"forbidden")]
+    )
+    _patch_client(monkeypatch, fake)
+
+    src = tmp_path / "deck.pptx"
+    src.write_bytes(b"01234567")  # 8 字节 -> 两块 4+4，第二块失败
+    dest = tmp_path / "out.pdf"
+
+    with pytest.raises(ConversionFailed):
+        GraphEngine().convert(src, _meta(1), dest, timeout_s=50)
+
+    delete_calls = [url for method, url, _ in fake.calls if method == "DELETE"]
+    assert any("PREAUTH-SECRET" in url for url in delete_calls), (
+        f"应该有 DELETE {{uploadUrl}} 取消上传会话，实际出站请求: {fake.calls}"
+    )
+
+
+def test_convert_treats_timeout_s_as_wall_clock_budget(
+    tmp_path, monkeypatch, graph_credentials_ready, sleep_calls
+):
+    """I1/I2 的接线守护：如果 convert() 里 `deadline = started +
+    timeout_s` 被改回"退回无预算"（比如 `started + 1e9`），这里必须
+    变红——用很小的 timeout_s 配合一个持续 429/Retry-After:600 的内容
+    GET 响应，断言总耗时被 timeout_s 死死摁住，不是照着 Retry-After
+    睡了一大截。跟本轮同时修的一行 bug（wait>=remaining 时不睡）叠加，
+    正确实现应该是毫秒级返回，不是"睡到 timeout_s 那一刻才放弃"。"""
+    fake = _FakeGraphClient(
+        content_response=_resp(429, headers={"Retry-After": "600"})
+    )
+    _patch_client(monkeypatch, fake)
+
+    src = tmp_path / "deck.pptx"
+    src.write_bytes(b"pptx bytes")
+    dest = tmp_path / "out.pdf"
+
+    started = time.monotonic()
+    with pytest.raises(ConversionTimeout):
+        GraphEngine().convert(src, _meta(1), dest, timeout_s=3)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.0, f"耗时 {elapsed:.2f}s——预算该在毫秒级内放弃，不是睡到快超时"
+    assert sleep_calls == []
+
+
+def test_convert_wires_cleanup_of_transit_file_on_success(
+    tmp_path, monkeypatch, graph_credentials_ready, sleep_calls
+):
+    """如果 convert() 的 finally 里 `self._cleanup(...)` 调用被删掉，
+    成功路径上传到 SharePoint 中转库的 pptx 会永远留在共享站点里——
+    这里必须变红：断言出站请求里真的有 permanentDelete。"""
+    fake = _FakeGraphClient()
+    _patch_client(monkeypatch, fake)
+
+    src = tmp_path / "deck.pptx"
+    src.write_bytes(b"pptx bytes")
+    dest = tmp_path / "out.pdf"
+
+    GraphEngine().convert(src, _meta(1), dest, timeout_s=50)
+
+    assert dest.exists()
+    cleanup_calls = [
+        (method, url)
+        for method, url, _ in fake.calls
+        if method == "POST" and url.endswith("/permanentDelete")
+    ]
+    assert len(cleanup_calls) == 1, f"应该恰好清理一次，实际出站请求: {fake.calls}"

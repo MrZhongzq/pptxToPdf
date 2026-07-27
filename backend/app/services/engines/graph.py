@@ -233,9 +233,13 @@ class GraphEngine(ConversionEngine):
         基准）。两处提前放弃都映射成 ConversionTimeout（这是"这次转换
         超时了"，不是"服务不可用"）：
         1. 发下一个请求之前预算已经耗尽——不发这个必然浪费的请求。
-        2. 拿到可重试的响应、真正 sleep 之前预算已经耗尽——不能真的把
-           Retry-After 建议的等待时间睡完（SharePoint 限流常见
-           60~300 秒，足够拖垮 45 秒窗口的同步接口）。
+        2. 拿到可重试的响应之后，如果这次建议的等待时长已经不小于剩余
+           预算（`wait >= remaining`），不睡——先把剩余预算睡光、醒来
+           发现预算是 0 再放弃是纯浪费（睡多久结果都一样是放弃），
+           SharePoint 限流常见 Retry-After 60~300 秒，切片场景下一个
+           worker 为这一觉空耗的时间是可观的运力损失。这里不做"睡一个
+           缩短后的时长再重试"这种折中——要么这次建议的等待完整放得进
+           剩余预算就完整睡，要么放不进就立刻放弃，不折中着睡一半。
         最后一次尝试之后不 sleep（sleep 完立刻抛纯属浪费）；`graph_max_
         retries` 次全部重试用尽、但预算仍充裕时，是"服务暂时不可用"，
         落 EngineUnavailable（503）而不是 ConversionFailed——后者会让
@@ -264,10 +268,15 @@ class GraphEngine(ConversionEngine):
                 break  # 最后一次不必再等——直接进入下面的耗尽处理
 
             remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            if wait >= remaining:
+                # 预算不够容纳这一次建议的等待时，不能先把剩余预算睡光
+                # 再放弃——那一觉必然无用（睡完预算肯定是 0，接下来必然
+                # 放弃）。切片场景下一个 worker 为此空耗几百秒是可观的
+                # 运力损失，直接放弃比"睡完再放弃"更省。remaining<=0 的
+                # 情况被这个条件自然涵盖（wait 恒为正数，必然 >= 一个
+                # <=0 的 remaining）。
                 raise ConversionTimeout("Graph 转换超时：重试预算已耗尽，放弃重试")
 
-            wait = min(wait, remaining)
             logger.warning(
                 "Graph %d，%.0f 秒后重试（第 %d 次）", resp.status_code, wait, attempt + 1
             )
