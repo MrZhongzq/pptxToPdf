@@ -31,7 +31,17 @@ export const DEFAULT_OPTIONS: ConversionOptions = {
 
 export interface TaskDto {
   task_id: string
-  status: 'pending' | 'parsing' | 'queued' | 'converting' | 'done' | 'failed'
+  /** 与后端 pipeline / shard_pipeline 写入的状态一一对应。`merging` 只出现在
+   *  三期的分片路径上（N 片转完后合并），**不是终态**——加进
+   *  useTaskPolling 的 TERMINAL 会让轮询停在"合并中"再也不刷新。 */
+  status:
+    | 'pending'
+    | 'parsing'
+    | 'queued'
+    | 'converting'
+    | 'merging'
+    | 'done'
+    | 'failed'
   engine: string
   original_filename: string
   size_bytes: number

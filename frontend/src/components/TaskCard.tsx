@@ -8,11 +8,17 @@ import {
 import { formatBytes } from '../lib/chunking'
 import { useTaskPolling } from '../hooks/useTaskPolling'
 
+// 必须覆盖 TaskDto['status'] 的每一个取值：后端的 status 是裸 str、API 原样
+// 吐出，这张表是唯一的兜底。少一个键就是 `STATUS[x].badge` 读 undefined，
+// 而仓库里没有 ErrorBoundary，React 未捕获的渲染异常会卸载整棵树。
+// Record<联合类型, …> 让漏键在 tsc 阶段就报错，TaskCard.test.tsx 再守一层运行时。
 const STATUS: Record<TaskDto['status'], { label: string; badge: string }> = {
   pending: { label: '排队中', badge: 'badge-neutral' },
   parsing: { label: '解析中', badge: 'badge-accent' },
   queued: { label: '等待转换', badge: 'badge-neutral' },
   converting: { label: '转换中', badge: 'badge-accent' },
+  // 三期分片路径专有：N 片各自转完之后合并回一份 PDF。
+  merging: { label: '合并中', badge: 'badge-accent' },
   done: { label: '完成', badge: 'badge-success' },
   failed: { label: '失败', badge: 'badge-danger' },
 }
