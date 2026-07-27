@@ -12,6 +12,7 @@
 import io
 import random
 import shutil
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -28,12 +29,16 @@ import app.services.shard_pipeline as shard_module
 from app.config import settings
 from app.errors import ConversionTimeout, ShardBudgetExceeded, ShardTooLarge
 from app.models import Task, TaskShard
+from app.services.pipeline import compute_timeout_s
+from app.services.retention import reap_stale_tasks
 from app.services.shard_pipeline import (
     convert_shard,
     merge_shards,
     prepare_shards,
     shard_dir,
 )
+
+MIB = 1024 * 1024
 
 DECK_SLIDES = 8
 
@@ -175,7 +180,10 @@ def sharded_task(session, storage):
         shard_total=2,
     )
     session.add(task)
-    for i, (ps, pe) in enumerate([(1, 2), (3, 3)]):
+    # 故意倒序插入：SQLite 的自然 rowid 顺序会与 index 顺序相反，于是
+    # merge_shards 里那条 `.order_by(TaskShard.index)` 一旦被删掉，页序
+    # 立刻错乱。顺序插入时 rowid 顺序恰好正确，这条防线就没人守。
+    for i, (ps, pe) in reversed(list(enumerate([(1, 2), (3, 3)]))):
         session.add(
             TaskShard(
                 shard_id=f"S{i}",
@@ -346,6 +354,193 @@ def test_merge_ignores_missing_task(use_test_session):
     merge_shards("does-not-exist")  # 不许抛
 
 
+def test_merge_does_not_revive_a_task_already_in_terminal_state(
+    session, sharded_task, use_test_session
+):
+    """终态翻转比漏合并更糟。
+
+    孤儿回收器把任务标 failed（前端一见 failed 就停止轮询、原文件已删）之后，
+    迟到的分片仍可能陆续跑完并触发汇总——若这里不设闸门，任务会从 failed
+    一路被改回 done，而没有任何人还在看它。
+    """
+    d = shard_dir("T1")
+    for i, labels in enumerate([["P1", "P2"], ["P3"]]):
+        p = _pdf(d / f"{i:03d}.pdf", labels)
+        shard = session.get(TaskShard, f"S{i}")
+        shard.status, shard.output_path = "done", str(p)
+    task = session.get(Task, "T1")
+    task.status, task.error_code = "failed", "TASK_ABANDONED"
+    session.commit()
+
+    merge_shards("T1")
+
+    task = session.get(Task, "T1")
+    assert task.status == "failed"
+    assert task.error_code == "TASK_ABANDONED"
+    assert task.output_path is None
+
+
+def test_merge_is_idempotent(session, sharded_task, use_test_session):
+    """重跑不许把已经 done 的任务降级成 failed。
+
+    第一次的 finally 已经 rmtree 掉分片目录，第二次 _collect_parts 必然在
+    「输出文件已丢失」上炸——而那份 PDF 其实完好无损。RQ 的 job 重试、
+    人工重放都会踩到这条。
+    """
+    d = shard_dir("T1")
+    for i, labels in enumerate([["P1", "P2"], ["P3"]]):
+        p = _pdf(d / f"{i:03d}.pdf", labels)
+        shard = session.get(TaskShard, f"S{i}")
+        shard.status, shard.output_path = "done", str(p)
+    session.commit()
+
+    merge_shards("T1")
+    first = session.get(Task, "T1").output_path
+    assert first is not None
+
+    merge_shards("T1")
+
+    task = session.get(Task, "T1")
+    assert task.status == "done"
+    assert task.output_path == first
+
+
+# ---------------------------------------------------- 孤儿回收与分片的活性信号
+
+
+def _stale(minutes: int) -> datetime:
+    """naive UTC——SQLite dialect 落库时会丢时区，retention 也用 naive 比较。"""
+    return datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=minutes)
+
+
+@pytest.fixture
+def use_retention_session(session, monkeypatch):
+    monkeypatch.setattr(retention_module, "SessionLocal", lambda: session)
+    return session
+
+
+def _sharded_task_with_shards(
+    session, *, task_updated_min: int, shard_updates: list[int], status: str = "converting"
+) -> Task:
+    task = Task(
+        task_id="TR",
+        upload_id="UR",
+        original_filename="deck.pptx",
+        size_bytes=100,
+        slide_count=8,
+        engine="graph",
+        status=status,
+        shard_total=len(shard_updates),
+        updated_at=_stale(task_updated_min),
+    )
+    session.add(task)
+    for i, minutes in enumerate(shard_updates):
+        session.add(
+            TaskShard(
+                shard_id=f"R{i}",
+                task_id="TR",
+                index=i,
+                page_start=i + 1,
+                page_end=i + 1,
+                status="done",
+                updated_at=_stale(minutes),
+            )
+        )
+    session.commit()
+    return task
+
+
+def test_reap_spares_sharded_task_whose_shards_are_still_progressing(
+    session, use_retention_session
+):
+    """分片路径打破了二期的不变量：单次转换的墙钟被 convert_timeout_max_s
+    (1800s) 封顶 < 45 分钟，而分片总墙钟是 N 片之和，12 × 1800s = 6 小时。
+
+    Task 行从 prepare_shards 之后就不再被写（子 job 只写自己那行 TaskShard，
+    这是对的、不能改），所以 Task.updated_at 不再是活性信号——拿它判 stale
+    会把正在正常转换的 500MB 课件误杀。
+    """
+    _sharded_task_with_shards(session, task_updated_min=46, shard_updates=[40, 30, 0])
+
+    assert reap_stale_tasks() == 0
+
+    task = session.get(Task, "TR")
+    assert task.status == "converting"
+    assert task.error_code is None
+
+
+def test_reap_still_kills_sharded_task_when_shards_also_went_quiet(
+    session, use_retention_session
+):
+    """闸门不能开成永不回收：分片自己也超过 45 分钟没动静，说明 worker
+    是真的死了，仍要回收。"""
+    _sharded_task_with_shards(session, task_updated_min=60, shard_updates=[50, 47, 46])
+
+    assert reap_stale_tasks() == 1
+
+    task = session.get(Task, "TR")
+    assert task.status == "failed"
+    assert task.error_code == "TASK_ABANDONED"
+
+
+def test_reap_covers_merging_state(session, use_retention_session):
+    """merge job 被部署/OOM/kill 打断后任务停在 merging。它不在
+    NON_TERMINAL 里的话回收器捞不到，任务永远卡住、前端只能轮询到超时——
+    正是「分片上限」那条硬要求的立论前提要消灭的失败模式。"""
+    from app.services.retention import NON_TERMINAL
+
+    assert "merging" in NON_TERMINAL
+
+    _sharded_task_with_shards(
+        session, task_updated_min=60, shard_updates=[50, 50], status="merging"
+    )
+
+    assert reap_stale_tasks() == 1
+    assert session.get(Task, "TR").status == "failed"
+
+
+def test_reap_leaves_unsharded_tasks_on_the_original_rule(
+    session, use_retention_session
+):
+    """二期原路径（shard_total 为 None）的判据一个字不改。"""
+    session.add(
+        Task(
+            task_id="TS",
+            upload_id="US",
+            original_filename="deck.pptx",
+            size_bytes=100,
+            engine="libreoffice",
+            status="converting",
+            updated_at=_stale(46),
+        )
+    )
+    session.commit()
+
+    assert reap_stale_tasks() == 1
+    assert session.get(Task, "TS").status == "failed"
+
+
+# ---------------------------------------------------------------- 预算不变量
+
+
+def test_merge_budget_leaves_headroom_on_a_2gb_worker():
+    """上限不是随手定的数，而是由实测倍率反推的：审查实测 4 片 54.1MB 的
+    图片密集型 PDF 峰值 162.9MB = 3.01×（tracemalloc，还不含解释器基线与
+    分配器碎片）。上限 × 倍率必须明显低于 2GB worker 的可用内存。"""
+    peak_bytes = settings.graph_max_merge_bytes * 3.01
+    assert peak_bytes < 1024 * MIB, (
+        f"合并峰值外推 {peak_bytes / MIB:.0f}MB，2GB worker 上余量不足"
+    )
+
+
+def test_graph_path_capacity_is_not_larger_than_the_advertised_upload_limit():
+    """Graph 路径的实际容量 = graph_max_shards × graph_max_shard_bytes，
+    天然低于 max_file_size（Graph 的固有限制，不是配置错误）。这里只钉住
+    「不许靠调大片数去对齐 600MB」——那会直接 OOM。"""
+    capacity = settings.graph_max_shards * settings.graph_max_shard_bytes
+    assert capacity <= settings.max_file_size
+
+
 # ---------------------------------------------------------------- convert_shard
 
 
@@ -394,7 +589,14 @@ def test_convert_shard_records_output_and_uses_task_engine(
     assert call["src"] == shard_dir("T2") / "000.pptx"
     assert call["dest"] == shard_dir("T2") / "000.pdf"
     assert call["slide_count"] == 2
-    assert call["timeout_s"] > 0
+    # 预算必须按这一片自己的页数与体积算。brief 原本写的是
+    # graph_request_timeout_s(50s)——那是单个 HTTP 请求的超时，拿它当整片的
+    # 总墙钟预算会让 40MB 分片上传未完即判超时，而且 GraphEngine 里
+    # 「wait >= remaining 就放弃」的逻辑会让 Retry-After: 60~300 的退避重试
+    # 一次都发不出去。断言必须钉住这个偏离，否则后来者照 brief 改回去没人拦。
+    src_size = (shard_dir("T2") / "000.pptx").stat().st_size
+    assert call["timeout_s"] == compute_timeout_s(2, src_size)
+    assert call["timeout_s"] > settings.graph_request_timeout_s
     # 分片 job 不许碰主任务行——并发写同一行在 SQLite 上会丢更新
     assert session.get(Task, "T2").status == "converting"
 
@@ -680,6 +882,28 @@ def test_run_task_fails_loudly_instead_of_falling_back(
     assert engine.calls == []
     assert asked == []
     assert wired_pipeline == []
+
+
+def test_run_task_cleans_up_when_enqueue_fails(session, deck, wired_pipeline, monkeypatch):
+    """入队失败（Redis 不可用）时，TaskShard 行已经 commit、最多 480MB 分片
+    pptx 已经落盘。不清理的话它们是永久孤儿：merge_shards 永不执行，而
+    purge_expired_outputs 只扫 outputs_dir，没有任何东西会清 shards_dir。"""
+    monkeypatch.setattr(settings, "graph_max_pages_per_shard", 2)
+    _make_task(session, deck, task_id="T7")
+
+    def _boom(task_id: str, shard_ids: list[str]) -> None:
+        raise ConnectionError("redis 连不上")
+
+    monkeypatch.setattr(pipeline_module, "enqueue_shards", _boom)
+    _install_engine(monkeypatch, _FakeEngine(), target=pipeline_module)
+
+    pipeline_module.run_task("T7")
+
+    task = session.get(Task, "T7")
+    assert task.status == "failed"
+    assert session.query(TaskShard).filter(TaskShard.task_id == "T7").count() == 0
+    assert task.shard_total is None
+    assert not shard_dir("T7").exists()
 
 
 def _shards(session, task_id: str) -> list[TaskShard]:

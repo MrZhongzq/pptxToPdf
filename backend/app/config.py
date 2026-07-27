@@ -37,13 +37,24 @@ class Settings(BaseSettings):
     graph_request_timeout_s: int = 50
     graph_max_retries: int = 3
     graph_max_shards: int = 12
-    """分片数上限。合并峰值内存正比于分片总量，13 片 × 40MB 外推约
-    1.1-1.2GB，已经能在 2GB 内存的 worker 上触发 OOM。超过这个数宁可
-    明确拒绝，也不能让 worker 被 OOM killer 静默干掉。"""
-    graph_max_merge_bytes: int = 400 * MIB
+    """分片数上限。合并峰值内存正比于分片总量，13 片 × 40MB 已经能在 2GB
+    内存的 worker 上触发 OOM。超过这个数宁可明确拒绝，也不能让 worker 被
+    OOM killer 静默干掉。
+
+    注意 Graph 路径的实际容量 = graph_max_shards × graph_max_shard_bytes
+    = 480MiB，**低于 max_file_size 的 600MiB**。这不是配置错误，是 Graph
+    的固有限制（100 页硬上限 + 45 秒同步窗口）；LibreOffice 路径不受此限。
+    也不要靠调大本值去对齐 600MiB——15 × 40MiB 配合下面实测的 3.01 倍率
+    会直接 OOM。正确的做法是前端在选 Graph 引擎时按这个容量做上传前预判，
+    避免用户白传一次 600MB 才在规划阶段吃 422（记在 ledger，Task 10）。"""
+    graph_max_merge_bytes: int = 240 * MIB
     """合并输入（各分片 PDF）总字节上限。真正决定合并峰值内存的是 PDF 的
     总字节而不是分片数（一片也可能很大），所以分片数之外还要单独卡这一条。
-    400MiB × 2.2 ≈ 880MB 峰值，给 2GB 的 worker 留足余量。"""
+
+    倍率取 3.01×，来自审查实测：4 片共 54.1MB 的图片密集型 PDF，
+    tracemalloc 测得峰值 162.9MB。240MiB × 3.01 ≈ 720MB Python 堆峰值，
+    在 2GB worker 上留有余量。注意 tracemalloc 不含解释器基线与分配器碎片，
+    真实 RSS 更高——四期上真实租户后应实测 RSS 再回调本值。"""
 
     # 二期新增：故障注入，默认全关
     debug_force_timeout: bool = False

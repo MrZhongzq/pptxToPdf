@@ -5,12 +5,15 @@ from datetime import datetime, timedelta, timezone
 from app.config import settings
 from app.db import SessionLocal
 from app.errors import TaskAbandoned
-from app.models import Task
+from app.models import Task, TaskShard
 
 logger = logging.getLogger(__name__)
 
 # 非终态状态名——孤儿回收器把卡在这些状态太久的任务标 failed。
-NON_TERMINAL = ("pending", "parsing", "queued", "converting")
+# "merging" 是三期分片路径的中间态，必须在列：merge job 被部署/OOM/kill
+# 打断后任务会永远停在这个状态，不在列的话回收器捞不到，前端只能轮询到
+# 超时，用户拿到的是一句"轮询超时"而不是明确的失败原因。
+NON_TERMINAL = ("pending", "parsing", "queued", "converting", "merging")
 
 
 def drop_original(task_id: str) -> None:
@@ -51,6 +54,41 @@ def purge_expired_outputs() -> int:
     return removed
 
 
+def _is_really_stale(session, task: Task, cutoff: datetime) -> bool:
+    """Task.updated_at 说它超时了，再问一次分片：它真的没在动吗？
+
+    二期的判据靠一个不变量成立：单次转换的墙钟被 convert_timeout_max_s
+    (默认 1800s = 30 分钟) 封顶，小于 stale_task_minutes (45 分钟)，所以
+    "Task 行 45 分钟没动" 必然意味着 worker 死了。
+
+    三期的分片路径打破了这个不变量，而且是从两头打破的：
+    1. 总墙钟变成 N 片之和，12 × 1800s = 6 小时，远超 45 分钟；
+    2. Task 行从 prepare_shards 那次 commit 之后就再也不被写——子 job 只写
+       自己那行 TaskShard（这是刻意的：并发自增同一行在 SQLite 上要么加锁
+       要么丢更新，不能改），于是 Task.updated_at 干脆不再是活性信号。
+
+    两者叠加的后果不只是误杀：任务被标 failed 之后分片仍会陆续跑完，
+    merge_shards 读的是 TaskShard.status、不看 Task.status，会把终态从
+    failed 一路改回 done——而前端见 failed 早已停止轮询，原文件也已被
+    drop_original 删掉。所以这里改看该任务最新的 TaskShard.updated_at。
+
+    只有一片都没动过 45 分钟才判定 worker 真的死了。没有任何分片行
+    （shard_total 已落但建行失败之类）时退回原判据，不特殊放行。
+    """
+    if task.shard_total is None:
+        return True  # 二期原路径，判据一个字不改
+    last = (
+        session.query(TaskShard.updated_at)
+        .filter(TaskShard.task_id == task.task_id)
+        .order_by(TaskShard.updated_at.desc())
+        .limit(1)
+        .scalar()
+    )
+    if last is None:
+        return True
+    return last < cutoff
+
+
 def reap_stale_tasks() -> int:
     """把卡在非终态太久的任务标为失败，返回回收数量。
 
@@ -72,11 +110,12 @@ def reap_stale_tasks() -> int:
     )
     session = SessionLocal()
     try:
-        stale = (
+        candidates = (
             session.query(Task)
             .filter(Task.status.in_(NON_TERMINAL), Task.updated_at < cutoff)
             .all()
         )
+        stale = [t for t in candidates if _is_really_stale(session, t, cutoff)]
         for task in stale:
             task.status = "failed"
             task.error_code = TaskAbandoned.code

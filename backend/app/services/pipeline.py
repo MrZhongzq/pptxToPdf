@@ -106,10 +106,18 @@ def run_task(task_id: str) -> None:
                 # 走下面的 AppError 分支明确失败——绝不静默改用别的引擎。
                 # import 放在函数里打断 pipeline ←→ shard_pipeline 的环
                 # （shard_pipeline 顶层要用本模块的 compute_timeout_s）。
-                from app.services.shard_pipeline import prepare_shards
+                from app.services.shard_pipeline import discard_shards, prepare_shards
 
                 shard_ids = prepare_shards(session, task, src, size_bytes)
-                enqueue_shards(task_id, shard_ids)
+                try:
+                    enqueue_shards(task_id, shard_ids)
+                except Exception:
+                    # 入队失败（Redis 不可用）时，行已 commit、最多 480MB 的
+                    # 分片 pptx 已落盘，而 merge_shards 永远不会被触发来清它们。
+                    # 必须在这里把 prepare_shards 的副作用整个撤掉，再让异常
+                    # 照常传出去落 failed。
+                    discard_shards(session, task_id)
+                    raise
                 logger.info(
                     "task sharded id=%s shards=%d，转换与合并交给子 job",
                     task_id, len(shard_ids),

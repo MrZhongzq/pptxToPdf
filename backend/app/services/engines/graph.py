@@ -443,9 +443,15 @@ class GraphEngine(ConversionEngine):
                     )
                     item_id = self._upload_chunks(client, upload_url, src, deadline)
                 except httpx.TimeoutException as exc:
+                    # 两个数必须分开报：graph_request_timeout_s 是单个 HTTP
+                    # 请求的无响应时限（httpx.Client 的 timeout），timeout_s
+                    # 才是本次转换的总墙钟预算。切片路径下后者由
+                    # compute_timeout_s 按分片页数与体积算，早已不是 50 秒——
+                    # 只报前者会让日志里的秒数与实际预算对不上，排障时误导人。
                     raise ConversionTimeout(
-                        f"Graph 上传超时（{settings.graph_request_timeout_s} 秒）。"
-                        f"该文件可能过大或网络过慢"
+                        f"Graph 上传超时（单个请求 "
+                        f"{settings.graph_request_timeout_s} 秒无响应，"
+                        f"本次总预算 {timeout_s:.0f} 秒）。该文件可能过大或网络过慢"
                     ) from exc
 
                 try:
@@ -460,8 +466,10 @@ class GraphEngine(ConversionEngine):
                     )
                 except httpx.TimeoutException as exc:
                     raise ConversionTimeout(
-                        f"Graph 转换超时（{settings.graph_request_timeout_s} 秒）。"
-                        f"Graph 自身有约 45 秒硬超时，该文件可能过于复杂"
+                        f"Graph 转换超时（单个请求 "
+                        f"{settings.graph_request_timeout_s} 秒无响应，"
+                        f"本次总预算 {timeout_s:.0f} 秒）。Graph 自身有约 45 秒"
+                        f"硬超时，该文件可能过于复杂"
                     ) from exc
 
                 _raise_for_status(resp, frozenset({200}), ConversionFailed, "Graph 转换失败")

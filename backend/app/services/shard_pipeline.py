@@ -42,9 +42,36 @@ logger = logging.getLogger(__name__)
 
 MIB = 1024 * 1024
 
+TERMINAL_STATUSES = frozenset({"done", "failed"})
+
 
 def shard_dir(task_id: str) -> Path:
     return settings.shards_dir / task_id
+
+
+def discard_shards(session: Session, task_id: str) -> None:
+    """撤销 prepare_shards 的全部副作用：删 TaskShard 行、清 shard_total、
+    清分片目录。
+
+    入队失败（Redis 不可用）时必须调用：那时行已 commit、最多 480MB 的分片
+    pptx 已落盘，而 merge_shards 永远不会被触发来清它们——purge_expired_
+    outputs 只扫 outputs_dir，没有任何东西会碰 shards_dir，这些就是永久孤儿。
+
+    本函数不抛：它跑在别人的失败路径上，善后动作不能顶掉病因。
+    """
+    try:
+        session.query(TaskShard).filter(TaskShard.task_id == task_id).delete()
+        task = session.get(Task, task_id)
+        if task is not None:
+            task.shard_total = None
+        session.commit()
+    except Exception:
+        logger.exception("撤销任务 %s 的分片记录失败", task_id)
+        try:
+            session.rollback()
+        except Exception:
+            logger.exception("回滚失败 task=%s", task_id)
+    shutil.rmtree(shard_dir(task_id), ignore_errors=True)
 
 
 # ---------------------------------------------------------------- 规划与切片
@@ -315,6 +342,20 @@ def merge_shards(task_id: str) -> None:
         task = session.get(Task, task_id)
         if task is None:
             logger.warning("merge_shards 收到不存在的 task_id=%s", task_id)
+            return
+
+        # 已是终态就一步都不再走。挡住两条真实路径，都是"终态被翻转"：
+        # 1. 孤儿回收器已把任务标 failed（前端一见 failed 就停止轮询、原文件
+        #    已被 drop_original 删掉），迟到的分片仍会陆续跑完并触发本函数；
+        # 2. 本函数被重跑（RQ job 重试、人工重放）——第一次的 finally 已经
+        #    rmtree 掉分片目录，第二次必然在"输出文件已丢失"上炸，把一个
+        #    done 的任务降级成 failed，而那份 PDF 其实完好无损。
+        # 终态翻转比漏合并更糟：没有任何人还在看这个任务了。
+        if task.status in TERMINAL_STATUSES:
+            logger.warning(
+                "merge_shards 跳过已处于终态的任务 id=%s status=%s",
+                task_id, task.status,
+            )
             return
 
         shards = (
