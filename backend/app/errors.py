@@ -99,7 +99,28 @@ class TaskAbandoned(AppError):
 
 
 class ShardTooLarge(AppError):
+    """单个分片实测体积超上限、且已经只剩 1 页——页面不可再分，切不动了。
+
+    与 ShardBudgetExceeded 分开：这一条说的是"这份文件里有一页大到无解"
+    （用户可以拆掉那页的内嵌视频重试），另一条说的是"整份文件的分片总量
+    超出了我们的合并预算"（用户只能拆分文件）。给出的处置建议不同，
+    所以不共用一个码。
+    """
+
     code = "SHARD_TOO_LARGE"
+    http_status = 422
+
+
+class ShardBudgetExceeded(AppError):
+    """分片总数或合并输入总字节超过显式上限。
+
+    merge_pdfs 把所有分片一次性载入同一个 PdfWriter（pypdf 没有真正的流式
+    合并 API），实测峰值约 2.2 倍输入体积。没有这道闸门，<2GB 内存的机器上
+    worker 会被 OOM killer 干掉——那是最坏的静默失败：任务卡在 converting
+    永不回收，前端一直轮询一个永不改变的状态。
+    """
+
+    code = "SHARD_BUDGET_EXCEEDED"
     http_status = 422
 
 

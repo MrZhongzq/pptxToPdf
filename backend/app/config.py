@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     graph_max_shard_bytes: int = 40 * MIB
     graph_request_timeout_s: int = 50
     graph_max_retries: int = 3
+    graph_max_shards: int = 12
+    """分片数上限。合并峰值内存正比于分片总量，13 片 × 40MB 外推约
+    1.1-1.2GB，已经能在 2GB 内存的 worker 上触发 OOM。超过这个数宁可
+    明确拒绝，也不能让 worker 被 OOM killer 静默干掉。"""
+    graph_max_merge_bytes: int = 400 * MIB
+    """合并输入（各分片 PDF）总字节上限。真正决定合并峰值内存的是 PDF 的
+    总字节而不是分片数（一片也可能很大），所以分片数之外还要单独卡这一条。
+    400MiB × 2.2 ≈ 880MB 峰值，给 2GB 的 worker 留足余量。"""
 
     # 二期新增：故障注入，默认全关
     debug_force_timeout: bool = False
