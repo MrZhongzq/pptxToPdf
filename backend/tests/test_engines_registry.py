@@ -8,6 +8,7 @@ base.py 的"引擎不得访问数据库"约束才名副其实。这里验证的�
 """
 import pytest
 
+import app.services.engines as engines_module
 from app.config import settings
 from app.errors import GraphNotConfigured
 from app.services.engines import get_engine
@@ -56,6 +57,37 @@ def test_get_engine_graph_injects_loaded_credentials(session, monkeypatch):
     assert engine.credentials.client_secret == "secret"
     assert engine.credentials.site_id == "site-1"
     assert engine.credentials.drive_path == "staging"
+
+
+def test_get_engine_constructs_registered_graph_subclass_not_base_class(
+    session, monkeypatch
+):
+    """m4 复审指出的缺陷：`issubclass(cls, GraphEngine)` 判断对了要不要走
+    凭证注入这条分支，但如果分支体硬编码 `return GraphEngine(...)`（而不是
+    `return cls(...)`），注册的子类会被静默替换成基类实例——特判命中了，
+    构造的却是错误的类型。这里注册一个 GraphEngine 子类，断言 get_engine
+    返回的真的是这个子类的实例（不是被基类偷换），且凭证确实注入到位。
+    """
+    monkeypatch.setattr(settings, "secret_key", SECRET_KEY)
+    save_credentials(
+        session,
+        tenant_id="tid",
+        client_id="cid",
+        client_secret="secret",
+        site_id="site-1",
+        drive_path="staging",
+    )
+
+    class _CustomGraphEngine(GraphEngine):
+        pass
+
+    monkeypatch.setitem(engines_module._ENGINES, "graph", _CustomGraphEngine)
+
+    engine = get_engine("graph", session=session)
+
+    assert type(engine) is _CustomGraphEngine
+    assert isinstance(engine, _CustomGraphEngine)
+    assert engine.credentials.tenant_id == "tid"
 
 
 def test_get_engine_returns_placeholder():

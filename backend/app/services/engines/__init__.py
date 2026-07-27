@@ -36,7 +36,7 @@ def get_engine(name: str, *, session: Session | None = None) -> ConversionEngine
                 "get_engine('graph', ...) 需要传入 session 才能加载凭证；"
                 "调用方必须持有一个活跃的数据库会话"
             )
-        return GraphEngine(load_credentials(session))
+        return cls(load_credentials(session))
     return cls()
 
 

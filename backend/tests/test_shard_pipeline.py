@@ -1097,6 +1097,43 @@ def test_run_task_requested_libreoffice_wins_even_when_auto_would_pick_graph(
     assert task.status == "done"
 
 
+def test_run_task_auto_selects_graph_when_configured_and_within_thresholds(
+    session, deck, storage, monkeypatch
+):
+    """复审第二轮 Important：`graph_configured=` 这个传参本身此前无测试
+    守护——上面两条 C1 测试都显式设了 requested_engine，`if requested:`
+    直接短路，auto 分支（真正读取 graph_configured 的地方）从未被这两条
+    测试真正跑到过。这里补上唯一会读到它的场景：requested_engine=None，
+    走真实 select_engine 的 auto 分支，用小 deck（页数体积都在默认阈值
+    内）+ 真实配置好的 Graph 凭证，断言 auto 判定真的选出了 "graph"——
+    如果 `pipeline.py` 里 `graph_configured=graph_configured,` 那行传参
+    被删掉（关键字专属参数，默认 False），auto 分支会因为拿到默认值
+    `False` 而只会选 libreoffice，这里必须变红。"""
+    monkeypatch.setattr(pipeline_module, "SessionLocal", lambda: session)
+    monkeypatch.setattr(retention_module, "SessionLocal", lambda: session)
+    monkeypatch.setattr(shard_module, "SessionLocal", lambda: session)
+    monkeypatch.setattr(pipeline_module, "select_engine", real_select_engine)
+    monkeypatch.setattr(settings, "secret_key", GRAPH_TEST_SECRET_KEY)
+    save_credentials(
+        session,
+        tenant_id="tid",
+        client_id="cid",
+        client_secret="secret",
+        site_id="site-1",
+        drive_path="staging",
+    )
+    # 页数体积都在默认阈值内（DECK_SLIDES=8 << graph_max_pages_per_shard=80，
+    # deck 体积 << graph_max_shard_bytes=40MiB），不需要额外 monkeypatch 阈值。
+    _install_engine(monkeypatch, _FakeEngine(), target=pipeline_module)
+
+    _make_fresh_task(session, deck, task_id="TC1C", requested_engine=None)
+
+    pipeline_module.run_task("TC1C")
+
+    task = session.get(Task, "TC1C")
+    assert task.engine == "graph"
+
+
 # --------------------------------------------- I2: 分片前的凭证早退检查
 
 
