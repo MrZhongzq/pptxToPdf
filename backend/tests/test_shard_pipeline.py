@@ -556,6 +556,26 @@ def test_graph_path_capacity_is_not_larger_than_the_advertised_upload_limit():
     assert capacity <= settings.max_file_size
 
 
+def test_merge_job_timeout_expires_before_stale_task_reaper_would_fire():
+    """merge job 的 RQ job_timeout（convert_timeout_max_s +
+    JOB_TIMEOUT_MARGIN_S）必须小于孤儿回收器的判死阈值（stale_task_minutes
+    × 60），当前 1860s < 2700s（终审 F-4）。
+
+    这条不变量守的是一个可观测性极差的静默 bug：谁把 stale_task_minutes
+    调小到让这个不等式反过来，就打开了「回收器标 failed → merge 跑完又
+    改回 done」的终态翻转窗口——merge_shards 的终态守卫只在入口检查一次，
+    拦不住中途被回收器翻转的情况。"""
+    from app.queue import JOB_TIMEOUT_MARGIN_S
+
+    merge_job_timeout = settings.convert_timeout_max_s + JOB_TIMEOUT_MARGIN_S
+    reaper_threshold = settings.stale_task_minutes * 60
+    assert merge_job_timeout < reaper_threshold, (
+        f"merge job_timeout={merge_job_timeout}s 未明显小于孤儿回收阈值"
+        f"={reaper_threshold}s，回收器可能在 merge 还没跑完时就抢先把任务"
+        f"标 failed"
+    )
+
+
 def _task_columns(task: Task) -> dict:
     """Task 行的全列快照，用于"这一步不许碰 Task 行"类断言。
 
