@@ -76,6 +76,18 @@ def test_verify_session_rejects_garbage():
         admin_auth.verify_session("not-a-token")
 
 
+def test_verify_session_rejects_same_key_different_plaintext():
+    # client_secret 用同一把 SECRET_KEY 加密（admin_auth._fernet 的注释里
+    # 说明了这个刻意判断）。如果 verify_session 只看「Fernet 能解开」，
+    # 库里的 client_secret_encrypted 密文原样贴进 cookie 就能冒充管理员
+    # 会话——不需要拿到 SECRET_KEY，只需要读到数据库。这里构造一个
+    # 同密钥、但明文不是 admin_auth 内部固定 payload 的 token，断言必须
+    # 被拒绝。
+    forged = admin_auth._fernet().encrypt(b"something-else").decode()
+    with pytest.raises(AdminUnauthorized):
+        admin_auth.verify_session(forged)
+
+
 def test_verify_session_rejects_expired(monkeypatch):
     monkeypatch.setattr(admin_auth.settings, "admin_session_days", 3)
     token = admin_auth.issue_session()

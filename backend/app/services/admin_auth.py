@@ -100,17 +100,30 @@ def _fernet() -> Fernet:
         raise AdminNotConfigured("PPTX2PDF_SECRET_KEY 格式非法") from exc
 
 
+_SESSION_PAYLOAD = b"admin"
+
+
 def issue_session() -> str:
     """签发会话 token。Fernet 自带时间戳，过期校验交给 decrypt 的 ttl。"""
-    return _fernet().encrypt(b"admin").decode()
+    return _fernet().encrypt(_SESSION_PAYLOAD).decode()
 
 
 def verify_session(token: str | None) -> None:
-    """token 有效则静默返回，否则抛 AdminUnauthorized。"""
+    """token 有效则静默返回，否则抛 AdminUnauthorized。
+
+    只验证「Fernet 能解开 + 未过期」不够：client_secret 用同一把
+    SECRET_KEY 加密（见 _fernet 的注释），如果不校验解出来的明文，
+    数据库里 client_secret_encrypted 那段密文本身就是一张有效的管理员
+    cookie——原样贴进 cookie 就能登进管理台，且这条路径不需要拿到
+    SECRET_KEY，只需要读到数据库（卷快照、备份等更容易暴露的面）。
+    这里显式比对明文是不是本模块签发时用的固定 payload，堵住这条路。
+    """
     if not token:
         raise AdminUnauthorized("未登录")
     ttl = settings.admin_session_days * 86400
     try:
-        _fernet().decrypt(token.encode(), ttl=ttl)
+        payload = _fernet().decrypt(token.encode(), ttl=ttl)
     except InvalidToken as exc:
         raise AdminUnauthorized("会话无效或已过期") from exc
+    if payload != _SESSION_PAYLOAD:
+        raise AdminUnauthorized("会话内容非法")
