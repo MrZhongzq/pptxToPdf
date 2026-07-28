@@ -127,3 +127,28 @@ class ShardBudgetExceeded(AppError):
 class GraphNotConfigured(AppError):
     code = "GRAPH_NOT_CONFIGURED"
     http_status = 503
+
+
+class AdminNotConfigured(AppError):
+    """未设置 PPTX2PDF_ADMIN_PASSWORD_HASH。整个管理入口不可用——
+    不提供「没设密码就免密进入」的默认行为，与 GraphNotConfigured 同构。"""
+
+    code = "ADMIN_NOT_CONFIGURED"
+    http_status = 503
+
+
+class AdminUnauthorized(AppError):
+    code = "ADMIN_UNAUTHORIZED"
+    http_status = 401
+
+
+class AdminBadPassword(AppError):
+    code = "ADMIN_BAD_PASSWORD"
+    http_status = 401
+
+
+class GraphSelftestFailed(AppError):
+    """五步连通性自检未全绿。响应体里带每步状态，调用方据此定位。"""
+
+    code = "GRAPH_SELFTEST_FAILED"
+    http_status = 422
