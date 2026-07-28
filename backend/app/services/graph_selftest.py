@@ -10,6 +10,7 @@ EngineUnavailable / ConversionTimeout 以便流水线统一处理，而这里
 """
 
 import logging
+import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,14 +41,39 @@ def _clip(body: str) -> str:
     return body if len(body) <= _BODY_LIMIT else body[:_BODY_LIMIT] + "…"
 
 
+def _has_code(body: str, code: str) -> bool:
+    """判断 body 里是否出现了这个 AADSTS 错误码本身，而不是把它当另一个
+    码的前缀命中。AADSTS 错误码都是纯数字后缀（如 90002 / 900023），裸
+    `code in body` 在 "AADSTS90002" 与 "AADSTS900023" 之间会互相误判——
+    真机实测过（见 diagnose_token_error 的调用方）。用 \\b 词边界锚住
+    两端：数字与数字之间没有边界，所以 90002 不会命中 900023 里的前
+    六位；数字与冒号/引号/字符串结尾之间有边界，所以真实响应
+    "AADSTSxxxxx: ..." 仍能正常命中。"""
+    return re.search(rf"\bAADSTS{code}\b", body) is not None
+
+
 def diagnose_token_error(status: int, body: str) -> str:
-    """AADSTS 错误码能区分租户、client_id、client_secret 三类错误。"""
-    if "AADSTS90002" in body:
+    """AADSTS 错误码能区分租户不存在/tenant_id 格式非法、client_id 写错、
+    client_secret 写错/已过期这几类错误。数字更长、更具体的码要排在
+    前面判断（900023 先于 90002），倒不是因为 \\b 边界判断本身依赖顺序
+    ——它已经能各自精确锚定——而是让"更具体的诊断优先"这件事在代码里
+    读起来也顺理成章，避免以后有人在中间插入新分支时把顺序改乱。"""
+    if _has_code(body, "900023"):
+        return (
+            "tenant_id 本身不是一个合法的租户标识符（不是有效的 DNS 名"
+            f"称或域名），检查是否填错了格式（AADSTS900023）。原始响应：{_clip(body)}"
+        )
+    if _has_code(body, "90002"):
         return f"租户不存在或 tenant_id 写错（AADSTS90002）。原始响应：{_clip(body)}"
-    if "AADSTS700016" in body:
+    if _has_code(body, "700016"):
         return f"该租户下找不到这个应用，client_id 写错或应用未创建（AADSTS700016）。原始响应：{_clip(body)}"
-    if "AADSTS7000215" in body:
-        return f"client_secret 错误或已过期（AADSTS7000215）。原始响应：{_clip(body)}"
+    if _has_code(body, "7000215"):
+        return f"client_secret 错误（AADSTS7000215）。原始响应：{_clip(body)}"
+    if _has_code(body, "7000222"):
+        return (
+            "client_secret 已过期（Azure 的 client secret 默认 6-24 个月"
+            f"过期），需要去 Azure 门户重新生成（AADSTS7000222）。原始响应：{_clip(body)}"
+        )
     return f"取 access token 失败（HTTP {status}）。原始响应：{_clip(body)}"
 
 
