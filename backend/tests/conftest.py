@@ -26,7 +26,6 @@ def _isolate_app_db(tmp_path, monkeypatch):
     显式请求的 fixture（如各测试文件里的 `client`）执行，所以这里的重定向
     总能赶在任何测试代码触碰 engine 之前生效。
     """
-    import app.api.admin as admin_module
     import app.db as db_module
     import app.services.pipeline as pipeline_module
     import app.services.retention as retention_module
@@ -55,10 +54,6 @@ def _isolate_app_db(tmp_path, monkeypatch):
     # convert_shard / merge_shards 是 RQ 子 job 的入口，各自自开会话，
     # 不补这一条它们会静默连到开发者本机真实库。
     monkeypatch.setattr(shard_pipeline_module, "SessionLocal", test_session_local)
-    # 四期管理端点 app/api/admin.py 的 _db() 同样在模块顶层
-    # `from app.db import SessionLocal`——同一条早绑定的坑，不补这条，
-    # 任何走到 _db() 的测试都会连上开发者本机真实的 pptx2pdf.db。
-    monkeypatch.setattr(admin_module, "SessionLocal", test_session_local)
 
     yield
 

@@ -8,20 +8,12 @@ from fastapi import APIRouter, Cookie, Depends, Response
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.db import SessionLocal
+from app.db import get_session
 from app.errors import GraphNotConfigured
 from app.schemas import AdminLoginRequest, GraphCredentialsDto
 from app.services import admin_auth, graph_credentials
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
-
-
-def _db() -> Session:
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 
 def _set_session_cookie(response: Response, token: str) -> None:
@@ -57,7 +49,7 @@ def login(payload: AdminLoginRequest, response: Response) -> Response:
 
 @router.get("/graph-credentials", response_model=GraphCredentialsDto)
 def get_graph_credentials(
-    _: None = Depends(require_admin), db: Session = Depends(_db)
+    _: None = Depends(require_admin), db: Session = Depends(get_session)
 ) -> GraphCredentialsDto:
     try:
         data = graph_credentials.load_credentials(db)

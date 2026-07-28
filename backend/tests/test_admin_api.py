@@ -38,13 +38,15 @@ def admin_session(client):
 @pytest.fixture
 def db_session():
     # 延迟导入：conftest.py 的 _isolate_app_db autouse fixture 把
-    # app.api.admin.SessionLocal 重定向到了本用例专属的隔离 sqlite 文件
-    # （同一份 test_session_local 也绑给了 db_module/pipeline_module 等），
-    # 这里必须拿重定向之后的那个名字，才能和 client 走同一个库；模块顶层
-    # import 会拿到重定向之前的旧引用，写进去的凭证 client 那边读不到。
-    import app.api.admin as admin_module
+    # app.db.SessionLocal 重定向到了本用例专属的隔离 sqlite 文件。
+    # app/api/admin.py 的端点走 Depends(get_session)——get_session() 函数体内
+    # 对 SessionLocal 是模块内运行时的后绑定查找，所以它天然吃到这份重定向，
+    # 不需要单独补丁。这里同样必须拿重定向之后的 db_module.SessionLocal，
+    # 才能和 client 走同一个库；模块顶层 import 会拿到重定向之前的旧引用，
+    # 写进去的凭证 client 那边读不到。
+    import app.db as db_module
 
-    db = admin_module.SessionLocal()
+    db = db_module.SessionLocal()
     yield db
     db.close()
 
