@@ -9,7 +9,19 @@ EngineUnavailable / ConversionTimeout 以便流水线统一处理，而这里
 高于这部分重复的维护成本。
 """
 
+import logging
+import uuid
 from dataclasses import dataclass
+from pathlib import Path
+from urllib.parse import quote
+
+import httpx
+
+from app.config import settings
+from app.services.engines.graph import GRAPH_ROOT, LOGIN_HOST
+from app.services.graph_credentials import GraphCredentialData
+
+logger = logging.getLogger(__name__)
 
 STEPS = ("token", "drive", "upload", "convert", "delete")
 
@@ -54,3 +66,174 @@ def diagnose_graph_error(step: str, status: int, body: str) -> str:
             f"原始响应：{_clip(body)}"
         )
     return f"{step} 步失败（HTTP {status}）。原始响应：{_clip(body)}"
+
+
+# ---- 五步连通性自检编排 ----
+
+SELFTEST_PPTX = Path(__file__).resolve().parent.parent / "assets" / "selftest.pptx"
+
+# 固定前缀：进程若在上传与删除之间被杀，能人工识别并清理租户里的残留。
+_STAGING_PREFIX = "pptx2pdf-selftest-"
+
+
+def _drive_url(site_id: str) -> str:
+    return f"{GRAPH_ROOT}/sites/{quote(site_id, safe='')}/drive"
+
+
+def _upload_session_url(site_id: str, drive_path: str, filename: str) -> str:
+    site = quote(site_id, safe="")
+    target = f"{drive_path}/{filename}"
+    return f"{GRAPH_ROOT}/sites/{site}/drive/root:/{quote(target, safe='/')}:/createUploadSession"
+
+
+def _content_url(site_id: str, item_id: str) -> str:
+    site = quote(site_id, safe="")
+    return f"{GRAPH_ROOT}/sites/{site}/drive/items/{quote(item_id, safe='')}/content?format=pdf"
+
+
+def _delete_url(site_id: str, item_id: str) -> str:
+    site = quote(site_id, safe="")
+    return f"{GRAPH_ROOT}/sites/{site}/drive/items/{quote(item_id, safe='')}/permanentDelete"
+
+
+def run_selftest(
+    creds: GraphCredentialData, *, client_factory=httpx.Client
+) -> list[StepResult]:
+    """跑完五步，返回每步结果。任何一步失败则后续步骤 ok=None。
+
+    永远返回列表、不抛异常——调用方要的是诊断清单而不是一个异常。
+    """
+    results = {step: StepResult(step=step, ok=None, detail=None) for step in STEPS}
+    timeout = settings.graph_request_timeout_s
+
+    with client_factory(timeout=timeout, follow_redirects=True) as client:
+        token = _step_token(client, creds, results)
+        if token is None:
+            return [results[s] for s in STEPS]
+
+        headers = {"Authorization": f"Bearer {token}"}
+        if not _step_drive(client, creds, headers, results):
+            return [results[s] for s in STEPS]
+
+        item_id = _step_upload(client, creds, headers, results)
+        if item_id is None:
+            return [results[s] for s in STEPS]
+
+        _step_convert(client, creds, headers, item_id, results)
+        _step_delete(client, creds, headers, item_id, results)
+
+    return [results[s] for s in STEPS]
+
+
+def _step_token(client, creds, results) -> str | None:
+    url = f"{LOGIN_HOST}/{quote(creds.tenant_id, safe='')}/oauth2/v2.0/token"
+    try:
+        resp = client.post(
+            url,
+            data={
+                "grant_type": "client_credentials",
+                "client_id": creds.client_id,
+                "client_secret": creds.client_secret,
+                "scope": "https://graph.microsoft.com/.default",
+            },
+        )
+    except httpx.HTTPError as exc:
+        results["token"] = StepResult("token", False, f"网络错误：{type(exc).__name__}")
+        return None
+    if resp.status_code != 200:
+        results["token"] = StepResult("token", False, diagnose_token_error(resp.status_code, resp.text))
+        return None
+    token = resp.json().get("access_token")
+    if not token:
+        results["token"] = StepResult("token", False, "响应里没有 access_token")
+        return None
+    results["token"] = StepResult("token", True, None)
+    return token
+
+
+def _step_drive(client, creds, headers, results) -> bool:
+    try:
+        resp = client.get(_drive_url(creds.site_id), headers=headers)
+    except httpx.HTTPError as exc:
+        results["drive"] = StepResult("drive", False, f"网络错误：{type(exc).__name__}")
+        return False
+    if resp.status_code != 200:
+        results["drive"] = StepResult("drive", False, diagnose_graph_error("drive", resp.status_code, resp.text))
+        return False
+    results["drive"] = StepResult("drive", True, None)
+    return True
+
+
+def _step_upload(client, creds, headers, results) -> str | None:
+    filename = f"{_STAGING_PREFIX}{uuid.uuid4().hex}.pptx"
+    payload = SELFTEST_PPTX.read_bytes()
+    try:
+        session_resp = client.post(
+            _upload_session_url(creds.site_id, creds.drive_path, filename),
+            headers=headers,
+            json={"item": {"@microsoft.graph.conflictBehavior": "replace"}},
+        )
+        if session_resp.status_code not in (200, 201):
+            results["upload"] = StepResult(
+                "upload", False, diagnose_graph_error("upload", session_resp.status_code, session_resp.text)
+            )
+            return None
+        upload_url = session_resp.json()["uploadUrl"]
+
+        total = len(payload)
+        put_resp = client.put(
+            upload_url,
+            headers={
+                "Content-Length": str(total),
+                "Content-Range": f"bytes 0-{total - 1}/{total}",
+            },
+            content=payload,
+        )
+    except httpx.HTTPError as exc:
+        results["upload"] = StepResult("upload", False, f"网络错误：{type(exc).__name__}")
+        return None
+    if put_resp.status_code not in (200, 201):
+        results["upload"] = StepResult(
+            "upload", False, diagnose_graph_error("upload", put_resp.status_code, put_resp.text)
+        )
+        return None
+    item_id = put_resp.json().get("id")
+    if not item_id:
+        results["upload"] = StepResult("upload", False, "上传完成但响应里没有 driveItem id")
+        return None
+    results["upload"] = StepResult("upload", True, None)
+    return item_id
+
+
+def _step_convert(client, creds, headers, item_id, results) -> None:
+    try:
+        resp = client.get(_content_url(creds.site_id, item_id), headers=headers)
+    except httpx.HTTPError as exc:
+        results["convert"] = StepResult("convert", False, f"网络错误：{type(exc).__name__}")
+        return
+    if resp.status_code != 200:
+        results["convert"] = StepResult(
+            "convert", False, diagnose_graph_error("convert", resp.status_code, resp.text)
+        )
+        return
+    if not resp.content.startswith(b"%PDF"):
+        results["convert"] = StepResult(
+            "convert", False, "转换返回的内容不是 PDF——可能被重定向到了登录页"
+        )
+        return
+    results["convert"] = StepResult("convert", True, None)
+
+
+def _step_delete(client, creds, headers, item_id, results) -> None:
+    """无论转换成功与否都要跑——失败路径上的中转文件同样必须删掉。"""
+    try:
+        resp = client.post(_delete_url(creds.site_id, item_id), headers=headers)
+    except httpx.HTTPError as exc:
+        results["delete"] = StepResult("delete", False, f"网络错误：{type(exc).__name__}")
+        return
+    if resp.status_code not in (200, 204):
+        results["delete"] = StepResult(
+            "delete", False, diagnose_graph_error("delete", resp.status_code, resp.text)
+        )
+        return
+    results["delete"] = StepResult("delete", True, None)
