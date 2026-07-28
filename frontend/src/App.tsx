@@ -45,11 +45,22 @@ const GRAPH_RISK_MESSAGE: Record<Exclude<GraphRisk, 'none'>, string> = {
 }
 
 export default function App() {
-  // 只有两个页面，一个 pathname 判断足够——不引入 react-router 这个依赖
+  // 只有两个页面，一个 pathname 判断足够——不引入 react-router 这个依赖。
+  // 这层判断必须放在一个零 hooks 的外层组件里：两个分支各自渲染独立的
+  // 组件实例（<AdminPage /> 或 <UploadPage />），而不是在同一个组件实例
+  // 内部、hooks 调用之前提前 return。后者在当前"纯整页刷新、无客户端
+  // 路由"的前提下不会真的崩，但一旦以后有任何方式让同一个已挂载的 App
+  // 实例在 pathname 变化后重渲染（哪怕只是给 /admin 加一个不用 <a href>
+  // 的"返回上传页"按钮），就会从"提前 return、零 hooks"切到"完整调用
+  // 全部 hooks"，触发 React 的 rules-of-hooks 校验失败。外层零 hooks 天然
+  // 不可能违反这条规则，内层组件要么完整挂载要么完全不挂载。
   if (typeof window !== 'undefined' && window.location.pathname.startsWith('/admin')) {
     return <AdminPage />
   }
+  return <UploadPage />
+}
 
+function UploadPage() {
   const [taskIds, setTaskIds] = useState<string[]>([])
   const [progress, setProgress] = useState<P | null>(null)
   const [phase, setPhase] = useState<UploadPhase>('done')

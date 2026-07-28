@@ -122,4 +122,28 @@ describe('AdminPage', () => {
     await waitFor(() => expect((btn as HTMLButtonElement).disabled).toBe(true))
     release(json({ ok: true, steps: [] }))
   })
+
+  it('服务端未设管理口令时显示未配置提示', async () => {
+    mockFetch(() => json({ code: 'ADMIN_NOT_CONFIGURED' }, 503))
+    render(<AdminPage />)
+    expect(await screen.findByText('管理入口未配置口令')).toBeTruthy()
+  })
+
+  it('点击登出后回到未登录态', async () => {
+    let loggedOut = false
+    mockFetch((url) => {
+      if (url.includes('/logout')) {
+        loggedOut = true
+        return new Response(null, { status: 204 })
+      }
+      if (url.includes('graph-credentials')) {
+        return loggedOut ? json({ code: 'ADMIN_UNAUTHORIZED' }, 401) : json(CREDS)
+      }
+      return json({}, 204)
+    })
+    render(<AdminPage />)
+    await waitFor(() => screen.getByLabelText('租户 ID'))
+    await userEvent.click(screen.getByRole('button', { name: '登出' }))
+    expect(await screen.findByLabelText('管理口令')).toBeTruthy()
+  })
 })
