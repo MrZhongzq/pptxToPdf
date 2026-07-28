@@ -65,12 +65,14 @@ scripts/
 
 ### 口令存储
 
-环境变量 `PPTX2PDF_ADMIN_PASSWORD_HASH`，值为 `hashlib.scrypt` 的十六进制输出加盐，格式 `scrypt$<salt_hex>$<hash_hex>`。使用标准库，不引入新依赖。
+环境变量 `PPTX2PDF_ADMIN_PASSWORD_HASH`，值为 `hashlib.scrypt` 的十六进制输出加盐，格式 `scrypt:<salt_hex>:<hash_hex>`。使用标准库，不引入新依赖。
+
+分隔符用 `:` 而不是 `$`，是因为 Docker Compose 会把 `.env` 里的 `$` 当变量插值：十六进制段以 a–f 开头时会被替换成空串（两段都以数字开头才幸存，概率约 39%），管理员会拿到一个「格式非法」的 503，指着他刚刚正确生成的值。这个失败只在容器里出现——本地裸跑时 pydantic-settings 直读 `.env` 不做插值，所以任何测试都抓不到它。
 
 `.env.example` 给出生成命令，与 Fernet 主密钥的生成命令并排：
 
 ```
-python -c "import hashlib,os,binascii; s=os.urandom(16); pw=input('口令: ').encode(); print('scrypt$'+binascii.hexlify(s).decode()+'$'+binascii.hexlify(hashlib.scrypt(pw,salt=s,n=16384,r=8,p=1,dklen=32)).decode())"
+python -c "import hashlib,os,binascii; s=os.urandom(16); pw=input('口令: ').encode(); print('scrypt:'+binascii.hexlify(s).decode()+':'+binascii.hexlify(hashlib.scrypt(pw,salt=s,n=16384,r=8,p=1,dklen=32)).decode())"
 ```
 
 **未配置口令时管理入口整体返回 503**，与 `secret_key` 未配置时的处理同构。不提供「没设密码就免密进入」的默认行为。
@@ -214,7 +216,7 @@ Nginx 需确认 `/admin` 落到 SPA fallback（`try_files ... /index.html`），
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `PPTX2PDF_ADMIN_PASSWORD_HASH` | 无（未配置则管理入口 503） | `scrypt$<salt>$<hash>` |
+| `PPTX2PDF_ADMIN_PASSWORD_HASH` | 无（未配置则管理入口 503） | `scrypt:<salt>:<hash>`，分隔符不能用 `$`，见 §4 |
 | `PPTX2PDF_ADMIN_COOKIE_SECURE` | `false` | 切 HTTPS 后应改 `true` |
 | `PPTX2PDF_ADMIN_SESSION_DAYS` | `3` | 会话有效期，滑动刷新 |
 
