@@ -259,6 +259,15 @@ def convert_shard(shard_id: str) -> None:
             if not src.is_file():
                 raise ConversionFailed(f"分片源文件缺失: {src.name}")
             meta = probe(src)
+            # 实测页数必须与这一片的页范围吻合，否则切片器漏页/多切时错误
+            # 只会在合并后的总页校验上炸——那时只知道"120 页少了 1 页"，
+            # 定位不到是哪一片。这里先窄化到具体分片，报清楚期望/实际。
+            expected_pages = shard.page_end - shard.page_start + 1
+            if meta.slide_count != expected_pages:
+                raise ConversionPageMismatch(
+                    f"分片 {shard.index}（页 {shard.page_start}-{shard.page_end}）"
+                    f"实测页数不符：期望 {expected_pages} 页，实际 {meta.slide_count} 页"
+                )
             # 按这一片自己的页数与体积算预算，而不是套一个全局常量：
             # graph_request_timeout_s 是单个 HTTP 请求的超时，拿它当整片的
             # 墙钟预算会让 40MB 分片的上传还没传完就判超时，而且引擎内部的

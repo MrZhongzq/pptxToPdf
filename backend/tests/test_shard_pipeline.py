@@ -681,6 +681,30 @@ def test_convert_shard_fails_when_source_missing(
     assert shard.error_code is not None
 
 
+def test_convert_shard_fails_when_measured_pages_do_not_match_shard_range(
+    session, one_shard, use_test_session, monkeypatch, tiny_deck_factory
+):
+    """切片器一旦漏页/多切，per-shard 自校验必须能拦住，不能只靠合并后的
+    总页校验兜底——那时只知道"合并后 119 页 ≠ 120 页"，看不出是哪一片漏的。
+    （终审 F-5）"""
+    engine = _FakeEngine()
+    asked = _install_engine(monkeypatch, engine)
+    # one_shard 声明 page_start=1, page_end=2（期望 2 页）；这里把源文件
+    # 换成 3 页，制造"页范围与实测页数不符"。
+    tiny_deck_factory(shard_dir("T2") / "000.pptx", 3)
+
+    convert_shard("SA")
+
+    shard = session.get(TaskShard, "SA")
+    assert shard.status == "failed"
+    assert shard.error_code == "CONVERSION_PAGE_MISMATCH"
+    assert "期望 2 页" in shard.error_message
+    assert "实际 3 页" in shard.error_message
+    assert "分片 0" in shard.error_message
+    assert engine.calls == []  # 校验必须在调引擎之前拦下
+    assert asked == []
+
+
 def test_convert_shard_ignores_missing_shard(use_test_session):
     convert_shard("nope")  # 不许抛
 
