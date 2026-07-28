@@ -99,3 +99,7 @@ class CapacityConfig(BaseModel):
     graph_max_shards: int
     graph_max_shard_bytes: int
     graph_max_merge_bytes: int
+
+
+class AdminLoginRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=256)

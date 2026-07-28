@@ -6,7 +6,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import config, tasks, uploads
+from app.api import admin, config, tasks, uploads
 from app.config import settings
 from app.db import init_db
 from app.errors import AppError, ValidationError
@@ -76,3 +76,4 @@ def startup() -> None:
 app.include_router(uploads.router)
 app.include_router(tasks.router)
 app.include_router(config.router)
+app.include_router(admin.router)
