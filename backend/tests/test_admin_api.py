@@ -168,7 +168,16 @@ def test_put_runs_selftest_before_saving(client, admin_session, db_session, monk
     assert len(calls) == 1, "保存前必须跑自检"
     saved = graph_credentials.load_credentials(db_session)
     assert saved.tenant_id == "t-1"
+    assert saved.client_id == "c-1"
     assert saved.client_secret == "s-1"
+    assert saved.site_id == "site-1"
+    assert saved.drive_path == "staging"
+    # 钉死字段映射与加解密回环本身：自检收到的那份凭证必须与事后从库里
+    # 读出来的那份逐字段相等（GraphCredentialData 是 frozen dataclass，
+    # 可以直接 ==）。只断言一两个字段回环，端点可以把其余字段写错、写反、
+    # 写死而所有测试毫无反应——这正是「先测后存」要证明却没证明的那部分：
+    # 不是「测了才存」，而是「存的就是测的那份」。
+    assert calls[0] == saved
 
 
 def test_put_does_not_save_when_selftest_fails(client, admin_session, db_session, monkeypatch):
@@ -239,6 +248,11 @@ def test_put_blank_secret_reuses_stored(client, admin_session, db_session, monke
     saved = graph_credentials.load_credentials(db_session)
     assert saved.client_secret == "STORED-SECRET"
     assert saved.tenant_id == "new-t"
+    assert saved.client_id == "new-c"
+    assert saved.site_id == "new-s"
+    assert saved.drive_path == "new-d"
+    # 同上：自检收到的那份必须与库里的那份逐字段相等
+    assert calls[0] == saved
 
 
 def test_put_blank_secret_rejected_on_first_config(client, admin_session, monkeypatch):
