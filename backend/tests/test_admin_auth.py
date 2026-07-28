@@ -23,11 +23,14 @@ def _configure(monkeypatch, password: str = "hunter2") -> None:
 
 def test_hash_format():
     h = admin_auth.hash_password("hunter2")
-    parts = h.split("$")
+    parts = h.split(":")
     assert parts[0] == "scrypt"
     assert len(parts) == 3
     assert len(bytes.fromhex(parts[1])) == 16
     assert len(bytes.fromhex(parts[2])) == 32
+    # 分隔符必须是 ":"，不能是 "$"——Docker Compose 会把 "$<hex>" 当成
+    # 未定义变量插值掉，这是 C1 的根因，见 admin_auth.hash_password docstring
+    assert "$" not in h
 
 
 def test_hash_is_salted():

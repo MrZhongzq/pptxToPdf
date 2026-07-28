@@ -104,7 +104,7 @@ Azure 凭证不再靠手工改数据库——`/admin` 是唯一的写入路径�
 口令，与 `.env.example` 里那条一致）：
 
 ```bash
-python -c "import hashlib,os,binascii; s=os.urandom(16); pw=input('口令: ').encode(); print('scrypt$'+binascii.hexlify(s).decode()+'$'+binascii.hexlify(hashlib.scrypt(pw,salt=s,n=16384,r=8,p=1,dklen=32)).decode())"
+python -c "import hashlib,os,binascii; s=os.urandom(16); pw=input('口令: ').encode(); print('scrypt:'+binascii.hexlify(s).decode()+':'+binascii.hexlify(hashlib.scrypt(pw,salt=s,n=16384,r=8,p=1,dklen=32)).decode())"
 ```
 
 把输出整行填进 `.env` 的 `PPTX2PDF_ADMIN_PASSWORD_HASH`，改完照下方规则

@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     secret_key: str | None = None
     """Fernet 主密钥（32 字节 urlsafe base64）。未配置则 Graph 引擎不可用——
     不设默认值兜底，那等于没加密。"""
-    # 管理入口口令的 scrypt 哈希，格式 scrypt$<salt_hex>$<hash_hex>。
+    # 管理入口口令的 scrypt 哈希，格式 scrypt:<salt_hex>:<hash_hex>。
     # 未配置则管理入口整体 503——与 secret_key 一样不设默认值兜底。
     admin_password_hash: str | None = None
     # 当前部署是 http://<host>:18993，非 HTTPS。写死 Secure=true 会让浏览器

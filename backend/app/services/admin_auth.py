@@ -30,7 +30,15 @@ _WRONG_PASSWORD_DELAY_S = 1.0
 
 
 def hash_password(password: str, *, salt: bytes | None = None) -> str:
-    """返回 scrypt$<salt_hex>$<hash_hex>。salt 参数仅供测试构造确定值。"""
+    """返回 scrypt:<salt_hex>:<hash_hex>。salt 参数仅供测试构造确定值。
+
+    分隔符用 `:` 而不是 `$`：十六进制段以 a-f 开头时，Docker Compose 会把
+    `$<hex>` 当成未定义的变量插值，整段被替换成空串（以 0-9 开头的段
+    则幸存，概率相关，约 61% 的哈希会在部署时被吃掉一段或两段）。这只在
+    `docker compose`（唯一部署方式）里发生，pydantic-settings 直读 `.env`
+    不做插值，本地裸跑测试完全复现不了。`:` 对 Compose 插值免疫，不依赖
+    任何人记住要把命令输出里的 `$` 手工转义成 `$$`。
+    """
     if salt is None:
         salt = os.urandom(_SALT_BYTES)
     digest = hashlib.scrypt(
@@ -41,7 +49,7 @@ def hash_password(password: str, *, salt: bytes | None = None) -> str:
         p=_SCRYPT_P,
         dklen=_SCRYPT_DKLEN,
     )
-    return f"scrypt${binascii.hexlify(salt).decode()}${binascii.hexlify(digest).decode()}"
+    return f"scrypt:{binascii.hexlify(salt).decode()}:{binascii.hexlify(digest).decode()}"
 
 
 def verify_password(password: str) -> None:
@@ -54,7 +62,7 @@ def verify_password(password: str) -> None:
     if not stored:
         raise AdminNotConfigured("未配置 PPTX2PDF_ADMIN_PASSWORD_HASH，管理入口不可用")
 
-    parts = stored.split("$")
+    parts = stored.split(":")
     if len(parts) != 3 or parts[0] != "scrypt":
         raise AdminNotConfigured("PPTX2PDF_ADMIN_PASSWORD_HASH 格式非法")
     try:
