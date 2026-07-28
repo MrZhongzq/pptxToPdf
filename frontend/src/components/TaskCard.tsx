@@ -95,9 +95,21 @@ export function TaskCard({ taskId }: { taskId: string }) {
     .filter(([, on]) => on)
     .map(([k]) => OPTION_LABEL[k] ?? k)
   const inFlight = !['done', 'failed'].includes(task.status)
+  // 分片任务：从一开始就要在 UX 上特殊显示，不能和普通任务长得一模一样
+  // 让用户干等——用户原话「只要不是静默让用户等 10 分钟就行」。
+  const sharded = task.shard_total !== null && task.shard_total > 0
+  const shardPct = sharded
+    ? Math.round((task.shard_done / (task.shard_total as number)) * 100)
+    : 0
 
   return (
-    <div className="card" style={{ padding: 'var(--space-4)' }}>
+    <div
+      className="card"
+      style={{
+        padding: 'var(--space-4)',
+        ...(sharded ? { borderLeft: '4px solid var(--c-notable)' } : null),
+      }}
+    >
       <div
         style={{
           display: 'flex',
@@ -148,20 +160,47 @@ export function TaskCard({ taskId }: { taskId: string }) {
       )}
 
       {inFlight && (
-        <div
-          className="sunken"
-          style={{ height: 3, marginTop: 'var(--space-3)', overflow: 'hidden' }}
-        >
+        <>
+          {sharded && (
+            <p
+              style={{
+                fontSize: 13,
+                color: 'var(--c-notable)',
+                marginTop: 'var(--space-3)',
+              }}
+            >
+              已完成 {task.shard_done} / {task.shard_total} 片
+            </p>
+          )}
           <div
+            className="sunken"
             style={{
-              width: '35%',
-              height: '100%',
-              background: 'var(--c-accent)',
-              borderRadius: 999,
-              animation: 'indeterminate 1.4s ease-in-out infinite',
+              height: 4,
+              marginTop: 'var(--space-2)',
+              overflow: 'hidden',
             }}
-          />
-        </div>
+          >
+            <div
+              style={
+                sharded
+                  ? {
+                      width: `${shardPct}%`,
+                      height: '100%',
+                      background: 'var(--c-notable)',
+                      borderRadius: 999,
+                      transition: 'width 300ms ease',
+                    }
+                  : {
+                      width: '35%',
+                      height: '100%',
+                      background: 'var(--c-accent)',
+                      borderRadius: 999,
+                      animation: 'indeterminate 1.4s ease-in-out infinite',
+                    }
+              }
+            />
+          </div>
+        </>
       )}
 
       {task.status === 'failed' && (

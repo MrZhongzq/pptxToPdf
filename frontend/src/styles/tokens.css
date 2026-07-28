@@ -32,6 +32,11 @@
   --c-warn: #9a6700;
   --c-warn-soft: #fdf5e3;
 
+  /* 「这个任务会比你预期的久」专用色——分片任务的紫色区分标记。
+     不要挪作他用（不是又一个 accent，不是又一个 warn）。 */
+  --c-notable: #7c3aed;
+  --c-notable-soft: #f3ecfe;
+
   --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
   --shadow-md: 0 2px 8px rgba(16, 24, 40, 0.08), 0 1px 2px rgba(16, 24, 40, 0.04);
   --shadow-lg: 0 12px 32px rgba(16, 24, 40, 0.12);
@@ -78,6 +83,9 @@
     --c-warn: #e3b341;
     --c-warn-soft: #33290f;
 
+    --c-notable: #a78bfa;
+    --c-notable-soft: #2a1f3d;
+
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
     --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.3);
     --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.55);
@@ -107,6 +115,9 @@
   --c-success-soft: #14312a;
   --c-warn: #e3b341;
   --c-warn-soft: #33290f;
+
+  --c-notable: #a78bfa;
+  --c-notable-soft: #2a1f3d;
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.3);

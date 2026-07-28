@@ -59,6 +59,15 @@ export interface TaskDto {
   created_at: string
 }
 
+/** 容量相关的只读配置，供选 Graph 引擎时做上传前的启发式预判。与后端
+ *  schemas.CapacityConfig 一一对应，值由后端现读 app.config.settings 单例吐出。 */
+export interface CapacityConfig {
+  max_file_size: number
+  graph_max_shards: number
+  graph_max_shard_bytes: number
+  graph_max_merge_bytes: number
+}
+
 export class ApiError extends Error {
   readonly code: string
   readonly status: number
@@ -129,6 +138,12 @@ export async function completeUpload(
 
 export async function getTask(taskId: string): Promise<TaskDto> {
   return parse<TaskDto>(await fetch(`/api/tasks/${taskId}`))
+}
+
+/** 不缓存——这几个数字来自后端 settings，四期上真实租户后可能被回调，
+ *  每次都现取，不在前端另存一份可能漂移的副本。 */
+export async function getCapacityConfig(): Promise<CapacityConfig> {
+  return parse<CapacityConfig>(await fetch('/api/config/capacity'))
 }
 
 export function downloadUrl(taskId: string): string {

@@ -11,7 +11,7 @@ vi.mock('../hooks/useTaskPolling', () => ({
   useTaskPolling: () => polling.state,
 }))
 
-function taskWith(status: string): TaskDto {
+function taskWith(status: string, overrides: Partial<TaskDto> = {}): TaskDto {
   return {
     task_id: 'T1',
     status: status as TaskDto['status'],
@@ -28,6 +28,7 @@ function taskWith(status: string): TaskDto {
     error_code: null,
     error_message: null,
     created_at: '2026-07-26T00:00:00Z',
+    ...overrides,
   }
 }
 
@@ -67,5 +68,61 @@ describe('TaskCard 状态徽标', () => {
     expect(container.querySelector('.sunken')).not.toBeNull()
     // 合并阶段还没有结果可下
     expect(screen.queryByRole('button', { name: /下载/ })).toBeNull()
+  })
+})
+
+describe('TaskCard 分片进度（长耗时任务的紫色区分）', () => {
+  beforeEach(() => {
+    polling.state = { task: null, pollingTimedOut: false }
+  })
+
+  it('未分片任务（shard_total 为 null）不显示分片进度文案，也没有紫色边框', () => {
+    const task = taskWith('converting', { shard_total: null, shard_done: 0 })
+    polling.state = { task, pollingTimedOut: false }
+    const { container } = render(<TaskCard taskId="T1" />)
+
+    expect(screen.queryByText(/已完成.*片/)).toBeNull()
+    const card = container.querySelector('.card') as HTMLElement
+    expect(card.style.borderLeft).toBe('')
+  })
+
+  it('shard_total 为 0（非 null 但无效）同样不算分片任务', () => {
+    const task = taskWith('converting', { shard_total: 0, shard_done: 0 })
+    polling.state = { task, pollingTimedOut: false }
+    const { container } = render(<TaskCard taskId="T1" />)
+
+    expect(screen.queryByText(/已完成.*片/)).toBeNull()
+    const card = container.querySelector('.card') as HTMLElement
+    expect(card.style.borderLeft).toBe('')
+  })
+
+  it('分片任务（shard_total 有值）进行中：显示已完成分片数与紫色边框', () => {
+    const task = taskWith('converting', { shard_total: 8, shard_done: 3 })
+    polling.state = { task, pollingTimedOut: false }
+    const { container } = render(<TaskCard taskId="T1" />)
+
+    expect(screen.getByText('已完成 3 / 8 片')).toBeInTheDocument()
+    const card = container.querySelector('.card') as HTMLElement
+    expect(card.style.borderLeft).toBe('4px solid var(--c-notable)')
+  })
+
+  it('分片任务的进度条宽度按 shard_done / shard_total 四舍五入换算成百分比', () => {
+    const task = taskWith('merging', { shard_total: 3, shard_done: 1 })
+    polling.state = { task, pollingTimedOut: false }
+    const { container } = render(<TaskCard taskId="T1" />)
+
+    // 1/3 = 33.33...% -> round 到 33%
+    const bar = container.querySelector('.sunken > div') as HTMLElement
+    expect(bar.style.width).toBe('33%')
+  })
+
+  it('分片任务已完成（done）：不再显示分片进度条/文案，但保留紫色边框', () => {
+    const task = taskWith('done', { shard_total: 8, shard_done: 8 })
+    polling.state = { task, pollingTimedOut: false }
+    const { container } = render(<TaskCard taskId="T1" />)
+
+    expect(screen.queryByText(/已完成.*片/)).toBeNull()
+    const card = container.querySelector('.card') as HTMLElement
+    expect(card.style.borderLeft).toBe('4px solid var(--c-notable)')
   })
 })
