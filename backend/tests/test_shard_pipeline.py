@@ -556,6 +556,29 @@ def test_graph_path_capacity_is_not_larger_than_the_advertised_upload_limit():
     assert capacity <= settings.max_file_size
 
 
+def _task_columns(task: Task) -> dict:
+    """Task 行的全列快照，用于"这一步不许碰 Task 行"类断言。
+
+    终审变异："convert_shard 顺手写 task.output_path" 曾经逃逸——旧断言只钉
+    `Task.status == "converting"` 一列，写别的列没人拦。整行快照堵住这整
+    类"写了不该写的列"的变异，而不仅仅是 status 这一列（F-3）。
+
+    datetime 列要 astimezone(utc) 再去掉 tzinfo：convert_shard 的 finally
+    会 `session.close()`，之后同一个 session 对象上的下一次 `.get()` 清空
+    了 identity map、必须发一次真实 SELECT 重新落地，SQLite dialect 落库
+    再读回来会丢时区信息（retention.py 里也记过同一件事）——这是查询路径
+    的先天损耗，不是 convert_shard 动了这些列，比较前必须先抹平这个表象
+    差异，否则会把"没变"误判成"变了"。
+    """
+    cols: dict = {}
+    for c in Task.__table__.columns:
+        value = getattr(task, c.name)
+        if isinstance(value, datetime) and value.tzinfo is not None:
+            value = value.astimezone(timezone.utc).replace(tzinfo=None)
+        cols[c.name] = value
+    return cols
+
+
 # ---------------------------------------------------------------- convert_shard
 
 
@@ -592,6 +615,7 @@ def test_convert_shard_records_output_and_uses_task_engine(
 ):
     engine = _FakeEngine()
     asked = _install_engine(monkeypatch, engine)
+    task_before = _task_columns(one_shard)
 
     convert_shard("SA")
 
@@ -612,8 +636,10 @@ def test_convert_shard_records_output_and_uses_task_engine(
     src_size = (shard_dir("T2") / "000.pptx").stat().st_size
     assert call["timeout_s"] == compute_timeout_s(2, src_size)
     assert call["timeout_s"] > settings.graph_request_timeout_s
-    # 分片 job 不许碰主任务行——并发写同一行在 SQLite 上会丢更新
-    assert session.get(Task, "T2").status == "converting"
+    # 分片 job 不许碰主任务行——并发写同一行在 SQLite 上会丢更新。整行快照
+    # 比对而不是单挑 status 一列：只钉 status 会漏掉"顺手写别的列"（比如
+    # output_path）这类变异（终审 F-3）。
+    assert _task_columns(session.get(Task, "T2")) == task_before
 
 
 def test_convert_shard_records_app_error(session, one_shard, use_test_session, monkeypatch):
