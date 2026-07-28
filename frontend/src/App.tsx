@@ -114,6 +114,11 @@ export default function App() {
       setPendingFile(file)
       return
     }
+    // 复审发现：这个分支之前没清 pendingFile——选了风险文件、还没点按钮
+    // 就改选另一个没风险的文件时，旧提示会原样挂在屏幕上（指向一个已经
+    // 放弃的文件），awaitingRiskDecision 也会永久为 true，把
+    // ConversionOptionsPanel 锁死到再也切不了引擎。
+    setPendingFile(null)
     void startUpload(file, engine)
   }
 

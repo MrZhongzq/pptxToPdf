@@ -183,4 +183,27 @@ describe('App 上传前的容量启发式预判与确认时机', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('超过上限')
     expect(mocks.uploadFile).not.toHaveBeenCalled()
   })
+
+  it('选了风险文件出现确认提示后改选一个小文件：小文件正常上传、旧提示消失、引擎面板恢复可用（复审新发现的 bug）', async () => {
+    render(<App />)
+    await waitFor(() => expect(mocks.getCapacityConfig).toHaveBeenCalled())
+    selectGraphEngine()
+
+    chooseFile(fileOfSize(300 * MIB))
+    await screen.findByRole('button', { name: '仍然继续' })
+    expect(screen.getByRole('button', { name: /Microsoft Graph/ })).toBeDisabled()
+
+    // 改主意了：不理会这个提示，直接选另一个没有风险的小文件。
+    chooseFile(fileOfSize(2 * MIB))
+
+    await waitFor(() => expect(mocks.uploadFile).toHaveBeenCalledTimes(1))
+    const [, opts] = mocks.uploadFile.mock.calls[0]
+    expect(opts.engine).toBe('graph')
+
+    // 旧提示不能还挂在屏幕上——它指向一个用户已经放弃的文件。
+    expect(screen.queryByRole('button', { name: '仍然继续' })).toBeNull()
+    expect(screen.queryByText(/建议改用 LibreOffice|大概率会在切片规划阶段/)).toBeNull()
+    // 引擎面板不能被永久锁死。
+    expect(screen.getByRole('button', { name: /Microsoft Graph/ })).not.toBeDisabled()
+  })
 })
