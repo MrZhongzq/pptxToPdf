@@ -48,6 +48,13 @@ def enqueue_shards(task_id: str, shard_ids: list[str]) -> None:
     from app.services.shard_pipeline import convert_shard, merge_shards
 
     q = get_queue()
+    # 这个 job_timeout 同时套在每个分片 job 和汇总 merge job 上，两条不变量
+    # 都靠它成立：1) 必须 < stale_task_minutes × 60（config.py:
+    # convert_timeout_max_s 的 docstring），否则孤儿回收器可能在 merge 还
+    # 没跑完时就抢先把任务标 failed，而 merge_shards 的终态守卫只在入口查
+    # 一次，拦不住这种翻转；2) graph_max_merge_bytes 对应的合并耗时必须明显
+    # 小于它（config.py: graph_max_merge_bytes 的 docstring），否则 merge
+    # job 会被 RQ 直接掐死。
     job_timeout = settings.convert_timeout_max_s + JOB_TIMEOUT_MARGIN_S
     shard_jobs = [
         q.enqueue(convert_shard, sid, job_timeout=job_timeout) for sid in shard_ids

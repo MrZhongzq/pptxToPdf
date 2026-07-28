@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     convert_timeout_per_slide_s: int = 4
     convert_timeout_per_mb_s: int = 2
     convert_timeout_max_s: int = 1800
+    """单次转换（或三期分片路径里单个分片/汇总 merge job）的墙钟预算上限。
+    必须满足 convert_timeout_max_s + JOB_TIMEOUT_MARGIN_S（app/queue.py 里
+    enqueue_shards 算出的 RQ job_timeout）< stale_task_minutes × 60（当前
+    1800+60=1860s < 45×60=2700s）——merge job 必须先被 RQ 自己的超时掐死，
+    孤儿回收器才可能开火；反过来的话，回收器会在 merge job 仍在跑的时候把
+    任务标 failed，而 merge_shards 的终态守卫只在入口检查一次，拦不住这种
+    中途被翻转的窗口（任务从 failed 又被迟到的 merge 改回 done）。"""
     soffice_bin: str = "soffice"
 
     # 三期：Graph 引擎
@@ -54,7 +61,15 @@ class Settings(BaseSettings):
     倍率取 3.01×，来自审查实测：4 片共 54.1MB 的图片密集型 PDF，
     tracemalloc 测得峰值 162.9MB。240MiB × 3.01 ≈ 720MB Python 堆峰值，
     在 2GB worker 上留有余量。注意 tracemalloc 不含解释器基线与分配器碎片，
-    真实 RSS 更高——四期上真实租户后应实测 RSS 再回调本值。"""
+    真实 RSS 更高——四期上真实租户后应实测 RSS 再回调本值。
+
+    另一条同样承重、目前没写在任何地方的不变量：这个上限对应的合并耗时
+    必须明显小于 merge job 的 RQ job_timeout（convert_timeout_max_s +
+    JOB_TIMEOUT_MARGIN_S，app/queue.py，当前 1860s）——超了的话 merge job
+    会被 RQ 直接掐死，任务卡在 merging 状态，只能等孤儿回收器收尸。240MiB
+    用 pypdf 合并大概率远低于 31 分钟，但两个数字之间目前没有任何代码或
+    测试把它们钉在一起；四期按实测 RSS 上调本值时必须重新核对这条还成不
+    成立。"""
 
     # 二期新增：故障注入，默认全关
     debug_force_timeout: bool = False
