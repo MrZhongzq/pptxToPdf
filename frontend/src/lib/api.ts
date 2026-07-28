@@ -50,6 +50,10 @@ export interface TaskDto {
   slide_height_emu: number | null
   fonts: string[]
   options: ConversionOptions
+  /** 切片总数，null 表示未切片（二期原路径）。与后端 schemas.TaskDto 对应。 */
+  shard_total: number | null
+  /** 已完成的分片数，由后端查询时现算；未切片任务恒为 0。 */
+  shard_done: number
   error_code: string | null
   error_message: string | null
   created_at: string

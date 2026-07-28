@@ -10,7 +10,7 @@ from app.api import tasks, uploads
 from app.config import settings
 from app.db import init_db
 from app.errors import AppError, ValidationError
-from app.services.retention import reap_stale_tasks
+from app.services.retention import purge_expired_shards, reap_stale_tasks
 
 logging.basicConfig(
     level=logging.INFO,
@@ -66,6 +66,11 @@ def startup() -> None:
     settings.ensure_dirs()
     init_db()
     reap_stale_tasks()
+    # 与上面 reap_stale_tasks 同一理由的双触发：OOM 之后最典型的运维动作
+    # 就是重启，如果只挂 pipeline.run_task 那一半惰性清理，服务重启后长期
+    # 没有新任务进来时，OOM killer 留下的分片目录残骸（数百 MB 量级）会
+    # 永久占盘，没有任何路径会再碰它。
+    purge_expired_shards()
 
 
 app.include_router(uploads.router)

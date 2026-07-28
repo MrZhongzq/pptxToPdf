@@ -63,19 +63,41 @@ def purge_expired_shards() -> int:
     convert_shard / merge_shards 中途被 OOM killer 干掉时，没有任何 finally
     会跑，分片目录会留下几十 MB 到几百 MB（分片 pptx 加分片 PDF 是原文件的
     两倍体积），没有任何其他路径会碰它。
+
+    不变量（为什么纯按 mtime 判断不会误删活分片目录）：本函数完全不查
+    Task/TaskShard 表，安全性只靠 output_ttl_hours（默认 86400s）远大于
+    单片转换的墙钟上限 convert_timeout_max_s（默认 1800s）——convert_shard
+    每片落一个新文件（`{idx:03d}.pdf`）都会刷新目录自身的 mtime（NTFS/ext4
+    上新建/删除目录项都会更新父目录的 mtime，已实测确认），所以活任务的
+    目录 mtime 刷新间隔上界就是单片墙钟上限，对默认 TTL 有 48x 余量。
+    若以后要把 output_ttl_hours 调得更短，必须重新核对这条不变量还成不
+    成立——不成立的话需要改成像 `_is_really_stale` 那样查表判活性。
     """
     cutoff = time.time() - settings.output_ttl_hours * 3600
     removed = 0
     try:
         candidates = list(settings.shards_dir.iterdir())
-    except OSError:
+    except FileNotFoundError:
+        return 0  # 目录本就不存在是正常路径（还没有任何分片任务跑过），不必吭声
+    except OSError as exc:
+        # 权限错误、IO 错误等——与目录不存在性质不同：清理从此永久静默失效，
+        # 磁盘持续增长却没有任何日志信号，必须留痕，与 purge_expired_outputs
+        # 对同类失败的处理保持一致。
+        logger.warning("扫描分片目录失败: %s", exc)
         return 0
 
     for path in candidates:
         try:
-            if path.is_dir() and path.stat().st_mtime < cutoff:
-                shutil.rmtree(path, ignore_errors=True)
-                removed += 1
+            if not path.is_dir() or path.stat().st_mtime >= cutoff:
+                continue
+            shutil.rmtree(path, ignore_errors=True)
+            if path.exists():
+                # ignore_errors=True 吞掉的失败（Windows 上文件被占用等）不能
+                # 计入删除数——pipeline.py 那句 info 日志据此判断清理是否真的
+                # 生效，虚报会让运维误以为磁盘增长已被控制住而实际一个没删。
+                logger.warning("分片目录清理未完全成功，仍残留: %s", path)
+                continue
+            removed += 1
         except OSError as exc:
             logger.warning("删除过期分片目录失败 %s: %s", path, exc)
     return removed

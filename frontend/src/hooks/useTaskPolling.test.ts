@@ -21,6 +21,8 @@ function taskWith(status: string): TaskDto {
     slide_height_emu: null,
     fonts: [],
     options: { expand_animations: false, pdf_outline: false, remap_margins: false },
+    shard_total: null,
+    shard_done: 0,
     error_code: null,
     error_message: null,
     created_at: '2026-07-26T00:00:00Z',
