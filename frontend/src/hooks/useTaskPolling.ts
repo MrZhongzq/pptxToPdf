@@ -16,11 +16,24 @@ const TERMINAL = new Set<TaskDto['status']>(['done', 'failed'])
 // 转完。如果前端仍按"挂载至今"计时，46 分钟一到就会把仍在正常推进
 // shard_done 的任务错判为已中断——见终审 finding F-1。
 //
-// 改成"距上次变化"之后，46 分钟不需要再加宽：健康任务的两次内容变化之间
-// 的间隔上界由后端自己的不变量决定（convert_timeout_max_s +
-// JOB_TIMEOUT_MARGIN_S < stale_task_minutes × 60，当前 1860s < 2700s =
-// 45 分钟），46 > 45 的余量在"距上次变化"这个口径下同样成立、且不再依赖
-// 分片数或总时长。
+// 改成"距上次变化"之后 46 分钟不需要再加宽，但支撑它的是两条不同路径
+// 各自的界，不是同一条不等式（复审更正）：
+//
+// - 分片路径：单个 convert_shard/merge job 的 RQ job_timeout
+//   （convert_timeout_max_s + JOB_TIMEOUT_MARGIN_S，当前 1860s）封顶了
+//   一次分片转换能跑多久，即两次 shard_done 变化之间的间隔上界。
+//   1860s < MAX_POLL_MS(2760s)，余量 900s，很宽。
+// - 非分片路径：孤儿回收器在 Task.updated_at 停止变化 stale_task_minutes
+//   （默认 45 分钟 = 2700s）之后把任务标 failed，这本身就是一次内容
+//   变化。2700s < MAX_POLL_MS(2760s)，余量只有 60s，很薄——但这条耦合
+//   是二期就有的（MAX_POLL_MS 从一开始就只比 STALE_TASK_MINUTES 多 1
+//   分钟），本轮把判据从"挂载至今"换成"距上次变化"没有让它变得更紧，
+//   原样带过来而已。
+//
+// config.py 里 convert_timeout_max_s 的 docstring 记的
+// `job_timeout < stale_task_minutes × 60` 是另一条不变量，保护的是
+// merge 期间的终态翻转（回收器标 failed 之后 merge 又跑完改回 done），
+// 跟这里前端 46 分钟阈值的依据是两回事，不要混用。
 const MAX_POLL_MS = 46 * 60 * 1000
 
 export interface TaskPollingState {
