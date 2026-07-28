@@ -96,17 +96,45 @@ def _delete_url(site_id: str, item_id: str) -> str:
     return f"{GRAPH_ROOT}/sites/{site}/drive/items/{quote(item_id, safe='')}/permanentDelete"
 
 
+def _fail(
+    results: dict[str, StepResult], step: str, detail: str, *, ok: bool | None = False
+) -> None:
+    """记一条失败（或因异常而放弃）的步骤结果，并把 detail 顺带写进服务端
+    日志——自检失败时排障不能只靠管理员在页面上看到的那一行文字，
+    HTTP 响应体、异常类型这些细节留个服务端记录更有用。"""
+    results[step] = StepResult(step, ok, detail)
+    logger.warning("graph selftest step=%s ok=%s detail=%s", step, ok, detail)
+
+
 def run_selftest(
     creds: GraphCredentialData, *, client_factory=httpx.Client
 ) -> list[StepResult]:
     """跑完五步，返回每步结果。任何一步失败则后续步骤 ok=None。
 
     永远返回列表、不抛异常——调用方要的是诊断清单而不是一个异常。
+
+    这份保证不只覆盖 Graph 返回的 HTTP 错误，还包括：client_factory(...)
+    本身构造失败（比如自定义 factory 因为配置错误而拒绝构造）、响应体
+    不是合法 JSON（企业代理拦截、被重定向到登录页时常见）、JSON 里缺
+    预期字段。这些都不是 httpx.HTTPError（传输层异常），必须在各步骤
+    内部单独接住，不能指望一个 except httpx.HTTPError 兜底。
     """
     results = {step: StepResult(step=step, ok=None, detail=None) for step in STEPS}
     timeout = settings.graph_request_timeout_s
 
-    with client_factory(timeout=timeout, follow_redirects=True) as client:
+    try:
+        client_cm = client_factory(timeout=timeout, follow_redirects=True)
+    except Exception as exc:
+        # 连 HTTP 客户端都建不起来（构造参数错误、自定义 factory 故意拒绝
+        # 等）。五步全部保持 ok=None——我们甚至没能真正尝试第一步；
+        # detail 只挂在 token 上，说明诊断到"连接都没建起来"这一层，
+        # 而不是伪装成某一步 Graph 调用失败。
+        results["token"] = StepResult(
+            "token", None, f"无法初始化 HTTP 客户端：{type(exc).__name__}: {_clip(str(exc))}"
+        )
+        return [results[s] for s in STEPS]
+
+    with client_cm as client:
         token = _step_token(client, creds, results)
         if token is None:
             return [results[s] for s in STEPS]
@@ -125,7 +153,9 @@ def run_selftest(
     return [results[s] for s in STEPS]
 
 
-def _step_token(client, creds, results) -> str | None:
+def _step_token(
+    client: httpx.Client, creds: GraphCredentialData, results: dict[str, StepResult]
+) -> str | None:
     url = f"{LOGIN_HOST}/{quote(creds.tenant_id, safe='')}/oauth2/v2.0/token"
     try:
         resp = client.post(
@@ -138,35 +168,55 @@ def _step_token(client, creds, results) -> str | None:
             },
         )
     except httpx.HTTPError as exc:
-        results["token"] = StepResult("token", False, f"网络错误：{type(exc).__name__}")
+        _fail(results, "token", f"网络错误：{type(exc).__name__}: {_clip(str(exc))}")
         return None
     if resp.status_code != 200:
-        results["token"] = StepResult("token", False, diagnose_token_error(resp.status_code, resp.text))
+        _fail(results, "token", diagnose_token_error(resp.status_code, resp.text))
         return None
-    token = resp.json().get("access_token")
+    try:
+        payload = resp.json()
+    except ValueError:
+        _fail(results, "token", "取 token 的响应不是合法 JSON——可能被代理拦截或重定向到了登录页")
+        return None
+    token = payload.get("access_token")
     if not token:
-        results["token"] = StepResult("token", False, "响应里没有 access_token")
+        _fail(results, "token", "响应里没有 access_token")
         return None
     results["token"] = StepResult("token", True, None)
     return token
 
 
-def _step_drive(client, creds, headers, results) -> bool:
+def _step_drive(
+    client: httpx.Client,
+    creds: GraphCredentialData,
+    headers: dict[str, str],
+    results: dict[str, StepResult],
+) -> bool:
     try:
         resp = client.get(_drive_url(creds.site_id), headers=headers)
     except httpx.HTTPError as exc:
-        results["drive"] = StepResult("drive", False, f"网络错误：{type(exc).__name__}")
+        _fail(results, "drive", f"网络错误：{type(exc).__name__}: {_clip(str(exc))}")
         return False
     if resp.status_code != 200:
-        results["drive"] = StepResult("drive", False, diagnose_graph_error("drive", resp.status_code, resp.text))
+        _fail(results, "drive", diagnose_graph_error("drive", resp.status_code, resp.text))
         return False
     results["drive"] = StepResult("drive", True, None)
     return True
 
 
-def _step_upload(client, creds, headers, results) -> str | None:
+def _step_upload(
+    client: httpx.Client,
+    creds: GraphCredentialData,
+    headers: dict[str, str],
+    results: dict[str, StepResult],
+) -> str | None:
     filename = f"{_STAGING_PREFIX}{uuid.uuid4().hex}.pptx"
-    payload = SELFTEST_PPTX.read_bytes()
+    try:
+        payload = SELFTEST_PPTX.read_bytes()
+    except OSError as exc:
+        _fail(results, "upload", f"读取内置自检文件失败：{type(exc).__name__}: {_clip(str(exc))}")
+        return None
+
     try:
         session_resp = client.post(
             _upload_session_url(creds.site_id, creds.drive_path, filename),
@@ -174,11 +224,25 @@ def _step_upload(client, creds, headers, results) -> str | None:
             json={"item": {"@microsoft.graph.conflictBehavior": "replace"}},
         )
         if session_resp.status_code not in (200, 201):
-            results["upload"] = StepResult(
-                "upload", False, diagnose_graph_error("upload", session_resp.status_code, session_resp.text)
+            _fail(
+                results,
+                "upload",
+                diagnose_graph_error("upload", session_resp.status_code, session_resp.text),
             )
             return None
-        upload_url = session_resp.json()["uploadUrl"]
+        try:
+            session_payload = session_resp.json()
+        except ValueError:
+            _fail(
+                results,
+                "upload",
+                "创建上传会话的响应不是合法 JSON——可能被代理拦截或重定向到了登录页",
+            )
+            return None
+        upload_url = session_payload.get("uploadUrl")
+        if not upload_url:
+            _fail(results, "upload", "创建上传会话成功但响应里没有 uploadUrl")
+            return None
 
         total = len(payload)
         put_resp = client.put(
@@ -190,50 +254,73 @@ def _step_upload(client, creds, headers, results) -> str | None:
             content=payload,
         )
     except httpx.HTTPError as exc:
-        results["upload"] = StepResult("upload", False, f"网络错误：{type(exc).__name__}")
+        _fail(results, "upload", f"网络错误：{type(exc).__name__}: {_clip(str(exc))}")
         return None
     if put_resp.status_code not in (200, 201):
-        results["upload"] = StepResult(
-            "upload", False, diagnose_graph_error("upload", put_resp.status_code, put_resp.text)
+        _fail(results, "upload", diagnose_graph_error("upload", put_resp.status_code, put_resp.text))
+        return None
+    try:
+        put_payload = put_resp.json()
+    except ValueError:
+        # 走到这里说明 PUT 已经拿到 200/201——文件字节大概率已经落地到
+        # 租户的中转库了，只是响应体解析不了，没法读出 item_id 去删除。
+        # 不能装作什么都没发生：把「可能已残留」和清理线索都写进 detail。
+        _fail(
+            results,
+            "upload",
+            "上传完成但响应不是合法 JSON，无法读出 driveItem id 以便清理——"
+            f"文件可能已残留在中转库，请按前缀 {_STAGING_PREFIX} 人工检查并删除",
         )
         return None
-    item_id = put_resp.json().get("id")
+    item_id = put_payload.get("id")
     if not item_id:
-        results["upload"] = StepResult("upload", False, "上传完成但响应里没有 driveItem id")
+        # 同上：PUT 已成功，只是响应里没有 id，一样有残留风险。
+        _fail(
+            results,
+            "upload",
+            "上传完成但响应里没有 driveItem id，无法自动清理——"
+            f"文件可能已残留在中转库，请按前缀 {_STAGING_PREFIX} 人工检查并删除",
+        )
         return None
     results["upload"] = StepResult("upload", True, None)
     return item_id
 
 
-def _step_convert(client, creds, headers, item_id, results) -> None:
+def _step_convert(
+    client: httpx.Client,
+    creds: GraphCredentialData,
+    headers: dict[str, str],
+    item_id: str,
+    results: dict[str, StepResult],
+) -> None:
     try:
         resp = client.get(_content_url(creds.site_id, item_id), headers=headers)
     except httpx.HTTPError as exc:
-        results["convert"] = StepResult("convert", False, f"网络错误：{type(exc).__name__}")
+        _fail(results, "convert", f"网络错误：{type(exc).__name__}: {_clip(str(exc))}")
         return
     if resp.status_code != 200:
-        results["convert"] = StepResult(
-            "convert", False, diagnose_graph_error("convert", resp.status_code, resp.text)
-        )
+        _fail(results, "convert", diagnose_graph_error("convert", resp.status_code, resp.text))
         return
     if not resp.content.startswith(b"%PDF"):
-        results["convert"] = StepResult(
-            "convert", False, "转换返回的内容不是 PDF——可能被重定向到了登录页"
-        )
+        _fail(results, "convert", "转换返回的内容不是 PDF——可能被重定向到了登录页")
         return
     results["convert"] = StepResult("convert", True, None)
 
 
-def _step_delete(client, creds, headers, item_id, results) -> None:
+def _step_delete(
+    client: httpx.Client,
+    creds: GraphCredentialData,
+    headers: dict[str, str],
+    item_id: str,
+    results: dict[str, StepResult],
+) -> None:
     """无论转换成功与否都要跑——失败路径上的中转文件同样必须删掉。"""
     try:
         resp = client.post(_delete_url(creds.site_id, item_id), headers=headers)
     except httpx.HTTPError as exc:
-        results["delete"] = StepResult("delete", False, f"网络错误：{type(exc).__name__}")
+        _fail(results, "delete", f"网络错误：{type(exc).__name__}: {_clip(str(exc))}")
         return
     if resp.status_code not in (200, 204):
-        results["delete"] = StepResult(
-            "delete", False, diagnose_graph_error("delete", resp.status_code, resp.text)
-        )
+        _fail(results, "delete", diagnose_graph_error("delete", resp.status_code, resp.text))
         return
     results["delete"] = StepResult("delete", True, None)
