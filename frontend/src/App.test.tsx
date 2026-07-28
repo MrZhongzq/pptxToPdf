@@ -28,7 +28,7 @@ vi.mock('./lib/uploadClient', async (importOriginal) => {
 })
 
 // TaskList/TaskCard 会自己发起轮询请求；App 层的这些测试只关心上传前的
-// 预判提示，不需要真的渲染任务卡片。
+// 预判提示与时机，不需要真的渲染任务卡片。
 vi.mock('./components/TaskList', () => ({
   TaskList: () => null,
 }))
@@ -47,24 +47,25 @@ function chooseFile(file: File) {
   fireEvent.change(screen.getByTestId('file-input'), { target: { files: [file] } })
 }
 
-describe('App 上传前的容量启发式预判', () => {
+describe('App 上传前的容量启发式预判与确认时机', () => {
   beforeEach(() => {
     mocks.getCapacityConfig.mockReset().mockResolvedValue(CAPACITY)
-    // uploadFile 挂起不 resolve，模拟「文件已选中、还在上传」的窗口——
-    // 这正是提示应该出现的时机（pendingFile 被设置之后）。
+    // uploadFile 挂起不 resolve，模拟"上传正在进行"的窗口，方便断言
+    // 「是否已经发起过」而不受上传完成时序干扰。
     mocks.uploadFile.mockReset().mockReturnValue(new Promise(() => {}))
   })
 
-  it('未选择 Graph 引擎时，即使文件很大也不显示容量提示', async () => {
+  it('未选择 Graph 引擎时，即使文件很大也直接上传、不出现确认提示', async () => {
     render(<App />)
     await waitFor(() => expect(mocks.getCapacityConfig).toHaveBeenCalled())
 
     chooseFile(fileOfSize(300 * MIB))
 
     expect(screen.queryByText(/Graph 通道/)).toBeNull()
+    await waitFor(() => expect(mocks.uploadFile).toHaveBeenCalled())
   })
 
-  it('选 Graph 引擎、文件很小：不显示任何提示', async () => {
+  it('选 Graph 引擎、文件很小：不出现确认提示，直接上传', async () => {
     render(<App />)
     await waitFor(() => expect(mocks.getCapacityConfig).toHaveBeenCalled())
     selectGraphEngine()
@@ -72,22 +73,72 @@ describe('App 上传前的容量启发式预判', () => {
     chooseFile(fileOfSize(1 * MIB))
 
     expect(screen.queryByText(/Graph 通道/)).toBeNull()
-    expect(screen.queryByText(/建议改用 LibreOffice/)).toBeNull()
+    await waitFor(() => expect(mocks.uploadFile).toHaveBeenCalled())
   })
 
-  it('选 Graph 引擎、文件超过单片阈值但低于更严的合并预算：显示"会被切片/耗时更久"的软提示', async () => {
+  it('验收核心：命中风险时，点击确认按钮之前绝不能发出任何上传请求（审查 Important #1）', async () => {
     render(<App />)
     await waitFor(() => expect(mocks.getCapacityConfig).toHaveBeenCalled())
     selectGraphEngine()
 
-    // 40MiB < 100MiB <= 240MiB（更严的合并预算）
-    chooseFile(fileOfSize(100 * MIB))
+    chooseFile(fileOfSize(300 * MIB))
 
-    expect(await screen.findByText(/切分后分批转换/)).toBeInTheDocument()
-    expect(screen.queryByText(/建议改用 LibreOffice/)).toBeNull()
+    await screen.findByRole('button', { name: '仍然继续' })
+    // 提示（含两个操作按钮）已经出现，但这个时间点绝不能已经发出上传请求——
+    // 否则用户在按钮还没点之前，300MB 已经传出去了。
+    expect(mocks.uploadFile).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: '仍然继续' }))
+
+    await waitFor(() => expect(mocks.uploadFile).toHaveBeenCalled())
   })
 
-  it('选 Graph 引擎、文件超过更严的那个卡点（合并预算 240MiB）：显示强风险提示，措辞诚实不假装精确', async () => {
+  it('"仍然继续"：按用户当前选的 Graph 引擎发起上传', async () => {
+    render(<App />)
+    await waitFor(() => expect(mocks.getCapacityConfig).toHaveBeenCalled())
+    selectGraphEngine()
+    chooseFile(fileOfSize(300 * MIB))
+    await screen.findByRole('button', { name: '仍然继续' })
+
+    fireEvent.click(screen.getByRole('button', { name: '仍然继续' }))
+
+    await waitFor(() => expect(mocks.uploadFile).toHaveBeenCalled())
+    const [, opts] = mocks.uploadFile.mock.calls[0]
+    expect(opts.engine).toBe('graph')
+  })
+
+  it('"改用 LibreOffice 并继续"：切换引擎、用 LibreOffice 发起上传，点击前没有发出任何上传请求', async () => {
+    render(<App />)
+    await waitFor(() => expect(mocks.getCapacityConfig).toHaveBeenCalled())
+    selectGraphEngine()
+    chooseFile(fileOfSize(300 * MIB))
+    const switchBtn = await screen.findByRole('button', { name: /改用 LibreOffice/ })
+    expect(mocks.uploadFile).not.toHaveBeenCalled()
+
+    fireEvent.click(switchBtn)
+
+    await waitFor(() => expect(mocks.uploadFile).toHaveBeenCalled())
+    const [, opts] = mocks.uploadFile.mock.calls[0]
+    expect(opts.engine).toBe('libreoffice')
+    expect(screen.getByRole('button', { name: /Microsoft Graph/ })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    )
+  })
+
+  it('"shard" 档（超单片阈值但 <= 合并预算）：软提示不承诺具体秒数（审查 Important #2）', async () => {
+    render(<App />)
+    await waitFor(() => expect(mocks.getCapacityConfig).toHaveBeenCalled())
+    selectGraphEngine()
+
+    chooseFile(fileOfSize(100 * MIB))
+
+    const msg = await screen.findByText(/切分后分批转换/)
+    expect(msg.textContent).not.toMatch(/一分钟/)
+    expect(msg.textContent).not.toMatch(/\d+\s*秒/)
+  })
+
+  it('"budget" 档（240MiB～480MiB）：措辞是"最终合并阶段"失败，不是"规划阶段"（审查 Minor #4）', async () => {
     render(<App />)
     await waitFor(() => expect(mocks.getCapacityConfig).toHaveBeenCalled())
     selectGraphEngine()
@@ -95,13 +146,23 @@ describe('App 上传前的容量启发式预判', () => {
     chooseFile(fileOfSize(300 * MIB))
 
     const warning = await screen.findByText(/建议改用 LibreOffice/)
-    expect(warning).toBeInTheDocument()
-    // 不假装能精确预测最终会不会失败
+    expect(warning.textContent).toMatch(/合并/)
+    expect(warning.textContent).not.toMatch(/规划/)
     expect(warning.textContent).not.toMatch(/\d+%/)
   })
 
-  it('容量配置还没取到时不渲染任何容量提示（不假装知道阈值）', async () => {
-    // 永不 resolve：模拟接口还没返回的窗口
+  it('"reject" 档（超过 480MiB 分片总容量）：措辞是"规划阶段"就被拒，不是"合并阶段"（审查 Minor #4）', async () => {
+    render(<App />)
+    await waitFor(() => expect(mocks.getCapacityConfig).toHaveBeenCalled())
+    selectGraphEngine()
+
+    chooseFile(fileOfSize(500 * MIB))
+
+    const warning = await screen.findByText(/规划阶段/)
+    expect(warning.textContent).not.toMatch(/合并阶段/)
+  })
+
+  it('容量配置还没取到时不阻塞上传：按当前引擎直接上传，不假装知道阈值', async () => {
     mocks.getCapacityConfig.mockReturnValue(new Promise(() => {}))
     render(<App />)
     selectGraphEngine()
@@ -109,6 +170,17 @@ describe('App 上传前的容量启发式预判', () => {
     chooseFile(fileOfSize(300 * MIB))
 
     expect(screen.queryByText(/Graph 通道/)).toBeNull()
-    expect(screen.queryByText(/建议改用 LibreOffice/)).toBeNull()
+    await waitFor(() => expect(mocks.uploadFile).toHaveBeenCalled())
+  })
+
+  it('容量端点的 max_file_size 真的参与上传前的大小上限判定（审查 Important #3）', async () => {
+    mocks.getCapacityConfig.mockResolvedValue({ ...CAPACITY, max_file_size: 10 * MIB })
+    render(<App />)
+    await waitFor(() => expect(mocks.getCapacityConfig).toHaveBeenCalled())
+
+    chooseFile(fileOfSize(20 * MIB))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('超过上限')
+    expect(mocks.uploadFile).not.toHaveBeenCalled()
   })
 })

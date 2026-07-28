@@ -183,13 +183,25 @@ export function TaskCard({ taskId }: { taskId: string }) {
             <div
               style={
                 sharded
-                  ? {
-                      width: `${shardPct}%`,
-                      height: '100%',
-                      background: 'var(--c-notable)',
-                      borderRadius: 999,
-                      transition: 'width 300ms ease',
-                    }
+                  ? shardPct > 0
+                    ? {
+                        width: `${shardPct}%`,
+                        height: '100%',
+                        background: 'var(--c-notable)',
+                        borderRadius: 999,
+                        transition: 'width 300ms ease',
+                      }
+                    : {
+                        // 第一片还没转完：shard_done=0 时若给静态 0% 宽度，
+                        // 用户会盯着一根纹丝不动的空槽看好几分钟，比普通
+                        // 任务的 indeterminate 动画更像"卡死"。保留动感，
+                        // 只是换成紫色，直到第一片真的转完再切到实际进度。
+                        width: '35%',
+                        height: '100%',
+                        background: 'var(--c-notable)',
+                        borderRadius: 999,
+                        animation: 'indeterminate 1.4s ease-in-out infinite',
+                      }
                   : {
                       width: '35%',
                       height: '100%',

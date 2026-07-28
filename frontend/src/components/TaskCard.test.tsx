@@ -116,6 +116,18 @@ describe('TaskCard 分片进度（长耗时任务的紫色区分）', () => {
     expect(bar.style.width).toBe('33%')
   })
 
+  it('shard_done 为 0 时用不定长动画而不是纹丝不动的空槽（审查 Minor #5）', () => {
+    // 第一片可能要转好几分钟，静态的 0% 宽度槽看起来比普通任务的
+    // indeterminate 动画更像"卡死"——这与用户「不要让我觉得没反应」的
+    // 诉求正相反，必须保留动感。
+    const task = taskWith('converting', { shard_total: 8, shard_done: 0 })
+    polling.state = { task, pollingTimedOut: false }
+    const { container } = render(<TaskCard taskId="T1" />)
+
+    const bar = container.querySelector('.sunken > div') as HTMLElement
+    expect(bar.style.animation).toContain('indeterminate')
+  })
+
   it('分片任务已完成（done）：不再显示分片进度条/文案，但保留紫色边框', () => {
     const task = taskWith('done', { shard_total: 8, shard_done: 8 })
     polling.state = { task, pollingTimedOut: false }
