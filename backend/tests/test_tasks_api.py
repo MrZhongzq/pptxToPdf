@@ -95,6 +95,53 @@ async def test_download_before_done_returns_409(client):
     assert resp.status_code == 409
 
 
+async def test_task_dto_exposes_shard_progress(client, sample_bytes):
+    """shard_total / shard_done 必须真的从 TaskShard 表现算查询时算出来，
+    不能是恒为 None/0 的占位字段——那样前端进度条永远显示 0%。
+
+    直接在上传流程跑完之后手工往库里插 TaskShard 行伪造成分片任务：这里
+    只关心 DTO 序列化这一层，不依赖真实分片流水线跑通。"""
+    task_id = await _upload(client, sample_bytes)
+
+    from app.db import SessionLocal
+    from app.models import Task, TaskShard
+
+    session = SessionLocal()
+    task = session.get(Task, task_id)
+    task.shard_total = 3
+    session.add_all(
+        [
+            TaskShard(
+                shard_id="sh-a", task_id=task_id, index=0,
+                page_start=1, page_end=1, status="done",
+            ),
+            TaskShard(
+                shard_id="sh-b", task_id=task_id, index=1,
+                page_start=2, page_end=2, status="done",
+            ),
+            TaskShard(
+                shard_id="sh-c", task_id=task_id, index=2,
+                page_start=3, page_end=3, status="converting",
+            ),
+        ]
+    )
+    session.commit()
+    session.close()
+
+    body = (await client.get(f"/api/tasks/{task_id}")).json()
+    assert body["shard_total"] == 3
+    assert body["shard_done"] == 2
+
+
+async def test_task_dto_shard_fields_default_for_unsharded_task(client, sample_bytes):
+    """二期原路径（未切片）必须保持 shard_total=None、shard_done=0。"""
+    task_id = await _upload(client, sample_bytes)
+
+    body = (await client.get(f"/api/tasks/{task_id}")).json()
+    assert body["shard_total"] is None
+    assert body["shard_done"] == 0
+
+
 async def test_run_task_walks_full_state_machine(client, sample_bytes):
     """回归测试：Global Constraint 规定任务状态机固定为
     pending -> parsing -> queued -> converting -> done，占位引擎瞬时完成

@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import get_session
 from app.errors import AppError, ResultExpired
-from app.models import Task
+from app.models import Task, TaskShard
 from app.schemas import ConversionOptions, ErrorResponse, TaskDto
 
 logger = logging.getLogger(__name__)
@@ -85,6 +85,14 @@ def get_task(task_id: str, session: Session = Depends(get_session)) -> TaskDto:
         slide_height_emu=task.slide_height_emu,
         fonts=_fonts(task),
         options=_options(task),
+        shard_total=task.shard_total,
+        shard_done=(
+            session.query(TaskShard)
+            .filter(TaskShard.task_id == task.task_id, TaskShard.status == "done")
+            .count()
+            if task.shard_total
+            else 0
+        ),
         error_code=task.error_code,
         error_message=task.error_message,
         # SQLite 不真的保留时区信息，读回来的是 naive datetime；直接序列化会

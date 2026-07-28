@@ -1,4 +1,5 @@
 import logging
+import shutil
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -51,6 +52,32 @@ def purge_expired_outputs() -> int:
                 removed += 1
         except OSError as exc:
             logger.warning("删除过期输出失败 %s: %s", path, exc)
+    return removed
+
+
+def purge_expired_shards() -> int:
+    """清理过期的分片目录，返回删除数量。
+
+    正常路径下 merge_shards 的 finally 会删掉自己的分片目录，discard_shards
+    处理入队失败的撤销路径。这个函数收拾的是两者都够不到的残骸：worker 在
+    convert_shard / merge_shards 中途被 OOM killer 干掉时，没有任何 finally
+    会跑，分片目录会留下几十 MB 到几百 MB（分片 pptx 加分片 PDF 是原文件的
+    两倍体积），没有任何其他路径会碰它。
+    """
+    cutoff = time.time() - settings.output_ttl_hours * 3600
+    removed = 0
+    try:
+        candidates = list(settings.shards_dir.iterdir())
+    except OSError:
+        return 0
+
+    for path in candidates:
+        try:
+            if path.is_dir() and path.stat().st_mtime < cutoff:
+                shutil.rmtree(path, ignore_errors=True)
+                removed += 1
+        except OSError as exc:
+            logger.warning("删除过期分片目录失败 %s: %s", path, exc)
     return removed
 
 

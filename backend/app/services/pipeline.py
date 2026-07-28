@@ -11,7 +11,12 @@ from app.services.engine_router import select_engine
 from app.services.engines import get_engine
 from app.services.graph_credentials import is_graph_configured
 from app.services.pptx_probe import probe
-from app.services.retention import drop_original, purge_expired_outputs, reap_stale_tasks
+from app.services.retention import (
+    drop_original,
+    purge_expired_outputs,
+    purge_expired_shards,
+    reap_stale_tasks,
+)
 from app.services.shard_planner import SHARDED_ENGINES, needs_sharding
 
 logger = logging.getLogger(__name__)
@@ -175,6 +180,13 @@ def run_task(task_id: str) -> None:
         removed = purge_expired_outputs()
         if removed:
             logger.info("retention 清理了 %d 个过期输出", removed)
+        # purge_expired_outputs 只扫 outputs_dir；分片路径的中间产物落在
+        # shards_dir，正常路径靠 merge_shards / discard_shards 自己清，这里
+        # 补的是两者都够不到的残骸（worker 在分片子 job 中途被 OOM killer
+        # 干掉，没有任何 finally 会跑）。与上面同一惰性模式，顺带触发一次。
+        removed_shards = purge_expired_shards()
+        if removed_shards:
+            logger.info("retention 清理了 %d 个过期分片目录", removed_shards)
         # 只在 api 启动时回收孤儿任务不够：worker 容器有内存上限，OOM 是
         # 预期事件，work-horse 被杀后 api 未必会重启，回收器就可能永远不跑。
         # 这里顺带触发一次，与上面 purge_expired_outputs() 同一个惰性模式。

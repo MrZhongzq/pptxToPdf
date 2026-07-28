@@ -69,6 +69,12 @@ class TaskDto(BaseModel):
     slide_height_emu: int | None
     fonts: list[str]
     options: ConversionOptions
+    shard_total: int | None = None
+    """切片总数。None 表示未切片。"""
+    shard_done: int = 0
+    """已完成的分片数，由查询时现算——Task 上不存这个计数，见 models.Task
+    上关于 shard_total 的注释：并发自增同一行在 SQLite 上要么加锁要么丢
+    更新，TaskShard.status 才是唯一真相源。"""
     error_code: str | None
     error_message: str | None
     created_at: datetime

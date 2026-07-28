@@ -618,7 +618,8 @@
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 32
+                "maxLength": 32,
+                "minLength": 1
               },
               {
                 "type": "null"
@@ -769,6 +770,22 @@
           },
           "options": {
             "$ref": "#/components/schemas/ConversionOptions"
+          },
+          "shard_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shard Total"
+          },
+          "shard_done": {
+            "type": "integer",
+            "title": "Shard Done",
+            "default": 0
           },
           "error_code": {
             "anyOf": [
