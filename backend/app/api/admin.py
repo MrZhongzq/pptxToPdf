@@ -5,12 +5,23 @@
 """
 
 from fastapi import APIRouter, Cookie, Depends, Response
+from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.schemas import AdminLoginRequest
-from app.services import admin_auth
+from app.db import SessionLocal
+from app.errors import GraphNotConfigured
+from app.schemas import AdminLoginRequest, GraphCredentialsDto
+from app.services import admin_auth, graph_credentials
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+
+def _db() -> Session:
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 
 def _set_session_cookie(response: Response, token: str) -> None:
@@ -42,6 +53,29 @@ def login(payload: AdminLoginRequest, response: Response) -> Response:
     _set_session_cookie(response, admin_auth.issue_session())
     response.status_code = 204
     return response
+
+
+@router.get("/graph-credentials", response_model=GraphCredentialsDto)
+def get_graph_credentials(
+    _: None = Depends(require_admin), db: Session = Depends(_db)
+) -> GraphCredentialsDto:
+    try:
+        data = graph_credentials.load_credentials(db)
+    except GraphNotConfigured:
+        return GraphCredentialsDto(
+            tenant_id="",
+            client_id="",
+            site_id="",
+            drive_path="pptx2pdf-staging",
+            secret_configured=False,
+        )
+    return GraphCredentialsDto(
+        tenant_id=data.tenant_id,
+        client_id=data.client_id,
+        site_id=data.site_id,
+        drive_path=data.drive_path,
+        secret_configured=True,
+    )
 
 
 @router.post("/logout", status_code=204)

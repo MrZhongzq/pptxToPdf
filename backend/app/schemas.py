@@ -103,3 +103,14 @@ class CapacityConfig(BaseModel):
 
 class AdminLoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=256)
+
+
+class GraphCredentialsDto(BaseModel):
+    """读配置的响应。client_secret 绝不出现在这里——解密回显等于把凭证
+    明文发到浏览器，那么加密存库本身就失去意义。"""
+
+    tenant_id: str
+    client_id: str
+    site_id: str
+    drive_path: str
+    secret_configured: bool

@@ -3,7 +3,7 @@ from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.services import admin_auth
+from app.services import admin_auth, graph_credentials
 
 PASSWORD = "hunter2"
 
@@ -27,6 +27,26 @@ def _configured(monkeypatch):
 def client():
     with TestClient(app) as c:
         yield c
+
+
+@pytest.fixture
+def admin_session(client):
+    client.post("/api/admin/login", json={"password": PASSWORD})
+    return client
+
+
+@pytest.fixture
+def db_session():
+    # 延迟导入：conftest.py 的 _isolate_app_db autouse fixture 把
+    # app.api.admin.SessionLocal 重定向到了本用例专属的隔离 sqlite 文件
+    # （同一份 test_session_local 也绑给了 db_module/pipeline_module 等），
+    # 这里必须拿重定向之后的那个名字，才能和 client 走同一个库；模块顶层
+    # import 会拿到重定向之前的旧引用，写进去的凭证 client 那边读不到。
+    import app.api.admin as admin_module
+
+    db = admin_module.SessionLocal()
+    yield db
+    db.close()
 
 
 def test_login_sets_cookie(client):
@@ -70,14 +90,12 @@ def test_logout_clears_cookie_without_auth(client):
     assert 'pptx2pdf_admin=""' in resp.headers["set-cookie"] or "Max-Age=0" in resp.headers["set-cookie"]
 
 
-@pytest.mark.xfail(reason="GET 端点在 Task 4")
 def test_protected_endpoint_rejects_anonymous(client):
     resp = client.get("/api/admin/graph-credentials")
     assert resp.status_code == 401
     assert resp.json()["code"] == "ADMIN_UNAUTHORIZED"
 
 
-@pytest.mark.xfail(reason="GET 端点在 Task 4")
 def test_session_slides_on_each_request(client):
     client.post("/api/admin/login", json={"password": PASSWORD})
     first = client.cookies[admin_auth.SESSION_COOKIE_NAME]
@@ -85,3 +103,34 @@ def test_session_slides_on_each_request(client):
     assert resp.status_code in (200, 404)
     assert "set-cookie" in resp.headers, "每个通过鉴权的请求都应重新签发 cookie"
     assert client.cookies[admin_auth.SESSION_COOKIE_NAME] != first
+
+
+def test_get_credentials_when_unset(client, admin_session):
+    resp = client.get("/api/admin/graph-credentials")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["secret_configured"] is False
+    assert body["tenant_id"] == ""
+    assert body["drive_path"] == "pptx2pdf-staging"
+
+
+def test_get_credentials_never_returns_secret(client, admin_session, db_session):
+    graph_credentials.save_credentials(
+        db_session,
+        tenant_id="t-1",
+        client_id="c-1",
+        client_secret="SUPER-SECRET-VALUE",
+        site_id="s-1",
+        drive_path="staging",
+    )
+    resp = client.get("/api/admin/graph-credentials")
+    body = resp.json()
+    assert body["tenant_id"] == "t-1"
+    assert body["client_id"] == "c-1"
+    assert body["site_id"] == "s-1"
+    assert body["drive_path"] == "staging"
+    assert body["secret_configured"] is True
+    # 密文与明文都不许出现在响应里
+    assert "SUPER-SECRET-VALUE" not in resp.text
+    assert "client_secret" not in body
+    assert "client_secret_encrypted" not in body
