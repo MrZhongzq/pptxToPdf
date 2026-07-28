@@ -72,6 +72,20 @@ def test_login_503_when_password_not_configured(client, monkeypatch):
     assert resp.json()["code"] == "ADMIN_NOT_CONFIGURED"
 
 
+def test_protected_endpoint_503_when_password_cleared_after_login(client, monkeypatch):
+    # 模拟 README 记录的唯一「关门」手段：改环境变量后重启。登录时口令
+    # 还配着，拿到合法 cookie；随后口令被清空（比如怀疑已泄露，管理员
+    # 想立刻关门）。旧 cookie 不应该继续放行——如果只在 /login 挡，
+    # 「整体 503」的实际含义就退化成「新登录不了」，已发出的会话在
+    # admin_session_days（默认 3 天）内继续有效，关门形同虚设。
+    resp = client.post("/api/admin/login", json={"password": PASSWORD})
+    assert resp.status_code == 204
+    monkeypatch.setattr(admin_auth.settings, "admin_password_hash", None)
+    resp = client.get("/api/admin/graph-credentials")
+    assert resp.status_code == 503
+    assert resp.json()["code"] == "ADMIN_NOT_CONFIGURED"
+
+
 def test_cookie_flags(client):
     resp = client.post("/api/admin/login", json={"password": PASSWORD})
     raw = resp.headers["set-cookie"]

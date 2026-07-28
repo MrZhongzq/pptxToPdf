@@ -9,7 +9,12 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_session
-from app.errors import GraphNotConfigured, GraphSelftestFailed, ValidationError
+from app.errors import (
+    AdminNotConfigured,
+    GraphNotConfigured,
+    GraphSelftestFailed,
+    ValidationError,
+)
 from app.schemas import (
     AdminLoginRequest,
     GraphCredentialsDto,
@@ -42,7 +47,16 @@ def require_admin(
     response: Response,
     session: str | None = Cookie(default=None, alias=admin_auth.SESSION_COOKIE_NAME),
 ) -> None:
-    """鉴权依赖。通过后立刻重新签发 cookie——滑动刷新，活跃使用不掉线。"""
+    """鉴权依赖。通过后立刻重新签发 cookie——滑动刷新，活跃使用不掉线。
+
+    先查口令是否已配置，再验 session：verify_session 只依赖 secret_key，
+    完全不看口令有没有配，于是「未配置口令则整体 503」在没有这道检查时
+    只对 /login 成立——已发出的 cookie 在口令被清空（README 记录的唯一
+    「关门」手段）之后仍然继续有效，直到自然过期。这条检查让「口令未
+    配置」对所有受保护端点都生效，不只挡新登录，也挡旧会话。
+    """
+    if not settings.admin_password_hash:
+        raise AdminNotConfigured("未配置 PPTX2PDF_ADMIN_PASSWORD_HASH，管理入口不可用")
     admin_auth.verify_session(session)
     _set_session_cookie(response, admin_auth.issue_session())
 
