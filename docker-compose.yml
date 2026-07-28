@@ -48,7 +48,12 @@ services:
       replicas: ${WORKER_REPLICAS:-2}
       resources:
         limits:
-          memory: 3G
+          # 三期从 3G 提到 8G：流式切片本身内存恒定，但合并阶段 pypdf 要把
+          # 多份 PDF 读进内存，几十 MB × 若干片仍然吃内存（见
+          # backend/app/config.py 的 graph_max_merge_bytes 文档字符串，
+          # 3.01x 实测倍率）。24GB 机器上 2 worker × 8G = 16G，
+          # 留 8G 给 api、redis 与系统。
+          memory: 8G
     volumes:
       - storage:/app/storage
       - ./fonts-extra:/usr/share/fonts/truetype/extra:ro
