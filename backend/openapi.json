@@ -554,10 +554,181 @@
           }
         }
       }
+    },
+    "/api/admin/login": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Login",
+        "operationId": "login_api_admin_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminLoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/graph-credentials": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Get Graph Credentials",
+        "operationId": "get_graph_credentials_api_admin_graph_credentials_get",
+        "parameters": [
+          {
+            "name": "pptx2pdf_admin",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pptx2Pdf Admin"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphCredentialsDto"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Put Graph Credentials",
+        "description": "先测后存：五步自检全绿才写库。\n\n配错的凭证一旦入库，三期的引擎每次转换都会去读它——期间所有走\nGraph 的任务都会失败，而失败原因（一个 Graph 原始报错）与「你配错\n了」之间隔着数层抽象。这条顺序把那个窗口彻底关闭：run_selftest 在\nsave_credentials 之前调用且不捕获它的异常，任何一步——包括\nrun_selftest 内部未预期的穿透异常——都会在触达 save_credentials 之前\n终止请求，数据库不会被写入半条记录。",
+        "operationId": "put_graph_credentials_api_admin_graph_credentials_put",
+        "parameters": [
+          {
+            "name": "pptx2pdf_admin",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pptx2Pdf Admin"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GraphCredentialsUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SelftestResultDto"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/logout": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Logout",
+        "description": "不要求鉴权：语义是清掉浏览器上的 cookie，cookie 已过期时同样应该成功。\n若要求鉴权，过期后点登出会得到 401，而用户想做的恰恰是清理这个失效状态。",
+        "operationId": "logout_api_admin_logout_post",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        }
+      }
     }
   },
   "components": {
     "schemas": {
+      "AdminLoginRequest": {
+        "properties": {
+          "password": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "password"
+        ],
+        "title": "AdminLoginRequest"
+      },
       "CapacityConfig": {
         "properties": {
           "max_file_size": {
@@ -744,6 +915,82 @@
         "title": "ErrorResponse",
         "description": "所有 API 错误的统一形状，码值取自 app/errors.py。"
       },
+      "GraphCredentialsDto": {
+        "properties": {
+          "tenant_id": {
+            "type": "string",
+            "title": "Tenant Id"
+          },
+          "client_id": {
+            "type": "string",
+            "title": "Client Id"
+          },
+          "site_id": {
+            "type": "string",
+            "title": "Site Id"
+          },
+          "drive_path": {
+            "type": "string",
+            "title": "Drive Path"
+          },
+          "secret_configured": {
+            "type": "boolean",
+            "title": "Secret Configured"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tenant_id",
+          "client_id",
+          "site_id",
+          "drive_path",
+          "secret_configured"
+        ],
+        "title": "GraphCredentialsDto",
+        "description": "读配置的响应。client_secret 绝不出现在这里——解密回显等于把凭证\n明文发到浏览器，那么加密存库本身就失去意义。"
+      },
+      "GraphCredentialsUpdate": {
+        "properties": {
+          "tenant_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Tenant Id"
+          },
+          "client_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Client Id"
+          },
+          "client_secret": {
+            "type": "string",
+            "maxLength": 512,
+            "title": "Client Secret",
+            "default": ""
+          },
+          "site_id": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Site Id"
+          },
+          "drive_path": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Drive Path",
+            "default": "pptx2pdf-staging"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tenant_id",
+          "client_id",
+          "site_id"
+        ],
+        "title": "GraphCredentialsUpdate"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -756,6 +1003,64 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "SelftestResultDto": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/SelftestStepDto"
+            },
+            "type": "array",
+            "title": "Steps"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ok",
+          "steps"
+        ],
+        "title": "SelftestResultDto"
+      },
+      "SelftestStepDto": {
+        "properties": {
+          "step": {
+            "type": "string",
+            "title": "Step"
+          },
+          "ok": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ok"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "step",
+          "ok",
+          "detail"
+        ],
+        "title": "SelftestStepDto"
       },
       "TaskDto": {
         "properties": {

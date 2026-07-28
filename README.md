@@ -2,7 +2,7 @@
 
 把课程 pptx 转成能直接导入 GoodNotes / OneNote 的 PDF。
 
-**当前进度：三期（Microsoft Graph 引擎 + 转换切片合并）开发完成，本机可验证；按计划暂不部署，审核通过后再开四期。** 一期的占位 PDF 已被二期真实转换取代。
+**当前进度：四期（管理入口 + Azure 凭证配置）开发完成，本机可验证；按计划暂不部署，待审核通过。** 一期的占位 PDF 已被二期真实转换取代；三期的 Graph 引擎需在管理入口完成凭证配置后才可达，见下方「管理入口」一节。
 
 ## 保真度边界
 
@@ -29,21 +29,22 @@ Microsoft Graph 用微软自己的渲染服务转换，保真度是天花板，�
 ≤40MB）；更大的文件要显式在上传时选择 Graph 引擎才会走切片路径，因为
 切片意味着数十次 HTTP 往返和几分钟等待，不适合当默认行为。
 
-**三期本机可验证，但没有部署、也没有可用的凭证配置入口。** 用户可以在
-上传时显式选择 `graph` 引擎并跑通全部单元/集成测试，但生产部署里，Graph
-凭证的写入路径（`app.services.graph_credentials.save_credentials`）只有
-四期的管理页面会调用；三期没有任何路由把 tenant_id / client_id /
-client_secret 写进数据库。也就是说：**在四期管理页面上线之前，即便部署了
-三期，选择 Graph 引擎的任务也会稳定收到 `GRAPH_NOT_CONFIGURED`（503）**——
-这是预期行为，不是 bug，`select_engine` 的 `auto` 分支因此也会一直选
-`libreoffice`（见 `app/services/engine_router.py`）。
+**三期本机可验证，凭证配置入口在四期落地。** 用户可以在上传时显式选择
+`graph` 引擎并跑通全部单元/集成测试；生产部署里，Graph 凭证的写入路径
+（`app.services.graph_credentials.save_credentials`）只有四期的管理入口
+（`/admin`）会调用——没有别的路由把 tenant_id / client_id / client_secret
+写进数据库。也就是说：**在 `/admin` 完成配置并通过五步自检之前，选择
+Graph 引擎的任务会稳定收到 `GRAPH_NOT_CONFIGURED`（503）**——这是预期
+行为，不是 bug，`select_engine` 的 `auto` 分支因此也会一直选
+`libreoffice`（见 `app/services/engine_router.py`）。配置步骤见下方
+「管理入口（四期）」一节。
 
 **Azure 凭证不写在 `.env` 里。** `.env` 只放 `PPTX2PDF_SECRET_KEY`——解密
 数据库里凭证用的 Fernet 主密钥；tenant_id / client_id / client_secret /
 SharePoint site_id 全部加密存在 `graph_credentials` 表，由四期的管理页面
 写入。不要去 `.env` 里找 tenant_id，那里没有也不应该有。
 
-四期管理页面上线后，配置步骤会是：
+配置步骤：
 
 1. 注册 Azure AD 应用，拿到 tenant_id / client_id / client_secret
 2. 授予应用权限并管理员同意
@@ -57,7 +58,8 @@ SharePoint site_id 全部加密存在 `graph_credentials` 表，由四期的管�
    运行中的容器不会热加载 `.env`。漏了这一步会看到「未配置
    `PPTX2PDF_SECRET_KEY`，Graph 引擎不可用」，容易误以为是密钥格式写错，
    反复检查 `.env` 却找不到问题——其实只是容器还没重启
-6. 重启生效后，在管理页面填写 Azure 凭证，落库前用上一步的密钥加密
+6. 重启生效后，登录 `/admin`（见下方「管理入口（四期）」一节）填写
+   Azure 凭证，落库前用上一步的密钥加密
 
 **密钥丢失等于凭证全废**——数据库里的 client secret 再也解不开，只能去
 Azure 重新生成。请把 `PPTX2PDF_SECRET_KEY` 与 `.env` 一起妥善备份；换密钥
@@ -91,6 +93,56 @@ tracemalloc 测得峰值 162.9MB。`merge_pdfs` 把所有分片一次性载入�
 四个数字，供前端在用户选择 Graph 引擎时做上传前的容量预判，避免白传几百
 MB 才在分片规划阶段吃 422。不返回任何凭证状态。
 
+## 管理入口（四期）
+
+Azure 凭证不再靠手工改数据库——`/admin` 是唯一的写入路径，登录后可以
+查看当前配置（`client_secret` 从不回显）、改配置，以及在保存前跑一次
+五步连通性自检。
+
+**1. 设管理口令。** 哈希值写进 `PPTX2PDF_ADMIN_PASSWORD_HASH`，未配置则
+整个管理入口返回 503（`ADMIN_NOT_CONFIGURED`）。生成命令（会提示输入
+口令，与 `.env.example` 里那条一致）：
+
+```bash
+python -c "import hashlib,os,binascii; s=os.urandom(16); pw=input('口令: ').encode(); print('scrypt$'+binascii.hexlify(s).decode()+'$'+binascii.hexlify(hashlib.scrypt(pw,salt=s,n=16384,r=8,p=1,dklen=32)).decode())"
+```
+
+把输出整行填进 `.env` 的 `PPTX2PDF_ADMIN_PASSWORD_HASH`，改完照下方规则
+重启容器，然后访问 `http://<host>:<port>/admin` 用这个口令登录（部署默认
+端口是 `18993`，即 `http://<host>:18993/admin`）。
+
+**2. 五步自检。** 保存 Graph 凭证前会自动跑一遍，任意一步失败则后续步骤
+标记为「未执行」（不是「通过」），且**不会写库**——先测后存，避免配错的
+凭证进了数据库后每次真实转换才发现。五步依次是：
+
+| 步骤 | 验证什么 | 常见失败原因 |
+|---|---|---|
+| `token` | 用 client credentials 换 access token | `AADSTS90002` 租户不存在/tenant_id 写错；`AADSTS700016` client_id 写错或应用未创建；`AADSTS7000215` client_secret 错误或已过期 |
+| `drive` | 能读到 `site_id` 对应站点的文档库 | HTTP 404 site_id 写错；HTTP 403 应用权限未授予或管理员未同意 |
+| `upload` | 把内置的自检 pptx 上传到中转库 | HTTP 403 没有写权限 |
+| `convert` | 用 Graph 把刚上传的文件转成 PDF | 依常规 Graph 错误诊断；返回内容不是 PDF 时通常是被重定向到了登录页 |
+| `delete` | 用 `permanentDelete` 清掉自检产生的中转文件 | HTTP 403——见下一条 |
+
+**3. `permanentDelete` 的权限坑。** 最小权限的 `Sites.Selected` **不够**，
+`delete` 步骤会报 403；需要 `Files.ReadWrite.All` 或 `Sites.ReadWrite.All`
+（租户级宽权限）。这个坑不在配置时用 `Sites.Selected` 测试连通性就能发现
+——`token`/`drive`/`upload`/`convert` 四步用它都能过，只有真正跑到
+`delete` 才会暴露；不跑自检的话，要等到某次真实转换后中转文件永久留在
+租户里才会注意到。五步自检把它提前到配置阶段暴露，是自检存在的主要
+理由之一。
+
+**4. `PPTX2PDF_ADMIN_COOKIE_SECURE` 与 HTTPS 的关系。** 当前部署是
+`http://<host>:18993`，**非 HTTPS**，这个变量必须保持默认的 `false`——
+写死 `true` 会让浏览器根本不回传 cookie，表现是「登录成功但立刻掉线」，
+且现象和「口令错」「session 过期」很像，容易走错排查方向。等部署切到
+HTTPS（自有域名 + 证书）之后，再把它改成 `true`。
+
+**5. 改完 `.env` 必须 `docker compose up -d` 重启。** `settings` 是模块级
+单例，只在进程启动时读一次环境变量，运行中的容器不会热加载 `.env`——
+这条规则同样适用于三个新变量（`PPTX2PDF_ADMIN_PASSWORD_HASH` /
+`PPTX2PDF_ADMIN_COOKIE_SECURE` / `PPTX2PDF_ADMIN_SESSION_DAYS`），见上方
+「排查：故障注入开关」一节已经写过的同一条规则。
+
 ## 部署
 
 需要 Docker 与 docker-compose。目标平台 ARM64 或 x86_64 均可。
@@ -111,8 +163,11 @@ docker compose logs -f
 不碰它。升级前跑一下 `diff .env .env.example`，把 diff 里只在
 `.env.example` 出现的新键手动补进 `.env`（当前仓库自己的 `.env` 和
 `.env.example` 之间就漏了好几个键，包括二期就加入却一直没同步的
-`PPTX2PDF_CONVERT_TIMEOUT_PER_MB_S`）。漏配不会报错、不会有任何日志
-提示，只会静默落回代码里的默认值。
+`PPTX2PDF_CONVERT_TIMEOUT_PER_MB_S`，以及四期新增的三个管理入口变量
+`PPTX2PDF_ADMIN_PASSWORD_HASH` / `PPTX2PDF_ADMIN_COOKIE_SECURE` /
+`PPTX2PDF_ADMIN_SESSION_DAYS`）。漏配不会报错、不会有任何日志提示，
+只会静默落回代码里的默认值——`PPTX2PDF_ADMIN_PASSWORD_HASH` 是例外，
+漏配会让整个管理入口返回 503，而不是静默放行。
 
 起来之后访问 `http://<主机>:18993`。四个容器：`frontend`（nginx，唯一对外端口）、`api`、`worker` ×2、`redis`。
 
@@ -147,6 +202,9 @@ sudo netfilter-persistent save    # 没有这个命令就 apt install iptables-p
 | `PPTX2PDF_GRAPH_MAX_MERGE_BYTES` | 251658240（240MiB） | 合并阶段各分片 PDF 总字节上限，基于 tracemalloc（非 RSS）测得的 3.01× 倍率算出，详见下方 Graph 通道一节 |
 | `PPTX2PDF_GRAPH_REQUEST_TIMEOUT_S` | 50 | 单次 Graph 转换请求超时，Graph 自身约 45 秒硬超时 + 5 秒网络余量 |
 | `PPTX2PDF_GRAPH_MAX_RETRIES` | 3 | Graph 请求失败重试次数（429/5xx 退避重试）|
+| `PPTX2PDF_ADMIN_PASSWORD_HASH` | 空 | 管理入口（`/admin`）口令的 scrypt 哈希。未配置则整个管理入口返回 503，生成命令见下方「管理入口」一节 |
+| `PPTX2PDF_ADMIN_COOKIE_SECURE` | false | 会话 cookie 的 `Secure` 属性。当前 HTTP 部署必须保持 `false`，切到 HTTPS 后再改 `true`，见下方「管理入口」一节 |
+| `PPTX2PDF_ADMIN_SESSION_DAYS` | 3 | 管理会话有效期（天）。每次通过鉴权的请求都会滑动刷新，活跃使用不掉线 |
 
 worker 单容器内存上限硬编码在 `docker-compose.yml`（三期从 3G 提到 8G），**不通过 `.env` 控制**。这是保守取值，不是从测得的 RSS 反推的结论——上面 `GRAPH_MAX_MERGE_BYTES` 那行的 3.01× 倍率来自 tracemalloc（不含解释器基线与分配器碎片，真实 RSS 更高，且推算出的堆峰值约 720MB，原有的 3G 本就有约 4× 余量）；8G 是「提高限额 + 流式切片」两手一起上的既定方案，四期上真实租户后应实测 RSS 再回调。24GB 机器上 2 个 worker × 8G = 16G，留 8G 给 api、redis 与系统；换机器规格需要同步改 `docker-compose.yml` 里的 `memory:` 值。
 
@@ -170,7 +228,7 @@ worker 单容器内存上限硬编码在 `docker-compose.yml`（三期从 3G 提
 cd backend
 python -m venv .venv
 .venv/Scripts/pip install -r requirements-dev.txt   # Linux 用 .venv/bin/
-.venv/Scripts/python -m pytest -q                   # 期望 225 passed
+.venv/Scripts/python -m pytest -q                   # 期望 286 passed
 ```
 
 前端：
@@ -178,7 +236,7 @@ python -m venv .venv
 ```bash
 cd frontend
 npm install
-npm test          # 期望 58 passed
+npm test          # 期望 71 passed
 npm run dev       # 开发服务器在 5173，/api 已代理到 8000
 ```
 
@@ -186,7 +244,9 @@ npm run dev       # 开发服务器在 5173，/api 已代理到 8000
 
 ## 已知限制
 
-- 无鉴权、无配额，任何人都能上传 600MB（四期才做）
+- 上传/转换接口本身仍无鉴权、无配额，任何人都能上传 600MB——四期只做了
+  管理入口（`/admin`）的口令鉴权与 Graph 凭证配置，普通用户侧的账号、
+  配额、风控不在本期范围内
 - UI 没有断点续传入口：客户端库和后端协议都支持，但按设计刷新即重置
 - 任务列表只在 React state，刷新即丢，且没有列表端点可恢复
 - SQLite 靠 WAL 支撑 api 与 worker 两个容器共享，**不要把 storage volume
@@ -195,9 +255,10 @@ npm run dev       # 开发服务器在 5173，/api 已代理到 8000
 - 转换结果只保留 24 小时（`PPTX2PDF_OUTPUT_TTL_HOURS`），过期自动清理，请
   及时下载；过期后再请求下载会返回 `RESULT_EXPIRED`，需要重新上传。原始
   pptx 在转换结束后立即删除，不论成败
-- Graph 通道（三期）已实现且测试覆盖，但没有凭证配置入口——四期管理页面
-  上线前，选 Graph 引擎的任务会稳定报 `GRAPH_NOT_CONFIGURED`，详见上方
-  「Graph 通道（三期）」一节
+- Graph 通道（三期）已实现且测试覆盖，但需先在 `/admin` 完成 Azure 凭证
+  配置并通过五步自检才可用；未配置时选 Graph 引擎的任务会稳定收到
+  `GRAPH_NOT_CONFIGURED`，详见上方「Graph 通道（三期）」与「管理入口
+  （四期）」两节
 - 分片转换的中间产物体积是原文件的两倍（分片 pptx + 分片 PDF），汇总后
   立即清理；worker 异常退出时残留的分片目录由保留策略按
   `PPTX2PDF_OUTPUT_TTL_HOURS` 回收
@@ -208,7 +269,7 @@ npm run dev       # 开发服务器在 5173，/api 已代理到 8000
 |---|---|---|
 | 一 | 前端三端 UI + 分片上传全链路 + 元信息解析 + 占位 PDF | 完成 |
 | 二 | LibreOffice 引擎 + 容器化 + 队列 + 资源治理 | 完成 |
-| 三 | Microsoft Graph 引擎（小文件高保真）+ 转换切片合并 | 开发完成，未部署（审核通过后开四期） |
-| 四 | 账号、配额、风控、管理面板（含 Graph 凭证配置入口） | 未开始 |
+| 三 | Microsoft Graph 引擎（小文件高保真）+ 转换切片合并 | 开发完成，未部署 |
+| 四 | 管理入口（口令登录、会话）+ Azure 凭证配置与五步自检 | 开发完成，未部署（审核通过后合并） |
 
 设计文档见 `docs/superpowers/specs/`，实施计划见 `docs/superpowers/plans/`。
