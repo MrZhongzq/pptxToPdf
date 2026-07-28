@@ -2,8 +2,10 @@ import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
+from app.errors import GraphNotConfigured
 from app.main import app
-from app.services import admin_auth, graph_credentials
+from app.services import admin_auth, graph_credentials, graph_selftest
+from app.services.graph_selftest import StepResult
 
 PASSWORD = "hunter2"
 
@@ -136,3 +138,128 @@ def test_get_credentials_never_returns_secret(client, admin_session, db_session)
     assert "SUPER-SECRET-VALUE" not in resp.text
     assert "client_secret" not in body
     assert "client_secret_encrypted" not in body
+
+
+_GREEN = [StepResult(s, True, None) for s in graph_selftest.STEPS]
+
+
+def _stub_selftest(monkeypatch, results):
+    calls = []
+
+    def fake(creds, **kwargs):
+        calls.append(creds)
+        return results
+
+    monkeypatch.setattr(graph_selftest, "run_selftest", fake)
+    monkeypatch.setattr("app.api.admin.run_selftest", fake)
+    return calls
+
+
+def test_put_runs_selftest_before_saving(client, admin_session, db_session, monkeypatch):
+    calls = _stub_selftest(monkeypatch, _GREEN)
+    resp = client.put(
+        "/api/admin/graph-credentials",
+        json={
+            "tenant_id": "t-1", "client_id": "c-1", "client_secret": "s-1",
+            "site_id": "site-1", "drive_path": "staging",
+        },
+    )
+    assert resp.status_code == 200
+    assert len(calls) == 1, "保存前必须跑自检"
+    saved = graph_credentials.load_credentials(db_session)
+    assert saved.tenant_id == "t-1"
+    assert saved.client_secret == "s-1"
+
+
+def test_put_does_not_save_when_selftest_fails(client, admin_session, db_session, monkeypatch):
+    failing = [
+        StepResult("token", True, None),
+        StepResult("drive", False, "site_id 写错"),
+        StepResult("upload", None, None),
+        StepResult("convert", None, None),
+        StepResult("delete", None, None),
+    ]
+    _stub_selftest(monkeypatch, failing)
+    resp = client.put(
+        "/api/admin/graph-credentials",
+        json={
+            "tenant_id": "t-1", "client_id": "c-1", "client_secret": "s-1",
+            "site_id": "bad", "drive_path": "staging",
+        },
+    )
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["code"] == "GRAPH_SELFTEST_FAILED"
+    assert body["steps"][1]["ok"] is False
+    assert body["steps"][2]["ok"] is None
+    # 库里一个字节都不许动
+    with pytest.raises(GraphNotConfigured):
+        graph_credentials.load_credentials(db_session)
+
+
+def test_put_treats_incomplete_selftest_result_as_failure(
+    client, admin_session, db_session, monkeypatch
+):
+    # run_selftest 的契约保证返回完整的五步列表，但端点不能假定这个形状
+    # 永远成立——如果它意外返回了一个缺步骤的列表（这里模拟成只有 "token"
+    # 一步、且是 True），`all(r.ok for r in results)` 不会捕捉到这种残缺，
+    # 必须靠显式校验步骤集合完整来兜底，否则会把「没真正测过」误判成
+    # 「全绿」而写库。
+    incomplete = [StepResult("token", True, None)]
+    _stub_selftest(monkeypatch, incomplete)
+    resp = client.put(
+        "/api/admin/graph-credentials",
+        json={
+            "tenant_id": "t-1", "client_id": "c-1", "client_secret": "s-1",
+            "site_id": "site-1", "drive_path": "staging",
+        },
+    )
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "GRAPH_SELFTEST_FAILED"
+    with pytest.raises(GraphNotConfigured):
+        graph_credentials.load_credentials(db_session)
+
+
+def test_put_blank_secret_reuses_stored(client, admin_session, db_session, monkeypatch):
+    graph_credentials.save_credentials(
+        db_session, tenant_id="old-t", client_id="old-c",
+        client_secret="STORED-SECRET", site_id="old-s", drive_path="old-d",
+    )
+    calls = _stub_selftest(monkeypatch, _GREEN)
+    resp = client.put(
+        "/api/admin/graph-credentials",
+        json={
+            "tenant_id": "new-t", "client_id": "new-c", "client_secret": "",
+            "site_id": "new-s", "drive_path": "new-d",
+        },
+    )
+    assert resp.status_code == 200
+    # 自检拿到的必须是库里的旧 secret
+    assert calls[0].client_secret == "STORED-SECRET"
+    saved = graph_credentials.load_credentials(db_session)
+    assert saved.client_secret == "STORED-SECRET"
+    assert saved.tenant_id == "new-t"
+
+
+def test_put_blank_secret_rejected_on_first_config(client, admin_session, monkeypatch):
+    _stub_selftest(monkeypatch, _GREEN)
+    resp = client.put(
+        "/api/admin/graph-credentials",
+        json={
+            "tenant_id": "t", "client_id": "c", "client_secret": "",
+            "site_id": "s", "drive_path": "d",
+        },
+    )
+    assert resp.status_code == 422
+    assert "client_secret" in resp.text
+
+
+def test_put_rejects_anonymous(client):
+    resp = client.put(
+        "/api/admin/graph-credentials",
+        json={
+            "tenant_id": "t", "client_id": "c", "client_secret": "s",
+            "site_id": "s", "drive_path": "d",
+        },
+    )
+    assert resp.status_code == 401

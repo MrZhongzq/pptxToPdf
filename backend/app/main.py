@@ -32,9 +32,16 @@ app.add_middleware(
 
 @app.exception_handler(AppError)
 def handle_app_error(_: Request, exc: AppError) -> JSONResponse:
+    content = {"code": exc.code, "message": exc.message}
+    steps = getattr(exc, "steps", None)
+    if steps:
+        content["steps"] = [
+            step.model_dump() if hasattr(step, "model_dump") else dict(step)
+            for step in steps
+        ]
     return JSONResponse(
         status_code=exc.http_status,
-        content={"code": exc.code, "message": exc.message},
+        content=content,
     )
 
 

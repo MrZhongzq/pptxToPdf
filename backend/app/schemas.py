@@ -114,3 +114,23 @@ class GraphCredentialsDto(BaseModel):
     site_id: str
     drive_path: str
     secret_configured: bool
+
+
+class GraphCredentialsUpdate(BaseModel):
+    tenant_id: str = Field(min_length=1, max_length=64)
+    client_id: str = Field(min_length=1, max_length=64)
+    client_secret: str = Field(default="", max_length=512)
+    """留空表示沿用库中已存的值。首次配置时留空会被拒绝。"""
+    site_id: str = Field(min_length=1, max_length=256)
+    drive_path: str = Field(default="pptx2pdf-staging", min_length=1, max_length=256)
+
+
+class SelftestStepDto(BaseModel):
+    step: str
+    ok: bool | None
+    detail: str | None
+
+
+class SelftestResultDto(BaseModel):
+    ok: bool
+    steps: list[SelftestStepDto]

@@ -152,3 +152,7 @@ class GraphSelftestFailed(AppError):
 
     code = "GRAPH_SELFTEST_FAILED"
     http_status = 422
+
+    def __init__(self, message: str = "", *, steps: list | None = None) -> None:
+        super().__init__(message or "Graph 凭证自检未通过")
+        self.steps = steps or []
