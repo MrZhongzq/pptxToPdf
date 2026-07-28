@@ -71,6 +71,36 @@ describe('TaskCard 状态徽标', () => {
   })
 })
 
+describe('TaskCard pollingTimedOut（终审 F-2：此前全部 13 处用例都传 false，零覆盖）', () => {
+  beforeEach(() => {
+    polling.state = { task: null, pollingTimedOut: false }
+  })
+
+  it('pollingTimedOut 为 true 时显示超时文案，替换掉整张卡片', () => {
+    polling.state = { task: null, pollingTimedOut: true }
+    render(<TaskCard taskId="T1" />)
+
+    expect(
+      screen.getByText('任务状态长时间未更新，可能已中断。请重新上传。'),
+    ).toBeInTheDocument()
+    // 是替换而不是叠加：文件名等正常卡片内容不应该同时出现
+    expect(screen.queryByText('deck.pptx')).toBeNull()
+  })
+
+  it('任务仍在推进（有 task 数据、状态非终态）时，pollingTimedOut 为 false 不出现超时文案', () => {
+    polling.state = {
+      task: taskWith('converting', { shard_total: 8, shard_done: 3 }),
+      pollingTimedOut: false,
+    }
+    render(<TaskCard taskId="T1" />)
+
+    expect(
+      screen.queryByText('任务状态长时间未更新，可能已中断。请重新上传。'),
+    ).toBeNull()
+    expect(screen.getByText('deck.pptx')).toBeInTheDocument()
+  })
+})
+
 describe('TaskCard 分片进度（长耗时任务的紫色区分）', () => {
   beforeEach(() => {
     polling.state = { task: null, pollingTimedOut: false }
