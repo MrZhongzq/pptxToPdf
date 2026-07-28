@@ -22,8 +22,10 @@ pptx 只存字体名不存字形，字体缺失时渲染端会替换，替换字
 
 Microsoft Graph 用微软自己的渲染服务转换，保真度是天花板，但它有硬限制：
 约 100 页、约 50MB、45 秒同步超时，且没有异步 API。超出限制的文件会被
-切分成多片分别转换再合并（分片 pptx 容量 = `12 × 40MiB` = 480MiB，合并
-预算 = 240MiB，见下方「关键配置」表）。自动路由只覆盖小文件（≤80 页且
+切分成多片分别转换再合并（`12 × 40MiB` = 480MiB 是分片 **pptx 产物**总量
+的上界，不是「保证能过」的原文件体积——每片各自还带一份 masters/主题/
+字体等共享部分，实际能接受的原文件上限严格小于 480MiB；合并预算另外
+卡 240MiB，见下方「关键配置」表）。自动路由只覆盖小文件（≤80 页且
 ≤40MB）；更大的文件要显式在上传时选择 Graph 引擎才会走切片路径，因为
 切片意味着数十次 HTTP 往返和几分钟等待，不适合当默认行为。
 
@@ -50,18 +52,24 @@ SharePoint site_id 全部加密存在 `graph_credentials` 表，由四期的管�
    ```bash
    python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
    ```
-5. 在管理页面填写 Azure 凭证，落库前用上一步的密钥加密
+5. **改完 `.env` 必须 `docker compose up -d` 重启 api 与 worker 容器**——
+   `settings = Settings()` 是模块级单例，只在进程启动时读一次环境变量，
+   运行中的容器不会热加载 `.env`。漏了这一步会看到「未配置
+   `PPTX2PDF_SECRET_KEY`，Graph 引擎不可用」，容易误以为是密钥格式写错，
+   反复检查 `.env` 却找不到问题——其实只是容器还没重启
+6. 重启生效后，在管理页面填写 Azure 凭证，落库前用上一步的密钥加密
 
 **密钥丢失等于凭证全废**——数据库里的 client secret 再也解不开，只能去
 Azure 重新生成。请把 `PPTX2PDF_SECRET_KEY` 与 `.env` 一起妥善备份；换密钥
 后旧凭证会在下次读取时报「Graph 凭证无法解密」。
 
-**合并内存预算的由来**：`graph_max_merge_bytes`（240MiB）基于实测 3.01×
-内存倍率——4 片共 54.1MB 的图片密集型 PDF，tracemalloc 测得峰值
-162.9MB。`merge_pdfs` 把所有分片一次性载入同一个 `PdfWriter`（pypdf 没有
-真正的流式合并 API），峰值随分片 PDF 总字节而不是分片数增长，所以单独卡
-这一条而不是只卡分片数。tracemalloc 不含解释器基线与分配器碎片，真实 RSS
-更高——**四期上真实租户后应实测 RSS 再回调这个值**。
+**合并内存预算的由来**：`graph_max_merge_bytes`（240MiB）基于 tracemalloc
+（不是 RSS）测得的 3.01× 内存倍率——4 片共 54.1MB 的图片密集型 PDF，
+tracemalloc 测得峰值 162.9MB。`merge_pdfs` 把所有分片一次性载入同一个
+`PdfWriter`（pypdf 没有真正的流式合并 API），峰值随分片 PDF 总字节而不是
+分片数增长，所以单独卡这一条而不是只卡分片数。tracemalloc 不含解释器
+基线与分配器碎片，真实 RSS 更高——**四期上真实租户后应实测 RSS 再回调
+这个值**（以及下方 worker 的内存限额）。
 
 **权限的已知不确定性**：清理中转文件用的 `permanentDelete`，文档标注需要
 `Files.ReadWrite.All` 或 `Sites.ReadWrite.All`（租户级宽权限），与最小权限
@@ -98,6 +106,14 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
+`cp .env.example .env` 只对全新安装成立。**已有部署 `git pull` 之后不会
+自动获得新增的环境变量**——`.env` 是 `.gitignore` 掉的持久文件，`git pull`
+不碰它。升级前跑一下 `diff .env .env.example`，把 diff 里只在
+`.env.example` 出现的新键手动补进 `.env`（当前仓库自己的 `.env` 和
+`.env.example` 之间就漏了好几个键，包括二期就加入却一直没同步的
+`PPTX2PDF_CONVERT_TIMEOUT_PER_MB_S`）。漏配不会报错、不会有任何日志
+提示，只会静默落回代码里的默认值。
+
 起来之后访问 `http://<主机>:18993`。四个容器：`frontend`（nginx，唯一对外端口）、`api`、`worker` ×2、`redis`。
 
 **前端不需要单独构建**——`deploy/frontend.Dockerfile` 是多阶段镜像，在 node 容器里跑 `npm ci && npm run build`，产物拷进 nginx 镜像。部署机只要有 Docker 就够，不用装 Node。
@@ -123,15 +139,16 @@ sudo netfilter-persistent save    # 没有这个命令就 apt install iptables-p
 | `PPTX2PDF_CONVERT_TIMEOUT_PER_MB_S` | 2 | 每 MB 超时系数，覆盖「页数少但内嵌大量图片/视频」的重课件 |
 | `PPTX2PDF_OUTPUT_TTL_HOURS` | 24 | 输出 PDF 保留时长，过期自动清理；也是三期分片目录残骸清理的安全边界，见下方 Graph 通道一节 |
 | `PPTX2PDF_STALE_TASK_MINUTES` | 45 | 孤儿任务回收阈值，必须大于最大转换超时 |
+| `PPTX2PDF_MAX_FILE_SIZE` | 629145600（600MiB） | 单次上传允许的最大原文件体积。LibreOffice 路径不受此限约束；Graph 路径的实际可用上界更低，见下一行 |
 | `PPTX2PDF_SECRET_KEY` | 空 | Graph 凭证的 Fernet 主密钥。未配置则 Graph 引擎不可用 |
 | `PPTX2PDF_GRAPH_MAX_PAGES_PER_SHARD` | 80 | 每片页数上限，对 Graph 的 100 页硬限留余量 |
 | `PPTX2PDF_GRAPH_MAX_SHARD_BYTES` | 41943040（40MiB） | 每片体积上限，对 Graph 实测 ~50MB 失败点留余量 |
-| `PPTX2PDF_GRAPH_MAX_SHARDS` | 12 | 分片数上限。Graph 路径实际容量 = 本值 × `GRAPH_MAX_SHARD_BYTES` = 480MiB，低于 `PPTX2PDF_MAX_FILE_SIZE`（600MiB）——这是 Graph 硬限的固有后果，不要调大本值去对齐 |
-| `PPTX2PDF_GRAPH_MAX_MERGE_BYTES` | 251658240（240MiB） | 合并阶段各分片 PDF 总字节上限，基于 3.01× 实测内存倍率算出，详见下方 Graph 通道一节 |
+| `PPTX2PDF_GRAPH_MAX_SHARDS` | 12 | 分片数上限。本值 × `GRAPH_MAX_SHARD_BYTES` = 480MiB 是分片产物总量的上界（不是保证能过的原文件体积，见上方 Graph 通道一节），且低于 `PPTX2PDF_MAX_FILE_SIZE`（600MiB）——这是 Graph 硬限的固有后果，不要调大本值去对齐 |
+| `PPTX2PDF_GRAPH_MAX_MERGE_BYTES` | 251658240（240MiB） | 合并阶段各分片 PDF 总字节上限，基于 tracemalloc（非 RSS）测得的 3.01× 倍率算出，详见下方 Graph 通道一节 |
 | `PPTX2PDF_GRAPH_REQUEST_TIMEOUT_S` | 50 | 单次 Graph 转换请求超时，Graph 自身约 45 秒硬超时 + 5 秒网络余量 |
 | `PPTX2PDF_GRAPH_MAX_RETRIES` | 3 | Graph 请求失败重试次数（429/5xx 退避重试）|
 
-worker 单容器内存上限硬编码在 `docker-compose.yml`（三期从 3G 提到 8G），**不通过 `.env` 控制**——流式切片本身内存恒定，但合并阶段 pypdf 要把多份分片 PDF 一次性读进同一个 `PdfWriter`（没有真正的流式合并 API），几十 MB × 若干片仍然吃内存。24GB 机器上 2 个 worker × 8G = 16G，留 8G 给 api、redis 与系统；换机器规格需要同步改 `docker-compose.yml` 里的 `memory:` 值。
+worker 单容器内存上限硬编码在 `docker-compose.yml`（三期从 3G 提到 8G），**不通过 `.env` 控制**。这是保守取值，不是从测得的 RSS 反推的结论——上面 `GRAPH_MAX_MERGE_BYTES` 那行的 3.01× 倍率来自 tracemalloc（不含解释器基线与分配器碎片，真实 RSS 更高，且推算出的堆峰值约 720MB，原有的 3G 本就有约 4× 余量）；8G 是「提高限额 + 流式切片」两手一起上的既定方案，四期上真实租户后应实测 RSS 再回调。24GB 机器上 2 个 worker × 8G = 16G，留 8G 给 api、redis 与系统；换机器规格需要同步改 `docker-compose.yml` 里的 `memory:` 值。
 
 ### 排查：故障注入开关
 
