@@ -85,3 +85,17 @@ class ErrorResponse(BaseModel):
 
     code: str
     message: str
+
+
+class CapacityConfig(BaseModel):
+    """容量相关的只读配置，供前端在选 Graph 引擎时做上传前的启发式预判。
+
+    只吐这几个纯数字，不吐任何凭证/配置状态（如 Graph 是否已配置）——那属于
+    四期管理页范畴，也是信息泄露面，这轮不碰。四个字段直接来自
+    app.config.settings 单例，端点里不另存一份，避免和后端实际配置漂移。
+    """
+
+    max_file_size: int
+    graph_max_shards: int
+    graph_max_shard_bytes: int
+    graph_max_merge_bytes: int
