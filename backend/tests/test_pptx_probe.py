@@ -1,3 +1,4 @@
+import re
 import zipfile
 
 import pytest
@@ -30,6 +31,45 @@ def test_probe_slide_count_and_size(sample_pptx):
     assert meta.slide_count == 3
     assert meta.slide_width_emu == 12192000
     assert meta.slide_height_emu == 6858000
+
+
+@pytest.fixture
+def pptx_with_hidden_slide(tmp_path):
+    """4 页样本，其中 slide2 的根元素带 show="0"（PowerPoint 的「隐藏幻灯片」）。
+
+    python-pptx 没有隐藏页的 API，只能重打包 zip 时在根标签里插属性。
+    """
+    prs = Presentation()
+    prs.slide_width = Emu(12192000)
+    prs.slide_height = Emu(6858000)
+    for i in range(4):
+        slide = prs.slides.add_slide(prs.slide_layouts[5])
+        slide.shapes.title.text = f"第 {i + 1} 页"
+    src = tmp_path / "src.pptx"
+    prs.save(src)
+
+    with zipfile.ZipFile(src) as zin:
+        items = zin.infolist()
+        payload = {it.filename: zin.read(it.filename) for it in items}
+
+    raw = payload["ppt/slides/slide2.xml"]
+    root = re.search(rb"<p:sld\b[^>]*", raw)
+    assert root is not None, "样本里找不到 <p:sld> 根标签"
+    payload["ppt/slides/slide2.xml"] = raw[: root.end()] + b' show="0"' + raw[root.end() :]
+
+    dst = tmp_path / "with_hidden.pptx"
+    with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
+        for it in items:
+            zout.writestr(it.filename, payload[it.filename])
+    return dst
+
+
+def test_probe_slide_count_excludes_hidden_slides(pptx_with_hidden_slide):
+    """slide_count 必须是可见页数——soffice 默认不导出隐藏页，口径不一致
+    会让 _verify_output 把一份完全正确的 PDF 判为页数不符并删除。"""
+    meta = probe(pptx_with_hidden_slide)
+
+    assert meta.slide_count == 3
 
 
 def test_probe_collects_fonts(sample_pptx):

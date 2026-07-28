@@ -28,12 +28,16 @@ export function UploadDropzone({ onFileSelected, maxBytes }: Props) {
   return (
     <div>
       <div
-        className={dragging ? 'glass-strong' : 'glass'}
+        className="card"
         style={{
-          padding: 40,
+          padding: 'var(--space-7) var(--space-5)',
           textAlign: 'center',
           cursor: 'pointer',
-          transition: 'background 200ms ease',
+          borderStyle: 'dashed',
+          borderWidth: 2,
+          borderColor: dragging ? 'var(--c-accent)' : 'var(--c-border-strong)',
+          background: dragging ? 'var(--c-accent-soft)' : 'var(--c-bg-elev)',
+          transition: 'border-color 140ms ease, background-color 140ms ease',
         }}
         onClick={() => inputRef.current?.click()}
         onDragOver={(e) => {
@@ -47,8 +51,14 @@ export function UploadDropzone({ onFileSelected, maxBytes }: Props) {
           accept(e.dataTransfer.files[0])
         }}
       >
-        <p style={{ fontSize: 18, margin: 0 }}>拖入 pptx，或点击选择</p>
-        <p style={{ color: 'var(--g-text-dim)', fontSize: 14 }}>
+        <p style={{ fontSize: 16, fontWeight: 550 }}>拖入 pptx，或点击选择</p>
+        <p
+          style={{
+            color: 'var(--c-text-dim)',
+            fontSize: 13,
+            marginTop: 'var(--space-1)',
+          }}
+        >
           单文件上限 {formatBytes(maxBytes)}
         </p>
         <input
@@ -61,7 +71,11 @@ export function UploadDropzone({ onFileSelected, maxBytes }: Props) {
         />
       </div>
       {error && (
-        <p role="alert" style={{ color: 'var(--g-danger)', marginTop: 12 }}>
+        <p
+          role="alert"
+          className="alert alert-danger"
+          style={{ marginTop: 'var(--space-3)' }}
+        >
           {error}
         </p>
       )}

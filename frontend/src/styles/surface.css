@@ -1,0 +1,234 @@
+/*
+  表面与控件基元。取代一期的 glass.css——玻璃拟态依赖背后有内容可透，
+  在浅色纯色底上只会变成一层灰膜，反而降低对比度。改用实心表面 +
+  一像素描边 + 克制的阴影来分层，两种主题下都清晰。
+*/
+
+.card {
+  background: var(--c-bg-elev);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+.card-lg {
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+}
+
+.sunken {
+  background: var(--c-bg-sunken);
+  border-radius: var(--radius-sm);
+}
+
+/* ---- 按钮 ---- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: 9px 18px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  font: inherit;
+  font-weight: 500;
+  line-height: 1.2;
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    transform 80ms ease;
+}
+
+.btn:active {
+  transform: translateY(1px);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
+}
+
+.btn-primary {
+  background: var(--c-accent);
+  color: var(--c-on-accent);
+}
+
+.btn-primary:hover {
+  background: var(--c-accent-hover);
+}
+
+.btn-ghost {
+  background: transparent;
+  border-color: var(--c-border-strong);
+  color: var(--c-text);
+}
+
+.btn-ghost:hover {
+  background: var(--c-bg-sunken);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* ---- 分段选择器（引擎选择）---- */
+
+.segmented {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: var(--space-2);
+}
+
+.segment {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: var(--space-3) var(--space-4);
+  text-align: left;
+  background: var(--c-bg-elev);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-sm);
+  color: var(--c-text);
+  font: inherit;
+  cursor: pointer;
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease;
+}
+
+.segment:hover {
+  border-color: var(--c-border-strong);
+}
+
+.segment[aria-pressed='true'] {
+  border-color: var(--c-accent);
+  background: var(--c-accent-soft);
+}
+
+.segment:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
+}
+
+.segment-title {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.segment-hint {
+  font-size: 12px;
+  color: var(--c-text-dim);
+}
+
+/* ---- 复选项 ---- */
+
+.check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background-color 140ms ease;
+}
+
+.check-row:hover {
+  background: var(--c-bg-sunken);
+}
+
+.check-row input {
+  margin: 2px 0 0;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--c-accent);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.check-label {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.check-hint {
+  font-size: 12px;
+  color: var(--c-text-dim);
+  margin-top: 2px;
+  line-height: 1.5;
+}
+
+/* ---- 徽标 ---- */
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.badge-neutral {
+  background: var(--c-bg-sunken);
+  color: var(--c-text-dim);
+}
+
+.badge-accent {
+  background: var(--c-accent-soft);
+  color: var(--c-accent);
+}
+
+.badge-success {
+  background: var(--c-success-soft);
+  color: var(--c-success);
+}
+
+.badge-danger {
+  background: var(--c-danger-soft);
+  color: var(--c-danger);
+}
+
+.badge-warn {
+  background: var(--c-warn-soft);
+  color: var(--c-warn);
+}
+
+/* ---- 提示条 ---- */
+
+.alert {
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.alert-danger {
+  background: var(--c-danger-soft);
+  color: var(--c-danger);
+}
+
+/* 不定长进度条：任务在 pending/parsing/queued/converting 时的活动指示。
+   后端不上报转换百分比（soffice 没有进度输出），所以只表达「在动」。 */
+@keyframes indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(340%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [style*='indeterminate'] {
+    animation: none !important;
+    width: 100% !important;
+    opacity: 0.4;
+  }
+}

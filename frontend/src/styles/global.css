@@ -1,20 +1,51 @@
 @import './tokens.css';
-@import './glass.css';
+@import './surface.css';
 @import './layout.css';
 
-* {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
+}
+
+html {
+  /* 让浏览器把滚动条、表单控件等也按当前主题渲染 */
+  color-scheme: light dark;
 }
 
 body {
   margin: 0;
   min-height: 100dvh;
-  color: var(--g-text);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
-    'Microsoft YaHei', sans-serif;
-  background:
-    radial-gradient(1200px 800px at 10% 0%, var(--g-bg-3), transparent 60%),
-    radial-gradient(1000px 700px at 90% 20%, var(--g-bg-2), transparent 55%),
-    var(--g-bg-1);
-  background-attachment: fixed;
+  background: var(--c-bg);
+  color: var(--c-text);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+
+p {
+  margin: 0;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+a {
+  color: var(--c-accent);
+}
+
+/* 只在键盘导航时显示焦点环，鼠标点击不显示 */
+:focus:not(:focus-visible) {
+  outline: none;
 }

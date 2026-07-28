@@ -1,24 +1,114 @@
+/*
+  双主题色板。浅色与深色是对等的两套设计，不是「深色版凑合一下」。
+
+  切换方式：默认跟随系统 prefers-color-scheme；:root[data-theme] 手动
+  覆盖且优先级更高——将来加主题切换按钮不用改这个文件。
+
+  深色不再沿用一期那种深紫渐变：大面积高饱和背景会压低前景对比度，
+  正文读起来发灰。改成低饱和中性深灰，饱和度只留给可交互元素。
+*/
+
 :root {
-  --g-bg-1: #0b1020;
-  --g-bg-2: #1b2145;
-  --g-bg-3: #3a1d5c;
+  /* ---- 浅色（默认）---- */
+  --c-bg: #f6f7f9;
+  --c-bg-elev: #ffffff;
+  --c-bg-sunken: #eceef1;
+  --c-border: #dfe3e8;
+  --c-border-strong: #c6ccd4;
 
-  --g-surface: rgba(255, 255, 255, 0.10);
-  --g-surface-strong: rgba(255, 255, 255, 0.16);
-  --g-border: rgba(255, 255, 255, 0.22);
-  --g-highlight: rgba(255, 255, 255, 0.45);
+  --c-text: #14181d;
+  --c-text-dim: #5c6672;
+  --c-text-faint: #8a929c;
 
-  --g-text: rgba(255, 255, 255, 0.94);
-  --g-text-dim: rgba(255, 255, 255, 0.62);
-  --g-accent: #7cc4ff;
-  --g-danger: #ff8a8a;
-  --g-success: #86e2b0;
+  --c-accent: #2563eb;
+  --c-accent-hover: #1d4ed8;
+  --c-accent-soft: #e8effd;
+  --c-on-accent: #ffffff;
 
-  --g-blur: 24px;
-  --g-blur-strong: 40px;
-  --g-radius: 20px;
-  --g-radius-sm: 12px;
+  --c-danger: #c62828;
+  --c-danger-soft: #fdecec;
+  --c-success: #12805c;
+  --c-success-soft: #e6f5ef;
+  --c-warn: #9a6700;
+  --c-warn-soft: #fdf5e3;
 
-  --g-shadow: 0 8px 32px rgba(0, 0, 0, 0.36);
-  --g-space: 16px;
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow-md: 0 2px 8px rgba(16, 24, 40, 0.08), 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow-lg: 0 12px 32px rgba(16, 24, 40, 0.12);
+
+  --radius: 12px;
+  --radius-sm: 8px;
+  --radius-lg: 16px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+/* ---- 深色：系统偏好 ---- */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --c-bg: #14171a;
+    --c-bg-elev: #1c2024;
+    --c-bg-sunken: #101315;
+    --c-border: #2c3238;
+    --c-border-strong: #3d444c;
+
+    --c-text: #e8eaed;
+    --c-text-dim: #9aa4ae;
+    --c-text-faint: #6b7480;
+
+    --c-accent: #6ea8fe;
+    --c-accent-hover: #8bbaff;
+    --c-accent-soft: #1b2a42;
+    --c-on-accent: #0d1117;
+
+    --c-danger: #ff8a80;
+    --c-danger-soft: #3a1f1f;
+    --c-success: #5ddaad;
+    --c-success-soft: #14312a;
+    --c-warn: #e3b341;
+    --c-warn-soft: #33290f;
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.55);
+  }
+}
+
+/* ---- 深色：手动覆盖，优先于系统偏好 ---- */
+:root[data-theme='dark'] {
+  --c-bg: #14171a;
+  --c-bg-elev: #1c2024;
+  --c-bg-sunken: #101315;
+  --c-border: #2c3238;
+  --c-border-strong: #3d444c;
+
+  --c-text: #e8eaed;
+  --c-text-dim: #9aa4ae;
+  --c-text-faint: #6b7480;
+
+  --c-accent: #6ea8fe;
+  --c-accent-hover: #8bbaff;
+  --c-accent-soft: #1b2a42;
+  --c-on-accent: #0d1117;
+
+  --c-danger: #ff8a80;
+  --c-danger-soft: #3a1f1f;
+  --c-success: #5ddaad;
+  --c-success-soft: #14312a;
+  --c-warn: #e3b341;
+  --c-warn-soft: #33290f;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.55);
 }

@@ -12,5 +12,9 @@ class ConversionEngine(ABC):
     name: str
 
     @abstractmethod
-    def convert(self, src: Path, meta: PptxMeta, dest: Path) -> None:
-        """把 src 转成 PDF 写到 dest。失败时抛异常。"""
+    def convert(self, src: Path, meta: PptxMeta, dest: Path, *, timeout_s: float) -> None:
+        """把 src 转成 PDF 写到 dest。失败时抛 AppError 子类。
+
+        timeout_s 是单次转换的墙钟上限，实现方必须自己遵守它——
+        调外部进程的实现要在超时后杀掉整个进程组，不能只杀父进程。
+        """

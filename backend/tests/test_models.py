@@ -33,5 +33,5 @@ def test_task_defaults(session):
 
     loaded = session.get(Task, "t1")
     assert loaded.status == "pending"
-    assert loaded.engine == "placeholder"
+    assert loaded.engine == "unassigned"
     assert loaded.user_id is None

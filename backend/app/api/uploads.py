@@ -4,12 +4,13 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Request
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_session
 from app.errors import (
+    EngineUnavailable,
     StorageFull,
     UploadChecksumMismatch,
     UploadSessionExpired,
@@ -21,14 +22,27 @@ from app.models import Task, Upload
 from app.schemas import (
     ChunkAck,
     CompleteResponse,
+    ConversionOptions,
     CreateUploadRequest,
     CreateUploadResponse,
+    ErrorResponse,
     UploadStatus,
 )
+from app.queue import enqueue_conversion
 from app.services.chunk_store import ChunkStore
-from app.services.pipeline import run_task
+from app.services.retention import drop_original
 
 router = APIRouter(prefix="/api/uploads", tags=["uploads"])
+
+_ERR = {"model": ErrorResponse}
+UPLOAD_ERRORS = {
+    404: {**_ERR, "description": "UPLOAD_SESSION_NOT_FOUND"},
+    409: {**_ERR, "description": "UPLOAD_INCOMPLETE / UPLOAD_SESSION_NOT_ACTIVE"},
+    410: {**_ERR, "description": "UPLOAD_SESSION_EXPIRED"},
+    413: {**_ERR, "description": "UPLOAD_SIZE_EXCEEDED"},
+    422: {**_ERR, "description": "VALIDATION_ERROR / UPLOAD_CHECKSUM_MISMATCH"},
+    507: {**_ERR, "description": "STORAGE_FULL"},
+}
 
 
 def store() -> ChunkStore:
@@ -63,9 +77,9 @@ def _purge_expired(session: Session) -> None:
     """惰性清理：每次新建会话时顺带回收过期会话的块目录。
 
     注意范围：本函数只回收 uploads/ 下过期会话的块目录。originals/
-    （拼装后的原始 pptx）与 outputs/（转换产物 PDF）目前没有任何保留
-    策略——它们不会被这个函数、也不会被任何其它路径回收，磁盘会随
-    真实使用无限增长。详见 README「已知限制 / 一期技术债」一节。
+    （拼装后的原始 pptx）与 outputs/（转换产物 PDF）的保留策略由
+    services/retention.py 负责——run_task 结束时调 drop_original() 删原文件，
+    每次任务结束顺带调 purge_expired_outputs() 清过期 PDF。
     """
     now = datetime.now(timezone.utc)
     stale = (
@@ -82,7 +96,7 @@ def _purge_expired(session: Session) -> None:
     session.commit()
 
 
-@router.post("", response_model=CreateUploadResponse)
+@router.post("", response_model=CreateUploadResponse, responses=UPLOAD_ERRORS)
 def create_upload(
     body: CreateUploadRequest, session: Session = Depends(get_session)
 ) -> CreateUploadResponse:
@@ -100,6 +114,8 @@ def create_upload(
         sha256=body.sha256,
         chunk_size=settings.chunk_size,
         total_chunks=math.ceil(body.size / settings.chunk_size),
+        requested_engine=body.engine,
+        options_json=(body.options or ConversionOptions()).model_dump_json(),
         expires_at=datetime.now(timezone.utc)
         + timedelta(hours=settings.upload_ttl_hours),
     )
@@ -114,7 +130,7 @@ def create_upload(
     )
 
 
-@router.put("/{upload_id}/chunks/{index}", response_model=ChunkAck)
+@router.put("/{upload_id}/chunks/{index}", response_model=ChunkAck, responses=UPLOAD_ERRORS)
 async def put_chunk(
     upload_id: str,
     index: int,
@@ -138,16 +154,24 @@ async def put_chunk(
             f"块 {index} 声明 {declared} 字节，超过块大小 {upload.chunk_size}"
         )
 
-    data = await request.body()
-    if len(data) > upload.chunk_size:  # Content-Length 可能缺失或撒谎，读后复验兜底
-        raise UploadSizeExceeded(f"块 {index} 为 {len(data)} 字节，超过块大小")
+    # 流式读取并在超限时立即中断。Content-Length 缺失时
+    # （Transfer-Encoding: chunked）await request.body() 是无上限的，
+    # 校验发生在整个 body already 进内存之后，起不到防护作用。
+    buffer = bytearray()
+    async for part in request.stream():
+        buffer.extend(part)
+        if len(buffer) > upload.chunk_size:
+            raise UploadSizeExceeded(
+                f"块 {index} 实际超过块大小 {upload.chunk_size} 字节"
+            )
+    data = bytes(buffer)
 
     chunks = store()
     chunks.save_chunk(upload_id, index, data)
     return ChunkAck(index=index, received_count=len(chunks.received_indices(upload_id)))
 
 
-@router.get("/{upload_id}", response_model=UploadStatus)
+@router.get("/{upload_id}", response_model=UploadStatus, responses=UPLOAD_ERRORS)
 def get_status(
     upload_id: str, session: Session = Depends(get_session)
 ) -> UploadStatus:
@@ -162,10 +186,15 @@ def get_status(
     )
 
 
-@router.post("/{upload_id}/complete", response_model=CompleteResponse)
+# 只有本端点会在 Redis 不可达时抛 EngineUnavailable(503)，所以 503 就地合并进
+# responses，而不是加到共享的 UPLOAD_ERRORS 里给另外三个端点误声明。
+@router.post(
+    "/{upload_id}/complete",
+    response_model=CompleteResponse,
+    responses={**UPLOAD_ERRORS, 503: {**_ERR, "description": "ENGINE_UNAVAILABLE"}},
+)
 def complete_upload(
     upload_id: str,
-    background: BackgroundTasks,
     session: Session = Depends(get_session),
 ) -> CompleteResponse:
     upload = _load_active(session, upload_id)
@@ -192,12 +221,31 @@ def complete_upload(
         upload_id=upload_id,
         original_filename=upload.filename,
         size_bytes=upload.size_bytes,
+        options_json=upload.options_json,
+        requested_engine=upload.requested_engine,
         status="pending",
-        engine="placeholder",
     )
+    # engine 仍留 "unassigned"：用户指定的引擎名带在 upload 上，
+    # 由 run_task 在 probe 之后交给 select_engine 定夺后再写进 task。
     session.add(task)
     session.commit()
 
     store().purge(upload_id)
-    background.add_task(run_task, task_id)
+    try:
+        enqueue_conversion(task_id)
+    except Exception as exc:
+        # Redis 不可达时 Queue.enqueue 抛的是 redis.exceptions.ConnectionError，
+        # 不是 AppError——main.py 的处理器接不住，会退化成裸文本 500，违反
+        # 错误契约。这里兜底捕获任意异常（队列实现将来可能换，不锁定具体
+        # 异常类型）。此时 upload 已标 completed、块目录已 purge、原文件
+        # 已落盘、task 行是 pending：任务永远不会入队，也就永远不会走到
+        # run_task 的 finally 里的 drop_original——这里是原文件唯一的删除
+        # 路径，必须显式调用，否则留下一份 80–500MB 的孤儿文件。
+        task.status = "failed"
+        task.error_code = EngineUnavailable.code
+        task.error_message = f"任务排队失败，转换服务暂不可用: {exc}"
+        session.commit()
+        drop_original(task_id)
+        raise EngineUnavailable(f"任务排队失败，转换服务暂不可用: {exc}") from exc
+
     return CompleteResponse(task_id=task_id)

@@ -3,6 +3,8 @@ import {
   createUpload,
   getUploadStatus,
   putChunk,
+  type ConversionOptions,
+  type EngineName,
 } from './api'
 import { backoffDelay, sliceChunks } from './chunking'
 
@@ -21,6 +23,10 @@ export interface UploadProgress {
 }
 
 export interface UploadOptions {
+  /** 用户选的转换引擎；省略则由后端 select_engine 自动判定 */
+  engine?: EngineName
+  /** 后处理选项，随创建会话的请求一起发给后端 */
+  options?: ConversionOptions
   onProgress?: (p: UploadProgress) => void
   onPhase?: (phase: UploadPhase) => void
   signal?: AbortSignal
@@ -46,6 +52,8 @@ export async function uploadFile(
   opts: UploadOptions = {},
 ): Promise<{ taskId: string }> {
   const {
+    engine,
+    options,
     onProgress,
     onPhase,
     signal,
@@ -72,7 +80,7 @@ export async function uploadFile(
       }
       already = new Set(status.received_indices)
     } else {
-      session = await createUpload(file.name, file.size)
+      session = await createUpload(file.name, file.size, engine, options)
       already = new Set<number>()
     }
 

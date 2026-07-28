@@ -1,0 +1,66 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  frontend:
+    build:
+      context: .
+      dockerfile: deploy/frontend.Dockerfile
+    restart: unless-stopped
+    ports:
+      # 唯一对外暴露的端口。默认 18993，用 WEB_PORT 覆盖。
+      - "${WEB_PORT:-18993}:80"
+    depends_on:
+      - api
+
+  api:
+    build:
+      context: .
+      dockerfile: deploy/api.Dockerfile
+    restart: unless-stopped
+    ports:
+      # 只绑到回环，供宿主机上 curl 排查用；对外走 frontend 的反向代理
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - storage:/app/storage
+    env_file:
+      - .env
+    environment:
+      PPTX2PDF_STORAGE_ROOT: /app/storage
+      PPTX2PDF_DATABASE_URL: sqlite:////app/storage/pptx2pdf.db
+      PPTX2PDF_REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: deploy/worker.Dockerfile
+    restart: unless-stopped
+    deploy:
+      replicas: ${WORKER_REPLICAS:-2}
+      resources:
+        limits:
+          memory: 3G
+    volumes:
+      - storage:/app/storage
+      - ./fonts-extra:/usr/share/fonts/truetype/extra:ro
+    env_file:
+      - .env
+    environment:
+      PPTX2PDF_STORAGE_ROOT: /app/storage
+      PPTX2PDF_DATABASE_URL: sqlite:////app/storage/pptx2pdf.db
+      PPTX2PDF_REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  storage:

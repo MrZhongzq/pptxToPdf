@@ -1,3 +1,6 @@
+import logging
+import sys
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,6 +10,15 @@ from app.api import tasks, uploads
 from app.config import settings
 from app.db import init_db
 from app.errors import AppError, ValidationError
+from app.services.retention import reap_stale_tasks
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-7s %(name)s %(message)s",
+    stream=sys.stdout,
+)
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="pptx2pdf", version="0.1.0")
 
@@ -53,6 +65,7 @@ def handle_validation_error(_: Request, exc: RequestValidationError) -> JSONResp
 def startup() -> None:
     settings.ensure_dirs()
     init_db()
+    reap_stale_tasks()
 
 
 app.include_router(uploads.router)

@@ -1,8 +1,12 @@
 from app.services.engines.base import ConversionEngine
+from app.services.engines.graph import GraphEngine
+from app.services.engines.libreoffice import LibreOfficeEngine
 from app.services.engines.placeholder import PlaceholderEngine
 
 _ENGINES: dict[str, type[ConversionEngine]] = {
     PlaceholderEngine.name: PlaceholderEngine,
+    LibreOfficeEngine.name: LibreOfficeEngine,
+    GraphEngine.name: GraphEngine,
 }
 
 
@@ -18,4 +22,17 @@ def get_engine(name: str) -> ConversionEngine:
     return _ENGINES[name]()
 
 
-__all__ = ["ConversionEngine", "PlaceholderEngine", "get_engine"]
+def available_engines() -> list[str]:
+    """已注册的引擎名。注册不等于可用——graph 目前是会抛
+    EngineUnavailable 的桩实现，见 graph.py 的说明。"""
+    return sorted(_ENGINES)
+
+
+__all__ = [
+    "ConversionEngine",
+    "GraphEngine",
+    "LibreOfficeEngine",
+    "PlaceholderEngine",
+    "available_engines",
+    "get_engine",
+]

@@ -13,6 +13,22 @@ export interface UploadStatusResponse {
   status: string
 }
 
+export type EngineName = 'libreoffice' | 'graph'
+
+/** 与后端 schemas.ConversionOptions 一一对应。后端目前只接收并落库，
+ *  不实现任何一项——UI 上对应标注了「后端实现中」。 */
+export interface ConversionOptions {
+  expand_animations: boolean
+  pdf_outline: boolean
+  remap_margins: boolean
+}
+
+export const DEFAULT_OPTIONS: ConversionOptions = {
+  expand_animations: false,
+  pdf_outline: false,
+  remap_margins: false,
+}
+
 export interface TaskDto {
   task_id: string
   status: 'pending' | 'parsing' | 'queued' | 'converting' | 'done' | 'failed'
@@ -23,6 +39,7 @@ export interface TaskDto {
   slide_width_emu: number | null
   slide_height_emu: number | null
   fonts: string[]
+  options: ConversionOptions
   error_code: string | null
   error_message: string | null
   created_at: string
@@ -56,11 +73,13 @@ async function parse<T>(resp: Response): Promise<T> {
 export async function createUpload(
   filename: string,
   size: number,
+  engine?: EngineName,
+  options?: ConversionOptions,
 ): Promise<CreateUploadResponse> {
   const resp = await fetch('/api/uploads', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ filename, size }),
+    body: JSON.stringify({ filename, size, engine, options }),
   })
   return parse<CreateUploadResponse>(resp)
 }
@@ -100,4 +119,47 @@ export async function getTask(taskId: string): Promise<TaskDto> {
 
 export function downloadUrl(taskId: string): string {
   return `/api/tasks/${taskId}/download`
+}
+
+/**
+ * 下载前的轻量预检。通过则返回，调用方随后交给浏览器原生下载。
+ *
+ * 为什么不是 fetch + blob：那样浏览器必须把整个 PDF 读进内存才会弹出
+ * 保存框。真实课件转出的 PDF 有 76MB，实测要等两分钟且全程没有任何
+ * 进度提示，用户只会以为按钮没反应。原生下载是流式的，有浏览器自带的
+ * 进度条与断点续传，也不占页面内存。
+ *
+ * HEAD 不传 body（Starlette 为 GET 路由自动注册 HEAD），毫秒级返回，
+ * 只用来提前发现 410 RESULT_EXPIRED / 409 TASK_NOT_READY。HEAD 响应
+ * 没有 body 拿不到错误码，所以失败后再发一次 GET 读详情——此时服务端
+ * 返回的是几十字节的错误 JSON，不会真的下载文件。
+ */
+export async function preflightDownload(taskId: string): Promise<void> {
+  const head = await fetch(downloadUrl(taskId), { method: 'HEAD' })
+  if (head.ok) return
+
+  const resp = await fetch(downloadUrl(taskId))
+  let code = 'INTERNAL_ERROR'
+  let message = resp.statusText
+  try {
+    const body = await resp.json()
+    code = body.code ?? code
+    message = body.message ?? message
+  } catch {
+    // 响应体不是 JSON，保留状态文本
+  }
+  throw new ApiError(code, message, resp.status)
+}
+
+/**
+ * 交给浏览器原生下载。不设 download 属性的文件名——让服务端的
+ * Content-Disposition 决定，那边用的是 RFC 5987 编码，中文文件名才不会乱码。
+ */
+export function triggerNativeDownload(taskId: string): void {
+  const link = document.createElement('a')
+  link.href = downloadUrl(taskId)
+  link.download = ''
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
 }

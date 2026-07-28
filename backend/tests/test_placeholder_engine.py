@@ -19,14 +19,14 @@ def meta():
 
 def test_placeholder_page_count(tmp_path, meta):
     dest = tmp_path / "out.pdf"
-    PlaceholderEngine().convert(tmp_path / "unused.pptx", meta, dest)
+    PlaceholderEngine().convert(tmp_path / "unused.pptx", meta, dest, timeout_s=60)
 
     assert len(PdfReader(dest).pages) == 3
 
 
 def test_placeholder_page_size_matches_slide(tmp_path, meta):
     dest = tmp_path / "out.pdf"
-    PlaceholderEngine().convert(tmp_path / "unused.pptx", meta, dest)
+    PlaceholderEngine().convert(tmp_path / "unused.pptx", meta, dest, timeout_s=60)
 
     page = PdfReader(dest).pages[0]
     expected_w = meta.slide_width_emu / EMU_PER_POINT
@@ -37,7 +37,7 @@ def test_placeholder_page_size_matches_slide(tmp_path, meta):
 
 def test_placeholder_has_selectable_text(tmp_path, meta):
     dest = tmp_path / "out.pdf"
-    PlaceholderEngine().convert(tmp_path / "unused.pptx", meta, dest)
+    PlaceholderEngine().convert(tmp_path / "unused.pptx", meta, dest, timeout_s=60)
 
     text = PdfReader(dest).pages[0].extract_text()
     assert "1 / 3" in text
@@ -49,4 +49,4 @@ def test_get_engine_returns_placeholder():
 
 def test_get_engine_unknown_raises():
     with pytest.raises(KeyError):
-        get_engine("libreoffice")
+        get_engine("nonexistent-engine")

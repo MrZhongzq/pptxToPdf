@@ -1,17 +1,38 @@
 from pathlib import Path
 
 from pydantic import field_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 MIB = 1024 * 1024
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="PPTX2PDF_")
+
+    # 一期既有
     storage_root: Path = Path("storage")
     chunk_size: int = 5 * MIB
     max_file_size: int = 600 * MIB
     upload_ttl_hours: int = 24
     database_url: str = "sqlite:///./pptx2pdf.db"
+
+    # 二期新增：基础设施
+    redis_url: str = "redis://redis:6379/0"
+    output_ttl_hours: int = 24
+    stale_task_minutes: int = 45
+
+    # 二期新增：转换超时（秒）
+    convert_timeout_base_s: int = 180
+    convert_timeout_per_slide_s: int = 4
+    convert_timeout_per_mb_s: int = 2
+    convert_timeout_max_s: int = 1800
+    soffice_bin: str = "soffice"
+
+    # 二期新增：故障注入，默认全关
+    debug_force_timeout: bool = False
+    debug_force_engine_failure: bool = False
+    debug_force_empty_output: bool = False
+    debug_force_page_mismatch: bool = False
 
     @field_validator("storage_root")
     @classmethod

@@ -13,6 +13,20 @@ PRESENTATION_PART = "ppt/presentation.xml"
 SLIDE_RE = re.compile(r"^ppt/slides/slide\d+\.xml$")
 FONT_SCAN_RE = re.compile(r"^ppt/(slides|slideMasters|slideLayouts|theme)/.+\.xml$")
 
+# 隐藏标记在根元素 <p:sld ... show="0"> 的属性上，属性顺序不固定，
+# 缺省即可见，只有显式 show="0" 才是隐藏。只在根元素的开标签内找，
+# 避免误配子元素里恰好也叫 show 的属性——4096 字节的窗口通常能覆盖
+# 整份 slide XML（实测一页 slide 解压后仅 840 字节、窗口内 45 个 '<'
+# 全是子元素），不截断就会误判。
+SLIDE_HEAD_BYTES = 4096
+# 定位真正的元素开标签：OOXML slide XML 一律以 <?xml ...?> 声明开头，
+# 前面还可能有注释 / DOCTYPE，这些都不是根元素。排除 '<?' 与 '<!' 开头的
+# 结构，第一个匹配就是根元素开标签的起点。
+ROOT_TAG_START_RE = re.compile(rb"<(?!\?|!)[^\s/>]+")
+# 属性值引号 OOXML 生产者一律用双引号，单引号在 XML 里同样合法，
+# 既然用正则求鲁棒就一并覆盖。
+HIDDEN_ATTR_RE = re.compile(rb"""\bshow\s*=\s*["']0["']""")
+
 P_NS = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
 A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 FONT_TAGS = (f"{A_NS}latin", f"{A_NS}ea", f"{A_NS}cs")
@@ -56,6 +70,58 @@ def _read_slide_size(zf: zipfile.ZipFile) -> tuple[int, int]:
         ) from exc
 
 
+def _is_slide_hidden(zf: zipfile.ZipFile, name: str) -> bool:
+    """只读解压后的前 4KB 判断隐藏标记，不读整份 slide XML。
+
+    根元素 <p:sld ...> 的开标签必然出现在文件最前面，500 页的 deck
+    也不会让单页 XML 的开标签超过 4KB。
+
+    注意：不能直接 head.find(b">") 取第一个 '>'——slide XML 开头是
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>，第一个 '>'
+    落在 XML 声明的末尾，截出来的永远是声明本身，<p:sld> 开标签根本
+    进不了搜索窗口。必须先跳过声明定位到根元素开标签再截断。
+    """
+    with zf.open(name) as fh:
+        head = fh.read(SLIDE_HEAD_BYTES)
+    m = ROOT_TAG_START_RE.search(head)
+    if m is None:
+        # 窗口里找不到任何元素开标签（截断、空文件、异常内容）：按可见处理，
+        # 理由同 _count_visible_slides 的异常分支——少算一页比多算一页危险。
+        return False
+    end = head.find(b">", m.start())
+    # end == -1 表示窗口内开标签尚未闭合，那么 m.start() 之后的全部内容
+    # 都还在开标签里（子元素必须等根标签闭合后才可能出现），整段可安全搜索。
+    root_tag = head[m.start() : end + 1] if end != -1 else head[m.start() :]
+    return bool(HIDDEN_ATTR_RE.search(root_tag))
+
+
+def _count_visible_slides(zf: zipfile.ZipFile, names: list[str]) -> int:
+    """数可见页数——必须与 soffice 实际导出的页数口径一致。
+
+    `--convert-to pdf:impress_pdf_Export` 的 ExportHiddenSlides 默认为
+    false，隐藏页不会进 PDF。如果这里仍数文件数（含隐藏页），
+    `_verify_output` 的页数校验永远不通过，一份完全正确的转换会被
+    误判失败并删除。
+    """
+    visible = 0
+    for name in names:
+        try:
+            hidden = _is_slide_hidden(zf, name)
+        except (KeyError, OSError, zipfile.BadZipFile):
+            # 单页读取失败时按可见计入，而不是跳过不计。理由：
+            # 1) OOXML 里 show 属性缺省即可见，无法确认隐藏标记不等于
+            #    有隐藏标记的证据；
+            # 2) slide_count 是 _verify_output 页数校验的预期值，把它
+            #    悄悄调小会让「实际漏导出一页」的真实故障被这次意外的
+            #    读取失败掩盖过去——按可见计入至多导致误报一次页数不符
+            #    （需要人工核查这一页），比放过真实缺页更安全。
+            visible += 1
+            continue
+        if not hidden:
+            visible += 1
+    return visible
+
+
 def _collect_fonts(zf: zipfile.ZipFile) -> tuple[str, ...]:
     fonts: set[str] = set()
     parts = [n for n in zf.namelist() if FONT_SCAN_RE.match(n)][:MAX_FONT_PARTS]
@@ -82,9 +148,10 @@ def probe(path: Path) -> PptxMeta:
     try:
         with zipfile.ZipFile(path) as zf:
             names = zf.namelist()
-            slide_count = sum(1 for n in names if SLIDE_RE.match(n))
+            slide_names = [n for n in names if SLIDE_RE.match(n)]
             if PRESENTATION_PART not in names:
                 raise PptxNotPresentation("不是 PowerPoint 演示文稿")
+            slide_count = _count_visible_slides(zf, slide_names)
             width, height = _read_slide_size(zf)
             fonts = _collect_fonts(zf)
     except zipfile.BadZipFile as exc:

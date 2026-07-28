@@ -35,27 +35,47 @@ export function UploadProgress({
   )
 
   return (
-    <div className="glass" style={{ padding: 20, marginTop: 16 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-        <strong>{PHASE_LABEL[phase]}</strong>
-        <span style={{ color: 'var(--g-text-dim)' }}>
+    <div className="card" style={{ padding: 'var(--space-4)' }}>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          gap: 'var(--space-3)',
+        }}
+      >
+        <strong style={{ fontSize: 14 }}>{PHASE_LABEL[phase]}</strong>
+        <span style={{ color: 'var(--c-text-dim)', fontSize: 13 }}>
           {progress.chunksDone} / {progress.totalChunks} 块
         </span>
       </div>
+
       <div
-        className="glass-inset"
-        style={{ height: 10, marginTop: 12, overflow: 'hidden' }}
+        className="sunken"
+        style={{ height: 6, marginTop: 'var(--space-3)', overflow: 'hidden' }}
+        role="progressbar"
+        aria-valuenow={Math.round(pct)}
+        aria-valuemin={0}
+        aria-valuemax={100}
       >
         <div
           style={{
             width: `${pct}%`,
             height: '100%',
-            background: 'var(--g-accent)',
+            background: 'var(--c-accent)',
+            borderRadius: 999,
             transition: 'width 200ms ease',
           }}
         />
       </div>
-      <p style={{ color: 'var(--g-text-dim)', fontSize: 14, marginBottom: 0 }}>
+
+      <p
+        style={{
+          color: 'var(--c-text-dim)',
+          fontSize: 13,
+          marginTop: 'var(--space-2)',
+        }}
+      >
         {formatBytes(progress.bytesSent)} / {formatBytes(progress.totalBytes)}
         {remaining !== null && phase === 'uploading'
           ? ` · 约剩 ${Math.ceil(remaining / 1000)} 秒`

@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import timezone
 from pathlib import Path
 
@@ -6,12 +7,22 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db import get_session
-from app.errors import AppError
+from app.errors import AppError, ResultExpired
 from app.models import Task
-from app.schemas import TaskDto
+from app.schemas import ConversionOptions, ErrorResponse, TaskDto
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
+
+_ERR = {"model": ErrorResponse}
+TASK_ERRORS = {
+    404: {**_ERR, "description": "TASK_NOT_FOUND"},
+    409: {**_ERR, "description": "TASK_NOT_READY"},
+    410: {**_ERR, "description": "RESULT_EXPIRED"},
+}
 
 
 class TaskNotFound(AppError):
@@ -47,7 +58,20 @@ def _fonts(task: Task) -> list[str]:
         raise AppError(f"任务 {task.task_id} 的字体元数据已损坏") from exc
 
 
-@router.get("/{task_id}", response_model=TaskDto)
+def _options(task: Task) -> ConversionOptions:
+    """options_json 与 _fonts 同理：落库后的数据不受类型系统保护，
+    损坏时归一化成默认选项而不是让裸异常穿透——后处理选项没有一项
+    已实现，读不出来时按全关处理不会丢失任何用户可感知的行为。"""
+    if not task.options_json:
+        return ConversionOptions()
+    try:
+        return ConversionOptions.model_validate_json(task.options_json)
+    except ValueError:
+        logger.warning("任务 %s 的选项数据已损坏，按默认值处理", task.task_id)
+        return ConversionOptions()
+
+
+@router.get("/{task_id}", response_model=TaskDto, responses=TASK_ERRORS)
 def get_task(task_id: str, session: Session = Depends(get_session)) -> TaskDto:
     task = _load(session, task_id)
     return TaskDto(
@@ -60,6 +84,7 @@ def get_task(task_id: str, session: Session = Depends(get_session)) -> TaskDto:
         slide_width_emu=task.slide_width_emu,
         slide_height_emu=task.slide_height_emu,
         fonts=_fonts(task),
+        options=_options(task),
         error_code=task.error_code,
         error_message=task.error_message,
         # SQLite 不真的保留时区信息，读回来的是 naive datetime；直接序列化会
@@ -70,19 +95,33 @@ def get_task(task_id: str, session: Session = Depends(get_session)) -> TaskDto:
     )
 
 
-@router.get("/{task_id}/download")
+@router.get("/{task_id}/download", responses=TASK_ERRORS)
 def download(task_id: str, session: Session = Depends(get_session)) -> FileResponse:
     task = _load(session, task_id)
     if task.status != "done" or not task.output_path:
         raise TaskNotReady(f"任务状态为 {task.status}，尚无可下载结果")
 
-    output_path = Path(task.output_path)
-    if not output_path.is_file():
-        raise TaskNotReady(f"任务 {task_id} 的结果文件已不存在")
+    path = Path(task.output_path)
+    if not path.is_file():
+        # 任务确实成功过，但结果已被保留策略清理——这与「还没转完」
+        # 是两回事，前端要据此提示用户重新上传而不是继续等。
+        raise ResultExpired(
+            f"结果文件已超过 {settings.output_ttl_hours} 小时保留期被清理，请重新上传"
+        )
 
     stem = Path(task.original_filename).stem
-    return FileResponse(
-        output_path,
-        media_type="application/pdf",
-        filename=f"{stem}.pdf",
-    )
+    return FileResponse(str(path), media_type="application/pdf", filename=f"{stem}.pdf")
+
+
+# HEAD 必须显式注册：Starlette 的 Route 会给 GET 自动补 HEAD，FastAPI 的
+# APIRoute 不会——实测直接返回 405。前端下载前用 HEAD 做轻量预检，好在
+# 真正传几十 MB 之前就拿到 410 RESULT_EXPIRED / 409 TASK_NOT_READY。
+#
+# include_in_schema=False：契约里 GET 已经描述了这个端点，HEAD 只是同一资源
+# 的元数据查询；写进 schema 会和 GET 撞 operation id，也给读契约的人添噪音。
+@router.head("/{task_id}/download", include_in_schema=False)
+def download_head(
+    task_id: str, session: Session = Depends(get_session)
+) -> FileResponse:
+    # 复用 GET 的全部校验：Starlette 的 FileResponse 认得 HEAD，只回头不回体。
+    return download(task_id, session)
