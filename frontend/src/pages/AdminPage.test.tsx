@@ -21,7 +21,10 @@ function mockFetch(handler: (url: string, init?: RequestInit) => Response | Prom
 }
 
 function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
+  // undici 拒绝给 204 响应带 body（HTTP 规范上 204 不能带 body）——直接
+  // new Response(JSON.stringify(body), {status: 204}) 会抛
+  // "Response constructor: Invalid response status code 204"。
+  return new Response(status === 204 ? null : JSON.stringify(body), {
     status,
     headers: { 'Content-Type': 'application/json' },
   })
