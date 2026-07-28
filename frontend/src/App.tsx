@@ -16,6 +16,7 @@ import {
   type UploadPhase,
   type UploadProgress as P,
 } from './lib/uploadClient'
+import { AdminPage } from './pages/AdminPage'
 import './styles/global.css'
 
 // 取不到 /api/config/capacity（网络失败、还没返回）时的兜底——只用于
@@ -44,6 +45,11 @@ const GRAPH_RISK_MESSAGE: Record<Exclude<GraphRisk, 'none'>, string> = {
 }
 
 export default function App() {
+  // 只有两个页面，一个 pathname 判断足够——不引入 react-router 这个依赖
+  if (typeof window !== 'undefined' && window.location.pathname.startsWith('/admin')) {
+    return <AdminPage />
+  }
+
   const [taskIds, setTaskIds] = useState<string[]>([])
   const [progress, setProgress] = useState<P | null>(null)
   const [phase, setPhase] = useState<UploadPhase>('done')

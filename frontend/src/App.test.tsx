@@ -206,4 +206,24 @@ describe('App 上传前的容量启发式预判与确认时机', () => {
     // 引擎面板不能被永久锁死。
     expect(screen.getByRole('button', { name: /Microsoft Graph/ })).not.toBeDisabled()
   })
+
+  it('/admin 路径渲染管理页而不是上传界面', async () => {
+    const original = window.location
+    Object.defineProperty(window, 'location', {
+      value: { ...original, pathname: '/admin' },
+      writable: true,
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify({ code: 'ADMIN_UNAUTHORIZED' }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    )
+    render(<App />)
+    expect(await screen.findByLabelText('管理口令')).toBeTruthy()
+    Object.defineProperty(window, 'location', { value: original, writable: true })
+  })
 })
