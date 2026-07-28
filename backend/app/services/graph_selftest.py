@@ -111,13 +111,19 @@ def run_selftest(
 ) -> list[StepResult]:
     """跑完五步，返回每步结果。任何一步失败则后续步骤 ok=None。
 
-    永远返回列表、不抛异常——调用方要的是诊断清单而不是一个异常。
+    对**已知失败类别**永远返回列表、不抛异常——调用方要的是诊断清单而
+    不是一个异常。已知类别包括：Graph 返回的 HTTP 错误、
+    client_factory(...) 本身构造失败（比如自定义 factory 因为配置错误
+    而拒绝构造）、响应体不是合法 JSON（企业代理拦截、被重定向到登录页
+    时常见）、JSON 里缺预期字段、读取内置自检文件失败。这些都不是
+    httpx.HTTPError（传输层异常）能兜住的，在各步骤内部单独用
+    try/except 接住。
 
-    这份保证不只覆盖 Graph 返回的 HTTP 错误，还包括：client_factory(...)
-    本身构造失败（比如自定义 factory 因为配置错误而拒绝构造）、响应体
-    不是合法 JSON（企业代理拦截、被重定向到登录页时常见）、JSON 里缺
-    预期字段。这些都不是 httpx.HTTPError（传输层异常），必须在各步骤
-    内部单独接住，不能指望一个 except httpx.HTTPError 兜底。
+    未预期的异常（编程错误、httpx 未来版本的接口变化、client_cm
+    的 __enter__ 阶段失败等）仍会穿透——这是刻意的：不加裸
+    except Exception 兜底，是为了不把真正的 bug 伪装成一条「未知错误」
+    的诊断记录，让自检本身失去意义。调用方（保存凭证的端点）仍应在
+    自己的边界上做好防御，不能假定这个函数绝对不抛。
     """
     results = {step: StepResult(step=step, ok=None, detail=None) for step in STEPS}
     timeout = settings.graph_request_timeout_s
@@ -128,9 +134,13 @@ def run_selftest(
         # 连 HTTP 客户端都建不起来（构造参数错误、自定义 factory 故意拒绝
         # 等）。五步全部保持 ok=None——我们甚至没能真正尝试第一步；
         # detail 只挂在 token 上，说明诊断到"连接都没建起来"这一层，
-        # 而不是伪装成某一步 Graph 调用失败。
-        results["token"] = StepResult(
-            "token", None, f"无法初始化 HTTP 客户端：{type(exc).__name__}: {_clip(str(exc))}"
+        # 而不是伪装成某一步 Graph 调用失败。走 _fail 而不是裸赋值，
+        # 让这条失败路径也落日志——之前是唯一不落日志的失败分支。
+        _fail(
+            results,
+            "token",
+            f"无法初始化 HTTP 客户端：{type(exc).__name__}: {_clip(str(exc))}",
+            ok=None,
         )
         return [results[s] for s in STEPS]
 

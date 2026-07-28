@@ -220,6 +220,31 @@ def test_upload_put_non_json_response_returns_list_not_raises():
     assert [r.ok for r in results[3:]] == [None, None]
 
 
+def test_upload_session_non_json_response_returns_list_not_raises():
+    # 与 test_upload_session_missing_upload_url_returns_list_not_raises 不同：
+    # 那个是合法 JSON 但缺字段，这个是响应体本身就不是 JSON——两条分支
+    # 之前都是零覆盖，复审逐个还原成旧写法都全绿通过。
+    routes = _all_green_routes()
+    routes[2] = ("createUploadSession", _resp(200, content=b"<html>Sign in</html>"))
+    fake = _FakeClient(routes)
+    results = run_selftest(CREDS, client_factory=lambda **kw: fake)
+    assert results[2].ok is False
+    assert "JSON" in results[2].detail
+    assert [r.ok for r in results[3:]] == [None, None]
+
+
+def test_upload_put_missing_id_returns_list_not_raises():
+    # I2 finding 的本体场景：PUT 已经 200/201（文件字节已经落地到租户），
+    # 响应是合法 JSON，只是没有 id 字段——不同于「响应根本不是 JSON」。
+    routes = _all_green_routes()
+    routes[3] = ("upload.example", _resp(201, json_body={"name": "selftest.pptx"}))
+    fake = _FakeClient(routes)
+    results = run_selftest(CREDS, client_factory=lambda **kw: fake)
+    assert results[2].ok is False
+    assert "pptx2pdf-selftest-" in results[2].detail
+    assert [r.ok for r in results[3:]] == [None, None]
+
+
 # ---- I1: 五个 httpx.HTTPError 网络异常分支此前完全没有测试触达 ----
 
 
