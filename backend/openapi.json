@@ -431,7 +431,7 @@
             }
           },
           "410": {
-            "description": "RESULT_EXPIRED",
+            "description": "RESULT_EXPIRED / READY_EXPIRED",
             "content": {
               "application/json": {
                 "schema": {
@@ -513,7 +513,7 @@
             }
           },
           "410": {
-            "description": "RESULT_EXPIRED",
+            "description": "RESULT_EXPIRED / READY_EXPIRED",
             "content": {
               "application/json": {
                 "schema": {
@@ -583,7 +583,7 @@
             }
           },
           "410": {
-            "description": "RESULT_EXPIRED",
+            "description": "RESULT_EXPIRED / READY_EXPIRED",
             "content": {
               "application/json": {
                 "schema": {

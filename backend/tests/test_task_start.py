@@ -157,6 +157,37 @@ def test_start_twice_is_409(client, monkeypatch):
     assert len(enqueued) == 1, "不该重复入队"
 
 
+def test_start_on_already_reaped_ready_task_is_410(client, monkeypatch):
+    """purge_expired_ready 已经把这个任务标 failed + READY_EXPIRED 之后，
+    /start 必须把「已被回收」和「真的已经在跑」（test_start_twice_is_409）
+    区分开——前者是 410，不是笼统的 409。message 复用回收器自己写的那句，
+    不在 start_task 里另起一份，两处措辞才不会跑偏。"""
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import Task
+    from app.services.retention import purge_expired_ready
+
+    task_id = _upload_a_deck(client)
+
+    session = _session()
+    try:
+        row = session.get(Task, task_id)
+        row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+            hours=settings.ready_ttl_hours, minutes=1
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    assert purge_expired_ready() == 1
+    expected_message = _load_task_row(task_id).error_message
+
+    resp = client.post(f"/api/tasks/{task_id}/start", json={})
+    assert resp.status_code == 410
+    assert resp.json()["code"] == "READY_EXPIRED"
+    assert resp.json()["message"] == expected_message
+
+
 def test_start_on_missing_task_is_404(client):
     resp = client.post("/api/tasks/does-not-exist/start", json={})
     assert resp.status_code == 404

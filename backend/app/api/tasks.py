@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_session
-from app.errors import AppError, EngineUnavailable, ResultExpired
+from app.errors import AppError, EngineUnavailable, ReadyExpired, ResultExpired
 from app.models import Task, TaskShard
 from app.queue import enqueue_conversion
 from app.schemas import ConversionOptions, ErrorResponse, StartTaskRequest, TaskDto
@@ -23,7 +23,7 @@ _ERR = {"model": ErrorResponse}
 TASK_ERRORS = {
     404: {**_ERR, "description": "TASK_NOT_FOUND"},
     409: {**_ERR, "description": "TASK_NOT_READY / TASK_ALREADY_STARTED"},
-    410: {**_ERR, "description": "RESULT_EXPIRED"},
+    410: {**_ERR, "description": "RESULT_EXPIRED / READY_EXPIRED"},
 }
 
 
@@ -128,6 +128,12 @@ def start_task(
 ) -> TaskDto:
     task = _load(session, task_id)
     if task.status != "ready":
+        # "已经离开 ready" 有两种成因，前端要分开处理：purge_expired_ready
+        # 已经把它标 failed + READY_EXPIRED（原文件已删，重试没有意义，
+        # 必须回到重新上传），跟"真的已经被启动过一次"（任务仍在正常跑，
+        # 前端该接上轮询）不是一回事，不能都用同一个笼统的 409 盖过去。
+        if task.status == "failed" and task.error_code == ReadyExpired.code:
+            raise ReadyExpired(task.error_message or "")
         raise TaskAlreadyStarted(f"任务状态为 {task.status}，无法重复启动")
 
     # 用户裁决：沿用上传时选的。upload.requested_engine 已经在 complete_upload
