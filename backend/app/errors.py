@@ -127,3 +127,43 @@ class ShardBudgetExceeded(AppError):
 class GraphNotConfigured(AppError):
     code = "GRAPH_NOT_CONFIGURED"
     http_status = 503
+
+
+class AdminNotConfigured(AppError):
+    """未设置 PPTX2PDF_ADMIN_PASSWORD_HASH。整个管理入口不可用——
+    不提供「没设密码就免密进入」的默认行为，与 GraphNotConfigured 同构。"""
+
+    code = "ADMIN_NOT_CONFIGURED"
+    http_status = 503
+
+
+class AdminUnauthorized(AppError):
+    code = "ADMIN_UNAUTHORIZED"
+    http_status = 401
+
+
+class AdminBadPassword(AppError):
+    code = "ADMIN_BAD_PASSWORD"
+    http_status = 401
+
+
+class GraphSelftestFailed(AppError):
+    """五步连通性自检未全绿。响应体里带每步状态，调用方据此定位。"""
+
+    code = "GRAPH_SELFTEST_FAILED"
+    http_status = 422
+
+    def __init__(self, message: str = "", *, steps: list | None = None) -> None:
+        super().__init__(message or "Graph 凭证自检未通过")
+        self.steps = steps or []
+
+
+class ReadyExpired(AppError):
+    """上传后超时未点「开始转换」，原文件已被回收。
+
+    与 TASK_ABANDONED 是两个不同的失败原因，不要混用：那个是「转换
+    过程中卡死了」，这个是「你没点开始」。
+    """
+
+    code = "READY_EXPIRED"
+    http_status = 410

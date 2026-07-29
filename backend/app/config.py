@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     chunk_size: int = 5 * MIB
     max_file_size: int = 600 * MIB
     upload_ttl_hours: int = 24
+    # ready 任务（传完但没点「开始转换」）的原文件保留时长。
+    # 不复用 upload_ttl_hours：那个管的是未完成的上传会话、支持断点续传，
+    # 调短会让大文件传到一半、暂停超时后必须从头重传。ready 的重传成本
+    # 小得多，可以更快回收——机器盘不大，单份原件可能 80-500MB。
+    ready_ttl_hours: int = 1
     database_url: str = "sqlite:///./pptx2pdf.db"
 
     # 二期新增：基础设施
@@ -39,6 +44,14 @@ class Settings(BaseSettings):
     secret_key: str | None = None
     """Fernet 主密钥（32 字节 urlsafe base64）。未配置则 Graph 引擎不可用——
     不设默认值兜底，那等于没加密。"""
+    # 管理入口口令的 scrypt 哈希，格式 scrypt:<salt_hex>:<hash_hex>。
+    # 未配置则管理入口整体 503——与 secret_key 一样不设默认值兜底。
+    admin_password_hash: str | None = None
+    # 当前部署是 http://<host>:18993，非 HTTPS。写死 Secure=true 会让浏览器
+    # 根本不回传 cookie，表现为「登录成功但立刻掉线」且极难排查。
+    # 切到 HTTPS 后必须改成 true。
+    admin_cookie_secure: bool = False
+    admin_session_days: int = 3
     graph_max_pages_per_shard: int = 80
     graph_max_shard_bytes: int = 40 * MIB
     graph_request_timeout_s: int = 50

@@ -10,7 +10,6 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import get_session
 from app.errors import (
-    EngineUnavailable,
     StorageFull,
     UploadChecksumMismatch,
     UploadSessionExpired,
@@ -28,9 +27,8 @@ from app.schemas import (
     ErrorResponse,
     UploadStatus,
 )
-from app.queue import enqueue_conversion
 from app.services.chunk_store import ChunkStore
-from app.services.retention import drop_original
+from app.services.retention import purge_expired_ready
 
 router = APIRouter(prefix="/api/uploads", tags=["uploads"])
 
@@ -186,12 +184,13 @@ def get_status(
     )
 
 
-# 只有本端点会在 Redis 不可达时抛 EngineUnavailable(503)，所以 503 就地合并进
-# responses，而不是加到共享的 UPLOAD_ERRORS 里给另外三个端点误声明。
+# 五期起 complete 不再入队（那段 Redis 兜底连同 503 ENGINE_UNAVAILABLE 一起
+# 挪到了 tasks.py 的 /start），所以这里不再需要在 UPLOAD_ERRORS 之外
+# 额外声明 503。
 @router.post(
     "/{upload_id}/complete",
     response_model=CompleteResponse,
-    responses={**UPLOAD_ERRORS, 503: {**_ERR, "description": "ENGINE_UNAVAILABLE"}},
+    responses=UPLOAD_ERRORS,
 )
 def complete_upload(
     upload_id: str,
@@ -223,29 +222,23 @@ def complete_upload(
         size_bytes=upload.size_bytes,
         options_json=upload.options_json,
         requested_engine=upload.requested_engine,
-        status="pending",
+        status="ready",
     )
-    # engine 仍留 "unassigned"：用户指定的引擎名带在 upload 上，
-    # 由 run_task 在 probe 之后交给 select_engine 定夺后再写进 task。
+    # engine 仍留 "unassigned"：这里转写的 upload.requested_engine 是真正的
+    # 默认值——start 端点只在 payload.engine 非 None 时才覆盖它（见
+    # tasks.py::start_task），不传就沿用上传时选的这份。用户传的过程中
+    # 仍然能改主意换引擎，只是不改就不会被静默清空。
+    # select_engine 仍是在 run_task 里 probe 之后才定夺实际使用的引擎。
     session.add(task)
     session.commit()
 
     store().purge(upload_id)
-    try:
-        enqueue_conversion(task_id)
-    except Exception as exc:
-        # Redis 不可达时 Queue.enqueue 抛的是 redis.exceptions.ConnectionError，
-        # 不是 AppError——main.py 的处理器接不住，会退化成裸文本 500，违反
-        # 错误契约。这里兜底捕获任意异常（队列实现将来可能换，不锁定具体
-        # 异常类型）。此时 upload 已标 completed、块目录已 purge、原文件
-        # 已落盘、task 行是 pending：任务永远不会入队，也就永远不会走到
-        # run_task 的 finally 里的 drop_original——这里是原文件唯一的删除
-        # 路径，必须显式调用，否则留下一份 80–500MB 的孤儿文件。
-        task.status = "failed"
-        task.error_code = EngineUnavailable.code
-        task.error_message = f"任务排队失败，转换服务暂不可用: {exc}"
-        session.commit()
-        drop_original(task_id)
-        raise EngineUnavailable(f"任务排队失败，转换服务暂不可用: {exc}") from exc
-
+    # 终审 M-1：purge_expired_ready 原来只挂在「API 启动」和「任意转换跑完」
+    # 两处——但 ready 任务的原文件是"上传"产生的，不是"转换"产生的。用户
+    # 只传不点「开始转换」时，压根不会有任何转换跑完，回收器因此永远够不到
+    # 自己。complete_upload 才是"上传"这个动作真正发生的地方，与
+    # pipeline.py 里另外三个清理函数同一个"顺手回收"的惰性模式，在这里
+    # 补上这一次触发。purge_expired_ready 自己包了 try/except 绝不外抛，
+    # 这里不需要额外防护。
+    purge_expired_ready()
     return CompleteResponse(task_id=task_id)

@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from app.config import settings
 from app.db import SessionLocal
-from app.errors import TaskAbandoned
+from app.errors import ReadyExpired, TaskAbandoned
 from app.models import Task, TaskShard
 
 logger = logging.getLogger(__name__)
@@ -101,6 +101,57 @@ def purge_expired_shards() -> int:
         except OSError as exc:
             logger.warning("删除过期分片目录失败 %s: %s", path, exc)
     return removed
+
+
+def purge_expired_ready() -> int:
+    """回收超时未启动的 ready 任务：删原文件 + 标 failed。
+
+    标 failed 而不是删 Task 行，是为了让用户在任务列表里看到发生了
+    什么，而不是文件凭空消失。
+
+    cutoff 用 naive UTC，不用带时区的当前时间直接减：SQLite dialect
+    落库时会丢时区信息，Task.updated_at 读回来是 naive，拿 aware
+    datetime 去比会 TypeError——reap_stale_tasks 已经踩过这条、留了
+    详细注释，这里沿用同一模式，不能各写各的。
+
+    只在这里过滤 Task.status == "ready"，不去碰 Upload 表：ready TTL
+    管的是「转换前的原文件」，未完成的上传会话归 upload_ttl_hours 管，
+    两条清理路径必须用各自的表和各自的字段来判断，不能共用一次扫描。
+
+    整体包一层 try/except，与同文件 reap_stale_tasks 同一理由：本函数的
+    三个调用点（main.py 启动钩子、pipeline.run_task 的 finally、
+    uploads.py::complete_upload——M-1 补的第三个，堵住"只传不点开始"这个
+    原本谁都够不到自己的场景）都是「顺便清理一下」的性质，不是这次请求
+    的主体。尤其是 run_task 的 finally 里，这行之后还有 session.close()
+    收尾调用方自己的会话——这里若抛出未捕获异常会直接跳过那一句，造成
+    会话/连接泄漏，比"这次没清成"严重得多。
+    """
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+        hours=settings.ready_ttl_hours
+    )
+    reaped = 0
+    try:
+        with SessionLocal() as session:
+            rows = (
+                session.query(Task)
+                .filter(Task.status == "ready", Task.updated_at < cutoff)
+                .all()
+            )
+            for task in rows:
+                drop_original(task.task_id)
+                task.status = "failed"
+                task.error_code = ReadyExpired.code
+                task.error_message = (
+                    f"上传后 {settings.ready_ttl_hours} 小时内未开始转换，"
+                    "原文件已回收，请重新上传"
+                )
+                reaped += 1
+            if reaped:
+                session.commit()
+    except Exception:
+        logger.exception("回收超时未启动的 ready 任务失败")
+        return 0
+    return reaped
 
 
 def _is_really_stale(session, task: Task, cutoff: datetime) -> bool:

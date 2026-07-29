@@ -49,7 +49,14 @@ async def _upload(client, payload: bytes) -> str:
             f"/api/uploads/{uid}/chunks/{idx}",
             content=payload[idx * size : (idx + 1) * size],
         )
-    return (await client.post(f"/api/uploads/{uid}/complete")).json()["task_id"]
+    task_id = (await client.post(f"/api/uploads/{uid}/complete")).json()["task_id"]
+    # 五期起 complete 只落库为 ready、不再入队——这个 helper 的既有调用方都
+    # 假设「上传完成」等价于「转换已跑完」（conftest.py 的 _sync_conversion
+    # 把入队同步成直接跑 run_task）。补一次 start 调用把 ready 推进
+    # pending 才能触发那次同步执行，保持这些既有测试的原始意图
+    # （上传 -> 转换 -> 下载）不变，同时不改动它们的任何断言。
+    await client.post(f"/api/tasks/{task_id}/start", json={})
+    return task_id
 
 
 async def test_task_reaches_done_with_parsed_meta(client, sample_bytes):

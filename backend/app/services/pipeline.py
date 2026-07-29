@@ -10,10 +10,12 @@ from app.queue import enqueue_shards
 from app.services.engine_router import select_engine
 from app.services.engines import get_engine
 from app.services.graph_credentials import is_graph_configured
+from app.services.media_strip import strip_media
 from app.services.pptx_probe import probe
 from app.services.retention import (
     drop_original,
     purge_expired_outputs,
+    purge_expired_ready,
     purge_expired_shards,
     reap_stale_tasks,
 )
@@ -86,7 +88,30 @@ def run_task(task_id: str) -> None:
         try:
             _set_status(session, task, "parsing")
             meta = probe(src)
+            # 剥离内嵌媒体。放在 probe 之后：probe 提取的四个字段
+            # （slide_count / slide_width_emu / slide_height_emu / fonts）
+            # 全部来自 slides / slideMasters / slideLayouts / theme /
+            # presentation.xml 这些 part，媒体剥离只删 video/audio/media
+            # part 并逐字节流式复制其余内容，对这四个字段免疫——剥离放
+            # probe 前后不影响 probe 的结果，但 probe 自己的校验（加密 /
+            # 非法 zip / 不是演示文稿）必须先跑完，用户才能拿到准确的
+            # 错误码；strip_media 没有这层校验，先跑会把 PptxEncrypted /
+            # PptxInvalidZip 这类可诊断的错误钝化成一个笼统的 BadZipFile。
+            # size_bytes 本就在 probe 之后，剥离插在这里，它自然读到剥离
+            # 后的体积。PDF 放不了视频——这些字节留着只会让 size_bytes
+            # 虚高，把本来单次能转的 deck 推进切片路径甚至撞上分片上限。
+            # 剥离后的文件覆盖原件，此后所有判断
+            # （size_bytes / needs_sharding / 切片 / 转换）都基于它。
+            strip = strip_media(src)
+            if strip.stripped:
+                logger.info(
+                    "media stripped id=%s parts=%d %d -> %d bytes",
+                    task_id, strip.removed_parts, strip.bytes_before, strip.bytes_after,
+                )
             size_bytes = src.stat().st_size
+            # 剥离后的体积取代上传时记的原始体积——task.size_bytes 从这里
+            # 起是"参与转换判断的那个值"，不再是用户上传时的原始大小。
+            task.size_bytes = size_bytes
             task.slide_count = meta.slide_count
             task.slide_width_emu = meta.slide_width_emu
             task.slide_height_emu = meta.slide_height_emu
@@ -191,4 +216,7 @@ def run_task(task_id: str) -> None:
         # 预期事件，work-horse 被杀后 api 未必会重启，回收器就可能永远不跑。
         # 这里顺带触发一次，与上面 purge_expired_outputs() 同一个惰性模式。
         reap_stale_tasks()
+        # 五期新增：与上面三条清理同一惰性模式——ready 任务超时未启动的
+        # 回收不需要单独的 cron 容器，搭一次转换任务收尾的顺风车即可。
+        purge_expired_ready()
         session.close()

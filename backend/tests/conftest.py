@@ -78,10 +78,16 @@ def _force_placeholder_engine(monkeypatch):
 @pytest.fixture(autouse=True)
 def _sync_conversion(monkeypatch):
     """测试环境没有 Redis。把入队换成同步执行，保持一期测试对
-    「complete 之后任务已跑完」的假设成立。"""
+    「上传后任务已跑完」的假设成立。
+
+    五期把入队点从 complete（app/api/uploads.py）移到了 start
+    （app/api/tasks.py）——complete 现在只落库为 ready，不再入队。这里
+    补丁的目标必须跟着改，否则本 fixture 打在一个已经不存在调用的旧
+    位置上，测试里对 /start 的调用会走真实的 enqueue_conversion（真去连
+    Redis）而不是同步跑 run_task。"""
     from app.services.pipeline import run_task
 
-    monkeypatch.setattr("app.api.uploads.enqueue_conversion", run_task)
+    monkeypatch.setattr("app.api.tasks.enqueue_conversion", run_task)
 
 
 @pytest.fixture

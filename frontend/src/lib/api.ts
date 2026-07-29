@@ -35,6 +35,7 @@ export interface TaskDto {
    *  三期的分片路径上（N 片转完后合并），**不是终态**——加进
    *  useTaskPolling 的 TERMINAL 会让轮询停在"合并中"再也不刷新。 */
   status:
+    | 'ready'
     | 'pending'
     | 'parsing'
     | 'queued'
@@ -138,6 +139,31 @@ export async function completeUpload(
 
 export async function getTask(taskId: string): Promise<TaskDto> {
   return parse<TaskDto>(await fetch(`/api/tasks/${taskId}`))
+}
+
+/**
+ * 把一个 ready 状态的任务真正送入转换队列。engine/options 都可选——不传
+ * 就沿用上传时选的（后端 `if payload.engine is not None:` 才覆盖，见
+ * app/api/tasks.py:start_task）。
+ *
+ * 两个已知的失败分支，调用方必须分开处理，不能都当成普通错误吞掉：
+ * - 410 READY_EXPIRED：ready 任务有 1 小时 TTL，原文件已被回收，重试
+ *   没有意义，只能引导用户重新上传。
+ * - 409 TASK_ALREADY_STARTED：任务已经真的被启动过一次（比如另一个
+ *   标签页抢先点了）——这种情况下任务是在正常转换，调用方该接上轮询，
+ *   不是当成失败展示。
+ */
+export async function startTask(
+  taskId: string,
+  engine?: EngineName,
+  options?: ConversionOptions,
+): Promise<TaskDto> {
+  const resp = await fetch(`/api/tasks/${taskId}/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ engine, options }),
+  })
+  return parse<TaskDto>(resp)
 }
 
 /** 不缓存——这几个数字来自后端 settings，四期上真实租户后可能被回调，

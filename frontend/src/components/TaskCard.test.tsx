@@ -36,6 +36,7 @@ function taskWith(status: string, overrides: Partial<TaskDto> = {}): TaskDto {
  *  兜底。少一个键就是 `STATUS[x].badge` 读 undefined，而仓库里没有
  *  ErrorBoundary，React 18 未捕获的渲染异常会卸载整棵树。 */
 const ALL_STATUSES = [
+  'ready',
   'pending',
   'parsing',
   'queued',

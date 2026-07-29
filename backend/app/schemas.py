@@ -58,6 +58,13 @@ class CompleteResponse(BaseModel):
     task_id: str
 
 
+class StartTaskRequest(BaseModel):
+    """引擎与选项在 start 时才提交——上传时不必先想好。"""
+
+    engine: str | None = Field(default=None, min_length=1, max_length=32)
+    options: ConversionOptions | None = None
+
+
 class TaskDto(BaseModel):
     task_id: str
     status: str
@@ -99,3 +106,38 @@ class CapacityConfig(BaseModel):
     graph_max_shards: int
     graph_max_shard_bytes: int
     graph_max_merge_bytes: int
+
+
+class AdminLoginRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=256)
+
+
+class GraphCredentialsDto(BaseModel):
+    """读配置的响应。client_secret 绝不出现在这里——解密回显等于把凭证
+    明文发到浏览器，那么加密存库本身就失去意义。"""
+
+    tenant_id: str
+    client_id: str
+    site_id: str
+    drive_path: str
+    secret_configured: bool
+
+
+class GraphCredentialsUpdate(BaseModel):
+    tenant_id: str = Field(min_length=1, max_length=64)
+    client_id: str = Field(min_length=1, max_length=64)
+    client_secret: str = Field(default="", max_length=512)
+    """留空表示沿用库中已存的值。首次配置时留空会被拒绝。"""
+    site_id: str = Field(min_length=1, max_length=256)
+    drive_path: str = Field(default="pptx2pdf-staging", min_length=1, max_length=256)
+
+
+class SelftestStepDto(BaseModel):
+    step: str
+    ok: bool | None
+    detail: str | None
+
+
+class SelftestResultDto(BaseModel):
+    ok: bool
+    steps: list[SelftestStepDto]

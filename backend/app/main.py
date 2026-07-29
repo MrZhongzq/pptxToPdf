@@ -6,11 +6,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import config, tasks, uploads
+from app.api import admin, config, tasks, uploads
 from app.config import settings
 from app.db import init_db
 from app.errors import AppError, ValidationError
-from app.services.retention import purge_expired_shards, reap_stale_tasks
+from app.services.retention import purge_expired_ready, purge_expired_shards, reap_stale_tasks
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,9 +32,16 @@ app.add_middleware(
 
 @app.exception_handler(AppError)
 def handle_app_error(_: Request, exc: AppError) -> JSONResponse:
+    content = {"code": exc.code, "message": exc.message}
+    steps = getattr(exc, "steps", None)
+    if steps:
+        content["steps"] = [
+            step.model_dump() if hasattr(step, "model_dump") else dict(step)
+            for step in steps
+        ]
     return JSONResponse(
         status_code=exc.http_status,
-        content={"code": exc.code, "message": exc.message},
+        content=content,
     )
 
 
@@ -71,8 +78,13 @@ def startup() -> None:
     # 没有新任务进来时，OOM killer 留下的分片目录残骸（数百 MB 量级）会
     # 永久占盘，没有任何路径会再碰它。
     purge_expired_shards()
+    # 五期新增：传完但没点「开始转换」的 ready 任务同样只靠惰性清理——
+    # 长期没有新任务时磁盘也没在涨，跟上面两条清理同一个「不需要额外
+    # cron 容器」的理由。
+    purge_expired_ready()
 
 
 app.include_router(uploads.router)
 app.include_router(tasks.router)
 app.include_router(config.router)
+app.include_router(admin.router)
