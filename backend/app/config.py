@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     chunk_size: int = 5 * MIB
     max_file_size: int = 600 * MIB
     upload_ttl_hours: int = 24
+    # ready 任务（传完但没点「开始转换」）的原文件保留时长。
+    # 不复用 upload_ttl_hours：那个管的是未完成的上传会话、支持断点续传，
+    # 调短会让大文件传到一半、暂停超时后必须从头重传。ready 的重传成本
+    # 小得多，可以更快回收——机器盘不大，单份原件可能 80-500MB。
+    ready_ttl_hours: int = 1
     database_url: str = "sqlite:///./pptx2pdf.db"
 
     # 二期新增：基础设施

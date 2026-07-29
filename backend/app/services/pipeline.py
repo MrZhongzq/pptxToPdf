@@ -15,6 +15,7 @@ from app.services.pptx_probe import probe
 from app.services.retention import (
     drop_original,
     purge_expired_outputs,
+    purge_expired_ready,
     purge_expired_shards,
     reap_stale_tasks,
 )
@@ -215,4 +216,7 @@ def run_task(task_id: str) -> None:
         # 预期事件，work-horse 被杀后 api 未必会重启，回收器就可能永远不跑。
         # 这里顺带触发一次，与上面 purge_expired_outputs() 同一个惰性模式。
         reap_stale_tasks()
+        # 五期新增：与上面三条清理同一惰性模式——ready 任务超时未启动的
+        # 回收不需要单独的 cron 容器，搭一次转换任务收尾的顺风车即可。
+        purge_expired_ready()
         session.close()

@@ -156,3 +156,14 @@ class GraphSelftestFailed(AppError):
     def __init__(self, message: str = "", *, steps: list | None = None) -> None:
         super().__init__(message or "Graph 凭证自检未通过")
         self.steps = steps or []
+
+
+class ReadyExpired(AppError):
+    """上传后超时未点「开始转换」，原文件已被回收。
+
+    与 TASK_ABANDONED 是两个不同的失败原因，不要混用：那个是「转换
+    过程中卡死了」，这个是「你没点开始」。
+    """
+
+    code = "READY_EXPIRED"
+    http_status = 410
