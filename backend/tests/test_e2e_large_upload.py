@@ -76,6 +76,10 @@ async def test_interrupted_upload_resumes_and_completes(client, big_pptx, tmp_pa
         )
 
     task_id = (await client.post(f"/api/uploads/{uid}/complete")).json()["task_id"]
+    # 五期起 complete 只落库为 ready、不再入队——补一次 start 调用才能推进
+    # pending 并触发 conftest.py 的 _sync_conversion 同步跑完转换，保持这条
+    # 端到端测试「传完即转换完成」的原始意图，不改动下面任何断言。
+    await client.post(f"/api/tasks/{task_id}/start", json={})
 
     task = (await client.get(f"/api/tasks/{task_id}")).json()
     assert task["status"] == "done"

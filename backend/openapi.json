@@ -377,16 +377,6 @@
                 }
               }
             }
-          },
-          "503": {
-            "description": "ENGINE_UNAVAILABLE",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
           }
         }
       }
@@ -431,7 +421,89 @@
             }
           },
           "409": {
-            "description": "TASK_NOT_READY",
+            "description": "TASK_NOT_READY / TASK_ALREADY_STARTED",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "RESULT_EXPIRED",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{task_id}/start": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Start Task",
+        "operationId": "start_task_api_tasks__task_id__start_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartTaskRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "TASK_NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "TASK_NOT_READY / TASK_ALREADY_STARTED",
             "content": {
               "application/json": {
                 "schema": {
@@ -501,7 +573,7 @@
             }
           },
           "409": {
-            "description": "TASK_NOT_READY",
+            "description": "TASK_NOT_READY / TASK_ALREADY_STARTED",
             "content": {
               "application/json": {
                 "schema": {
@@ -1061,6 +1133,36 @@
           "detail"
         ],
         "title": "SelftestStepDto"
+      },
+      "StartTaskRequest": {
+        "properties": {
+          "engine": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 32,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engine"
+          },
+          "options": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConversionOptions"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "StartTaskRequest",
+        "description": "引擎与选项在 start 时才提交——上传时不必先想好。"
       },
       "TaskDto": {
         "properties": {

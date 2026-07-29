@@ -58,6 +58,13 @@ class CompleteResponse(BaseModel):
     task_id: str
 
 
+class StartTaskRequest(BaseModel):
+    """引擎与选项在 start 时才提交——上传时不必先想好。"""
+
+    engine: str | None = Field(default=None, min_length=1, max_length=32)
+    options: ConversionOptions | None = None
+
+
 class TaskDto(BaseModel):
     task_id: str
     status: str

@@ -9,9 +9,11 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_session
-from app.errors import AppError, ResultExpired
+from app.errors import AppError, EngineUnavailable, ResultExpired
 from app.models import Task, TaskShard
-from app.schemas import ConversionOptions, ErrorResponse, TaskDto
+from app.queue import enqueue_conversion
+from app.schemas import ConversionOptions, ErrorResponse, StartTaskRequest, TaskDto
+from app.services.retention import drop_original
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +22,7 @@ router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 _ERR = {"model": ErrorResponse}
 TASK_ERRORS = {
     404: {**_ERR, "description": "TASK_NOT_FOUND"},
-    409: {**_ERR, "description": "TASK_NOT_READY"},
+    409: {**_ERR, "description": "TASK_NOT_READY / TASK_ALREADY_STARTED"},
     410: {**_ERR, "description": "RESULT_EXPIRED"},
 }
 
@@ -32,6 +34,17 @@ class TaskNotFound(AppError):
 
 class TaskNotReady(AppError):
     code = "TASK_NOT_READY"
+    http_status = 409
+
+
+class TaskAlreadyStarted(AppError):
+    """任务已经离开 ready 状态。
+
+    不复用 TASK_NOT_READY——那个码已被 download 用于「还没转完、无可
+    下载结果」，语义相反：一个是还没到终点，一个是已经离开起点。
+    """
+
+    code = "TASK_ALREADY_STARTED"
     http_status = 409
 
 
@@ -71,9 +84,7 @@ def _options(task: Task) -> ConversionOptions:
         return ConversionOptions()
 
 
-@router.get("/{task_id}", response_model=TaskDto, responses=TASK_ERRORS)
-def get_task(task_id: str, session: Session = Depends(get_session)) -> TaskDto:
-    task = _load(session, task_id)
+def _to_dto(session: Session, task: Task) -> TaskDto:
     return TaskDto(
         task_id=task.task_id,
         status=task.status,
@@ -101,6 +112,45 @@ def get_task(task_id: str, session: Session = Depends(get_session)) -> TaskDto:
         # expires_at 的同类补救保持一致处理。
         created_at=task.created_at.replace(tzinfo=timezone.utc),
     )
+
+
+@router.get("/{task_id}", response_model=TaskDto, responses=TASK_ERRORS)
+def get_task(task_id: str, session: Session = Depends(get_session)) -> TaskDto:
+    task = _load(session, task_id)
+    return _to_dto(session, task)
+
+
+@router.post("/{task_id}/start", response_model=TaskDto, responses=TASK_ERRORS)
+def start_task(
+    task_id: str,
+    payload: StartTaskRequest,
+    session: Session = Depends(get_session),
+) -> TaskDto:
+    task = _load(session, task_id)
+    if task.status != "ready":
+        raise TaskAlreadyStarted(f"任务状态为 {task.status}，无法重复启动")
+
+    task.requested_engine = payload.engine
+    if payload.options is not None:
+        task.options_json = payload.options.model_dump_json()
+    task.status = "pending"
+    session.commit()
+
+    try:
+        enqueue_conversion(task_id)
+    except Exception as exc:
+        # 这段兜底从 complete_upload 挪过来。任务不会入队也就永远走不到
+        # run_task 的 finally——那是原文件唯一的删除路径，不显式删就留下
+        # 一份 80-500MB 的孤儿。
+        task.status = "failed"
+        task.error_code = EngineUnavailable.code
+        task.error_message = f"任务排队失败，转换服务暂不可用: {exc}"
+        session.commit()
+        drop_original(task_id)
+        raise EngineUnavailable(f"任务排队失败，转换服务暂不可用: {exc}") from exc
+
+    session.refresh(task)
+    return _to_dto(session, task)
 
 
 @router.get("/{task_id}/download", responses=TASK_ERRORS)
