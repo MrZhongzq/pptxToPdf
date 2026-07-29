@@ -24,12 +24,12 @@ def rels_path(part: str) -> str:
 
 
 def owner_part(rels_name: str) -> str:
-    """_rels_path 的反函数：
+    """rels_path 的反函数：
     ppt/slides/_rels/slide1.xml.rels -> ppt/slides/slide1.xml
     _rels/.rels -> ""（包级）。
 
     Relationship 的 Target 是相对于它的 owner part 所在目录解析的
-    （见 _resolve），_rewrite_rels 需要知道 owner 才能正确判断某条
+    （见 resolve），rewrite_rels 需要知道 owner 才能正确判断某条
     Relationship 该不该被删——不能只有 presentation.xml.rels 用对了
     base_part，其余 .rels（slide 自己的、包级的）也一样需要。
     """
@@ -89,7 +89,7 @@ def rewrite_rels(raw: bytes, keep_parts: set[str], base_part: str) -> bytes:
 def rewrite_content_types(raw: bytes, keep_parts: set[str]) -> bytes:
     """删掉未保留 part 的 Override。Default（按扩展名）全部保留。
 
-    同 _rewrite_rels，序列化前重新登记默认命名空间前缀，理由同上。
+    同 rewrite_rels，序列化前重新登记默认命名空间前缀，理由同上。
     """
     ET.register_namespace("", CT_NS_URI)
     root = ET.fromstring(raw)
