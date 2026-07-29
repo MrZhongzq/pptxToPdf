@@ -108,6 +108,42 @@ def test_complete_leaves_task_ready_and_does_not_enqueue(client, monkeypatch):
     assert enqueued == [], "complete 不该入队"
 
 
+def test_complete_upload_lazily_purges_expired_ready_tasks(client):
+    """终审 M-1：purge_expired_ready 原来的两个触发点是「API 启动」和
+    「任意转换跑完」，但 ready 状态的原文件是"上传"产生的，不是"转换"
+    产生的。这里有个自己够不到自己的闭环：ready TTL 存在的全部目的就是
+    防"用户只传不点开始"，而在那个场景下恰恰没有任何转换会跑完——回收器
+    因此永不触发，README 说的"最坏晚不少"实际是"最坏永不"。
+
+    complete_upload 才是"上传"这个动作真正发生的地方，必须在这里顺带
+    触发一次。造一个已经过期的 ready 任务 T-old（不经过 /start，模拟
+    "只传不点开始"），再完整走一次上传流程触发一次新的 complete_upload
+    ——T-old 必须被顺带回收，不必等任何转换跑完或服务重启。
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import Task
+
+    old_task_id = _upload_a_deck(client)  # 落 ready，不 start——正是回收器
+    # 原本永远够不到自己的那个场景。
+
+    session = _session()
+    try:
+        row = session.get(Task, old_task_id)
+        row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+            hours=settings.ready_ttl_hours, minutes=1
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    _upload_a_deck(client)  # 触发新一次 complete_upload，顺带回收 T-old
+
+    old_row = _load_task_row(old_task_id)
+    assert old_row.status == "failed"
+    assert old_row.error_code == "READY_EXPIRED"
+
+
 def test_start_enqueues_and_moves_to_pending(client, monkeypatch):
     enqueued = []
     monkeypatch.setattr("app.api.tasks.enqueue_conversion", lambda t: enqueued.append(t))
@@ -142,6 +178,25 @@ def test_start_without_engine_keeps_the_one_chosen_at_upload(client, monkeypatch
     monkeypatch.setattr("app.api.tasks.enqueue_conversion", lambda t: None)
     task_id = _upload_a_deck(client, engine="graph")
     client.post(f"/api/tasks/{task_id}/start", json={})
+    task = _load_task_row(task_id)
+    assert task.requested_engine == "graph"
+
+
+def test_start_with_explicit_engine_overrides_the_one_chosen_at_upload(client, monkeypatch):
+    """终审 I-3：现有两条测试各只覆盖了一半——「上传没选/start 选了」
+    （test_start_records_engine_and_options）和「上传选了/start 没选」
+    （test_start_without_engine_keeps_the_one_chosen_at_upload）——恰好都
+    躲开了「上传选 A、start 显式选 B」这条路径。终审做过变异实验：把
+    `if payload.engine is not None:` 误改成 `if task.requested_engine is
+    None:`（典型的"条件填充"误实现——只在字段为空时才填充，而不是"传了就
+    覆盖"），这两条既有测试依然全绿，因为它们都没有在"两边都有值"的情况下
+    断言"新值赢"。这个误实现的症状正是项目第一铁律要挡的那种：用户在
+    就绪卡片上把引擎从 libreoffice 改成 graph，后端却照旧用上传时选的
+    libreoffice——两段式上传存在的全部理由就是让用户能在这一步改主意。
+    """
+    monkeypatch.setattr("app.api.tasks.enqueue_conversion", lambda t: None)
+    task_id = _upload_a_deck(client, engine="libreoffice")
+    client.post(f"/api/tasks/{task_id}/start", json={"engine": "graph"})
     task = _load_task_row(task_id)
     assert task.requested_engine == "graph"
 
@@ -192,6 +247,69 @@ def test_start_on_missing_task_is_404(client):
     resp = client.post("/api/tasks/does-not-exist/start", json={})
     assert resp.status_code == 404
     assert resp.json()["code"] == "TASK_NOT_FOUND"
+
+
+def test_concurrent_start_only_wins_once(client, monkeypatch):
+    """终审 I-4：start_task 原本是"读判改写"三步走——读 status、判断、
+    单独一次 commit 写 "pending"，两步之间有窗口。FastAPI 把同步端点丢进
+    线程池，两个并发 /start 请求都可能在窗口内读到 status=='ready'，各自
+    以为自己有权推进。终审用 TestClient 两线程同打同一个 ready 任务、连打
+    三轮，第二轮两个请求都拿到 200、同一个 task_id 被入队两次——这不只是
+    浪费资源，两个 run_task 并发跑同一个 task_id 会同时改写同一份原文件、
+    同时写同一个输出 PDF，终态还会在 done/failed 之间乱翻转。
+
+    只用 threading.Barrier 卡两个请求的发出时刻不够可靠：本机 SQLite
+    单条语句在微秒级完成，GIL 未必真的会在两个线程之间切换，实测这样写
+    的测试即使打在旧实现上也会"侥幸通过"（本机反复验证：均为一读一写、
+    从未真正交错）。这里改为在 `_load`（两种实现都共享的读入口）里插一个
+    屏障，强制两个线程都读到 task.status=='ready' 之后才放行——这正是
+    终审描述的那条窗口，不依赖 OS 线程调度的运气，实测能稳定把旧实现
+    打成双 200（复现变异见 final-fix-report）。新实现下不管调度怎么交错，
+    条件 UPDATE（WHERE status='ready'）保证只有一个请求能把 rowcount 从
+    0 改到 1，结果必须是恰好一个 200、一个 409，且入队恰好一次。
+    """
+    import threading
+
+    import app.api.tasks as tasks_module
+
+    original_load = tasks_module._load
+    read_barrier = threading.Barrier(2, timeout=5)
+
+    def synced_load(session, task_id):
+        task = original_load(session, task_id)
+        read_barrier.wait()
+        return task
+
+    monkeypatch.setattr(tasks_module, "_load", synced_load)
+
+    enqueue_lock = threading.Lock()
+    enqueued: list[str] = []
+
+    def _enqueue(t: str) -> None:
+        with enqueue_lock:
+            enqueued.append(t)
+
+    monkeypatch.setattr("app.api.tasks.enqueue_conversion", _enqueue)
+    task_id = _upload_a_deck(client)
+
+    results_lock = threading.Lock()
+    results: list[int] = []
+
+    def fire():
+        resp = client.post(f"/api/tasks/{task_id}/start", json={})
+        with results_lock:
+            results.append(resp.status_code)
+
+    t1 = threading.Thread(target=fire)
+    t2 = threading.Thread(target=fire)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert sorted(results) == [200, 409]
+    assert enqueued == [task_id], "只能入队一次"
+    assert _load_task_row(task_id).status == "pending"
 
 
 def test_start_drops_original_when_enqueue_fails(client, monkeypatch):

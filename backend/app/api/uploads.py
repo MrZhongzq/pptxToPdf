@@ -28,6 +28,7 @@ from app.schemas import (
     UploadStatus,
 )
 from app.services.chunk_store import ChunkStore
+from app.services.retention import purge_expired_ready
 
 router = APIRouter(prefix="/api/uploads", tags=["uploads"])
 
@@ -232,4 +233,12 @@ def complete_upload(
     session.commit()
 
     store().purge(upload_id)
+    # 终审 M-1：purge_expired_ready 原来只挂在「API 启动」和「任意转换跑完」
+    # 两处——但 ready 任务的原文件是"上传"产生的，不是"转换"产生的。用户
+    # 只传不点「开始转换」时，压根不会有任何转换跑完，回收器因此永远够不到
+    # 自己。complete_upload 才是"上传"这个动作真正发生的地方，与
+    # pipeline.py 里另外三个清理函数同一个"顺手回收"的惰性模式，在这里
+    # 补上这一次触发。purge_expired_ready 自己包了 try/except 绝不外抛，
+    # 这里不需要额外防护。
+    purge_expired_ready()
     return CompleteResponse(task_id=task_id)

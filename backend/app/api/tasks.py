@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -20,10 +21,24 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
 _ERR = {"model": ErrorResponse}
-TASK_ERRORS = {
+# 三个端点各自只声明自己真的会抛的码——曾经共用一份 TASK_ERRORS，导致
+# get_task/download 被迫声明 start 专属、自己从不抛的 TASK_ALREADY_STARTED
+# /READY_EXPIRED（前端照契约写分支就是死代码），而 start 真正会抛的 503
+# ENGINE_UNAVAILABLE 反而从未声明过（基线 b3719e2 的 /complete 端点显式
+# 声明过它，五期把入队与这段兜底整体挪到 /start 时漏挪了这行声明）。
+GET_TASK_ERRORS = {
     404: {**_ERR, "description": "TASK_NOT_FOUND"},
-    409: {**_ERR, "description": "TASK_NOT_READY / TASK_ALREADY_STARTED"},
-    410: {**_ERR, "description": "RESULT_EXPIRED / READY_EXPIRED"},
+}
+START_ERRORS = {
+    404: {**_ERR, "description": "TASK_NOT_FOUND"},
+    409: {**_ERR, "description": "TASK_ALREADY_STARTED"},
+    410: {**_ERR, "description": "READY_EXPIRED"},
+    503: {**_ERR, "description": "ENGINE_UNAVAILABLE"},
+}
+DOWNLOAD_ERRORS = {
+    404: {**_ERR, "description": "TASK_NOT_FOUND"},
+    409: {**_ERR, "description": "TASK_NOT_READY"},
+    410: {**_ERR, "description": "RESULT_EXPIRED"},
 }
 
 
@@ -114,20 +129,53 @@ def _to_dto(session: Session, task: Task) -> TaskDto:
     )
 
 
-@router.get("/{task_id}", response_model=TaskDto, responses=TASK_ERRORS)
+@router.get("/{task_id}", response_model=TaskDto, responses=GET_TASK_ERRORS)
 def get_task(task_id: str, session: Session = Depends(get_session)) -> TaskDto:
     task = _load(session, task_id)
     return _to_dto(session, task)
 
 
-@router.post("/{task_id}/start", response_model=TaskDto, responses=TASK_ERRORS)
+@router.post("/{task_id}/start", response_model=TaskDto, responses=START_ERRORS)
 def start_task(
     task_id: str,
     payload: StartTaskRequest,
     session: Session = Depends(get_session),
 ) -> TaskDto:
     task = _load(session, task_id)
-    if task.status != "ready":
+
+    # 条件 UPDATE 取代原来"读 status、判断、单独 commit 写 pending"的三步走。
+    # 那三步之间有窗口：FastAPI 把这个同步端点丢进线程池，两个并发 /start
+    # 都可能在窗口内读到 status=='ready'，各自以为自己有权推进——终审用
+    # 两线程同打同一个 ready 任务实测复现了双 200、同一个 task_id 被入队
+    # 两次。把"判断"和"写"合并成一条带 WHERE status='ready' 的 UPDATE，
+    # 天然原子：SQLite 对同一行的写互斥，后到的那条 UPDATE 执行时 status
+    # 已经不是 'ready'，rowcount==0，落回下面这段既有的 409/410 分支，
+    # 不会再入队第二次。engine/options 一并写进同一条语句，不再需要
+    # 提交两次。
+    #
+    # 用户裁决：不传 engine/options 时沿用上传时选的。upload.requested_engine
+    # 已经在 complete_upload 里转写进了 task.requested_engine；这里只在
+    # payload.engine 非 None 时才把它塞进 values——无条件写入会把上传时
+    # 选好的引擎静默改成 None，而 pipeline.py 只在入队之后（也就是只有
+    # start 之后）才读这个字段，complete 写的值原本在任何路径下都到不了
+    # select_engine。options 走的是同款 `is not None` 才写的模式，保持
+    # 两个字段行为对称。
+    values: dict[str, str] = {"status": "pending"}
+    if payload.engine is not None:
+        values["requested_engine"] = payload.engine
+    if payload.options is not None:
+        values["options_json"] = payload.options.model_dump_json()
+    result = session.execute(
+        update(Task).where(Task.task_id == task_id, Task.status == "ready").values(**values)
+    )
+    session.commit()
+
+    if result.rowcount == 0:
+        # task 是上面 _load() 读到的旧快照，这条 UPDATE 没碰到它（WHERE
+        # 没匹配）——SQLAlchemy 的身份映射不会替我们自动同步，必须显式
+        # refresh 才能看到数据库里的最新状态，否则下面这段判断读到的还是
+        # 过期的 'ready'。
+        session.refresh(task)
         # "已经离开 ready" 有两种成因，前端要分开处理：purge_expired_ready
         # 已经把它标 failed + READY_EXPIRED（原文件已删，重试没有意义，
         # 必须回到重新上传），跟"真的已经被启动过一次"（任务仍在正常跑，
@@ -135,19 +183,6 @@ def start_task(
         if task.status == "failed" and task.error_code == ReadyExpired.code:
             raise ReadyExpired(task.error_message or "")
         raise TaskAlreadyStarted(f"任务状态为 {task.status}，无法重复启动")
-
-    # 用户裁决：沿用上传时选的。upload.requested_engine 已经在 complete_upload
-    # 里转写进了 task.requested_engine；start 不传 engine 时不该覆盖它——
-    # 无条件赋值会把上传时选好的引擎静默改成 None，而 pipeline.py 只在
-    # 入队之后（也就是只有 start 之后）才读这个字段，complete 写的值原本
-    # 在任何路径下都到不了 select_engine。options 走的是同款
-    # `is not None` 才写的模式，这里补齐保持两个字段行为对称。
-    if payload.engine is not None:
-        task.requested_engine = payload.engine
-    if payload.options is not None:
-        task.options_json = payload.options.model_dump_json()
-    task.status = "pending"
-    session.commit()
 
     try:
         enqueue_conversion(task_id)
@@ -166,7 +201,7 @@ def start_task(
     return _to_dto(session, task)
 
 
-@router.get("/{task_id}/download", responses=TASK_ERRORS)
+@router.get("/{task_id}/download", responses=DOWNLOAD_ERRORS)
 def download(task_id: str, session: Session = Depends(get_session)) -> FileResponse:
     task = _load(session, task_id)
     if task.status != "done" or not task.output_path:

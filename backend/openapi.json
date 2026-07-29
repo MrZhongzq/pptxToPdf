@@ -420,26 +420,6 @@
               }
             }
           },
-          "409": {
-            "description": "TASK_NOT_READY / TASK_ALREADY_STARTED",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "410": {
-            "description": "RESULT_EXPIRED / READY_EXPIRED",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -503,7 +483,7 @@
             }
           },
           "409": {
-            "description": "TASK_NOT_READY / TASK_ALREADY_STARTED",
+            "description": "TASK_ALREADY_STARTED",
             "content": {
               "application/json": {
                 "schema": {
@@ -513,7 +493,17 @@
             }
           },
           "410": {
-            "description": "RESULT_EXPIRED / READY_EXPIRED",
+            "description": "READY_EXPIRED",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "ENGINE_UNAVAILABLE",
             "content": {
               "application/json": {
                 "schema": {
@@ -573,7 +563,7 @@
             }
           },
           "409": {
-            "description": "TASK_NOT_READY / TASK_ALREADY_STARTED",
+            "description": "TASK_NOT_READY",
             "content": {
               "application/json": {
                 "schema": {
@@ -583,7 +573,7 @@
             }
           },
           "410": {
-            "description": "RESULT_EXPIRED / READY_EXPIRED",
+            "description": "RESULT_EXPIRED",
             "content": {
               "application/json": {
                 "schema": {
