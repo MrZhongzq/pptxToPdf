@@ -463,10 +463,12 @@ describe('App 覆盖已有 ready 任务前的确认——异步窗口（复审 I
 
   function deferred<T>() {
     let resolve!: (value: T) => void
-    const promise = new Promise<T>((res) => {
+    let reject!: (reason?: unknown) => void
+    const promise = new Promise<T>((res, rej) => {
       resolve = res
+      reject = rej
     })
-    return { promise, resolve }
+    return { promise, resolve, reject }
   }
 
   it('start 请求在飞时选中 B：start 成功后 B 必须被真正上传，不能无声消失', async () => {
@@ -542,5 +544,117 @@ describe('App 覆盖已有 ready 任务前的确认——异步窗口（复审 I
     )
     expect(screen.queryByText('deck2.pptx')).toBeNull()
     expect(screen.queryByText('deck.pptx')).toBeNull()
+  })
+
+  it('走「改用 LibreOffice 并继续」+ 飞行中选大文件：B 必须按 libreoffice 判定（不是残留的 graph）被上传，引擎面板不能被锁死（复审 Important-1）', async () => {
+    // clearReadyTaskAndFulfillPendingReplacement 与它调用的
+    // proceedWithFileSelection 都是 handleStart 被点击那一刻那次 render
+    // 的闭包实例。「改用 LibreOffice 并继续」先 setEngine('libreoffice')
+    // 再调 handleStart('libreoffice', options)——engineToUse 作为显式参数
+    // 传给 handleStart 本身没问题，但如果兑现逻辑内部又转头去读 App 的
+    // engine state（而不是接着往下传参），读到的会是切换前那次渲染里的
+    // 'graph'，把 B 错误地判成 Graph 风险，卡进 pendingFile 永不上传，
+    // 还会把 ConversionOptionsPanel 锁死（awaitingRiskDecision 恒真）。
+    mocks.uploadFile.mockResolvedValueOnce({ taskId: 'T1' })
+    const start = deferred<{ taskId: string }>()
+    mocks.startTask.mockReturnValue(start.promise)
+
+    render(<App />)
+    await waitFor(() => expect(mocks.getCapacityConfig).toHaveBeenCalled())
+    // A 用默认引擎（libreoffice）直接上传——体积够大，一旦被误判成
+    // graph 风险就会露馅。
+    chooseFile(fileOfSize(50 * MIB, 'deck.pptx'))
+    await screen.findByText('deck.pptx')
+
+    // 在 ReadyCard 上把引擎切到 Graph，触发 readyGraphRisk 横幅。
+    fireEvent.click(screen.getByRole('button', { name: /Microsoft Graph/ }))
+    const switchBtn = await screen.findByRole('button', { name: /改用 LibreOffice/ })
+
+    fireEvent.click(switchBtn)
+    await waitFor(() => expect(mocks.startTask).toHaveBeenCalledWith('T1', 'libreoffice', expect.anything()))
+
+    // start 请求还在飞——选中第二个大文件 B。
+    mocks.uploadFile.mockResolvedValueOnce({ taskId: 'T2' })
+    chooseFile(fileOfSize(50 * MIB, 'deck2.pptx'))
+    await screen.findByText(/继续上传会放弃它/)
+
+    start.resolve({} as { taskId: string })
+
+    // B 必须被真正上传——按 libreoffice 判定（'none' 风险），不是卡进
+    // pendingFile 的 graph 风险横幅。
+    await waitFor(() =>
+      expect(mocks.uploadFile).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'deck2.pptx' }),
+        expect.anything(),
+      ),
+    )
+    // B 自动接续上传，成为新的 ready 任务——不是卡在 pendingFile 风险横幅里。
+    await screen.findByText('deck2.pptx')
+    expect(screen.queryByText(/继续上传会放弃它/)).toBeNull()
+    // 没有任何风险横幅——B 被误判成 graph 风险的话，"仍然继续"按钮会出现。
+    expect(screen.queryByRole('button', { name: '仍然继续' })).toBeNull()
+    // 引擎面板不能被锁死：B 的 ReadyCard 上，Microsoft Graph 按钮必须可点。
+    expect(screen.getByRole('button', { name: /Microsoft Graph/ })).not.toBeDisabled()
+  })
+
+  it('start 请求在飞时选中 B，start 以 409 TASK_ALREADY_STARTED 拒绝：B 仍必须被兑现，不能残留（复审 Minor-1）', async () => {
+    // 复审做了个变异：只把 409/410 两条分支改回 setReadyTask(null)、保留
+    // 成功路径的 helper——93 条测试全绿，零检出。这条测试补上这个接线
+    // 守护缺口：走 409 分支时，helper 必须真的被调用，B 必须被兑现。
+    mocks.uploadFile.mockResolvedValueOnce({ taskId: 'T1' })
+    const start = deferred<{ taskId: string }>()
+    mocks.startTask.mockReturnValue(start.promise)
+
+    render(<App />)
+    await waitFor(() => expect(mocks.getCapacityConfig).toHaveBeenCalled())
+    chooseFile(fileOfSize(2 * MIB, 'deck.pptx'))
+    await screen.findByText('deck.pptx')
+
+    fireEvent.click(screen.getByRole('button', { name: '开始转换' }))
+    await waitFor(() => expect(mocks.startTask).toHaveBeenCalled())
+
+    mocks.uploadFile.mockResolvedValueOnce({ taskId: 'T2' })
+    chooseFile(fileOfSize(3 * MIB, 'deck2.pptx'))
+    await screen.findByText(/继续上传会放弃它/)
+
+    start.reject(new ApiError('TASK_ALREADY_STARTED', '任务状态为 pending，无法重复启动', 409))
+
+    await waitFor(() =>
+      expect(mocks.uploadFile).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'deck2.pptx' }),
+        expect.anything(),
+      ),
+    )
+    expect(screen.queryByText(/继续上传会放弃它/)).toBeNull()
+  })
+
+  it('start 请求在飞时选中 B，start 以 410 READY_EXPIRED 拒绝：B 仍必须被兑现，不能残留（复审 Minor-1）', async () => {
+    mocks.uploadFile.mockResolvedValueOnce({ taskId: 'T1' })
+    const start = deferred<{ taskId: string }>()
+    mocks.startTask.mockReturnValue(start.promise)
+
+    render(<App />)
+    await waitFor(() => expect(mocks.getCapacityConfig).toHaveBeenCalled())
+    chooseFile(fileOfSize(2 * MIB, 'deck.pptx'))
+    await screen.findByText('deck.pptx')
+
+    fireEvent.click(screen.getByRole('button', { name: '开始转换' }))
+    await waitFor(() => expect(mocks.startTask).toHaveBeenCalled())
+
+    mocks.uploadFile.mockResolvedValueOnce({ taskId: 'T2' })
+    chooseFile(fileOfSize(3 * MIB, 'deck2.pptx'))
+    await screen.findByText(/继续上传会放弃它/)
+
+    start.reject(
+      new ApiError('READY_EXPIRED', '上传后 1 小时内未开始转换，原文件已回收，请重新上传', 410),
+    )
+
+    await waitFor(() =>
+      expect(mocks.uploadFile).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'deck2.pptx' }),
+        expect.anything(),
+      ),
+    )
+    expect(screen.queryByText(/继续上传会放弃它/)).toBeNull()
   })
 })

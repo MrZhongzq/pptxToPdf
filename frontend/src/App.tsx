@@ -123,12 +123,16 @@ function UploadPage() {
       ? assessGraphRisk(readyTask.sizeBytes, capacity)
       : 'none'
 
-  const startUpload = async (file: File, engineToUse: EngineName) => {
+  const startUpload = async (
+    file: File,
+    engineToUse: EngineName,
+    optionsToUse: ConversionOptions,
+  ) => {
     setError(null)
     try {
       const { taskId } = await uploadFile(file, {
         engine: engineToUse,
-        options,
+        options: optionsToUse,
         onProgress: setProgress,
         onPhase: setPhase,
       })
@@ -152,9 +156,21 @@ function UploadPage() {
   // capacity 还没取到）时直接上传，不给正常路径加多余的一次点击。
   // Graph 风险判定 + 上传，两个入口共用（正常选文件、确认覆盖旧 ready
   // 任务之后），保证两条路径的判定逻辑不会各写一份、慢慢跑偏。
-  const proceedWithFileSelection = (file: File) => {
+  //
+  // 复审 Important-1：engineToUse/optionsToUse 必须是显式参数，不能读
+  // App 的 engine/options state——这个函数可能在 handleStart 的 await 之后
+  // 被 clearReadyTaskAndFulfillPendingReplacement 调用，那时"这次调用"的
+  // 闭包仍是 handleStart 被点击那一刻的旧渲染，若改用 setEngine 之后立刻
+  // 调用（如"改用 LibreOffice 并继续"：先 setEngine('libreoffice') 再
+  // handleStart(...)），闭包里的 engine 读到的还是切换前的旧值——
+  // startUpload(file, engineToUse) 早已是这个约定，这里对齐同一个规则。
+  const proceedWithFileSelection = (
+    file: File,
+    engineToUse: EngineName,
+    optionsToUse: ConversionOptions,
+  ) => {
     const risk =
-      engine === 'graph' && capacity !== null ? assessGraphRisk(file.size, capacity) : 'none'
+      engineToUse === 'graph' && capacity !== null ? assessGraphRisk(file.size, capacity) : 'none'
     if (risk !== 'none') {
       setPendingFile(file)
       return
@@ -164,7 +180,7 @@ function UploadPage() {
     // 放弃的文件），awaitingRiskDecision 也会永久为 true，把
     // ConversionOptionsPanel 锁死到再也切不了引擎。
     setPendingFile(null)
-    void startUpload(file, engine)
+    void startUpload(file, engineToUse, optionsToUse)
   }
 
   // 复审 Important（第二轮）：readyTask 的清空点有三处（start 成功、
@@ -182,12 +198,26 @@ function UploadPage() {
   // 点击那一刻的渲染闭包里执行的，await 恢复后再读闭包变量拿到的是调用
   // 时刻的旧值，不会跟着后续的 setPendingReplacementFile 变化——ref 才是
   // 调用时刻之后仍然实时的那份。
-  const clearReadyTaskAndFulfillPendingReplacement = () => {
+  //
+  // 复审 Important-1：engineToUse/optionsToUse 必须由调用方（handleStart）
+  // 显式传入，不能让这里或 proceedWithFileSelection 自己去读 App 的
+  // engine/options state——这个函数本身也是 handleStart 调用那一刻那次
+  // render 的闭包实例，"改用 LibreOffice 并继续"先 setEngine('libreoffice')
+  // 再调 handleStart(...)，此时闭包里的 engine 仍是切换前的 'graph'。
+  // 之前只把这条规则用在 startTask(taskId, engineToUse, optionsToUse) 上，
+  // 却在紧接着的兑现逻辑里读了闭包——同一个函数违反了它自己上面几行注释
+  // 写的规则。PROBE-8 实测：这会让"兑现"变成另一个静默黑洞（B 被错误地
+  // 判成 graph 风险、卡进 pendingFile 永不上传），还会把
+  // ConversionOptionsPanel 永久锁死（awaitingRiskDecision 恒真）。
+  const clearReadyTaskAndFulfillPendingReplacement = (
+    engineToUse: EngineName,
+    optionsToUse: ConversionOptions,
+  ) => {
     setReadyTask(null)
     const pending = pendingReplacementFileRef.current
     if (pending) {
       setPendingReplacementFile(null)
-      proceedWithFileSelection(pending)
+      proceedWithFileSelection(pending, engineToUse, optionsToUse)
     }
   }
 
@@ -204,18 +234,18 @@ function UploadPage() {
     try {
       await startTask(taskId, engineToUse, optionsToUse)
       setTaskIds((prev) => [taskId, ...prev])
-      clearReadyTaskAndFulfillPendingReplacement()
+      clearReadyTaskAndFulfillPendingReplacement(engineToUse, optionsToUse)
     } catch (err) {
       if (err instanceof ApiError && err.code === 'TASK_ALREADY_STARTED') {
         // 任务已经真的被启动过一次（比如另一个标签页抢先点了「开始转换」）
         // ——它在正常转换，接上轮询才是对用户有用的恢复，不是当错误处理。
         setTaskIds((prev) => [taskId, ...prev])
-        clearReadyTaskAndFulfillPendingReplacement()
+        clearReadyTaskAndFulfillPendingReplacement(engineToUse, optionsToUse)
       } else if (err instanceof ApiError && err.code === 'READY_EXPIRED') {
         // ready 任务有 1 小时 TTL，原文件已经被回收——ReadyCard 停在原地
         // 再点也没用，退回可以重新上传的状态。message 用后端已经写好的
         // 原话（含具体 TTL 小时数），这里不重复拼一遍。
-        clearReadyTaskAndFulfillPendingReplacement()
+        clearReadyTaskAndFulfillPendingReplacement(engineToUse, optionsToUse)
         setError(err.message)
       } else {
         // 终审 M-4：这句"重试"对多数瞬时错误（网络故障等）成立——原文件
@@ -251,7 +281,7 @@ function UploadPage() {
       setPendingReplacementFile(file)
       return
     }
-    proceedWithFileSelection(file)
+    proceedWithFileSelection(file, engine, options)
   }
 
   const confirmReplaceReadyTask = () => {
@@ -260,7 +290,7 @@ function UploadPage() {
     setPendingReplacementFile(null)
     setError(null)
     setReadyTask(null)
-    proceedWithFileSelection(file)
+    proceedWithFileSelection(file, engine, options)
   }
 
   const cancelReplaceReadyTask = () => {
@@ -271,7 +301,7 @@ function UploadPage() {
     if (!pendingFile) return
     const file = pendingFile
     setPendingFile(null)
-    void startUpload(file, 'graph')
+    void startUpload(file, 'graph', options)
   }
 
   const confirmSwitchToLibreOffice = () => {
@@ -279,7 +309,7 @@ function UploadPage() {
     const file = pendingFile
     setPendingFile(null)
     setEngine('libreoffice')
-    void startUpload(file, 'libreoffice')
+    void startUpload(file, 'libreoffice', options)
   }
 
   const confirmReadyProceedWithGraph = () => {
@@ -390,7 +420,19 @@ function UploadPage() {
               options={options}
               onOptionsChange={setOptions}
               onStart={handleStart}
-              disabled={readyGraphRisk !== 'none' || pendingReplacementFile !== null}
+              // 复审 Minor-3：startingReadyTask 必须也在这里——「改用
+              // LibreOffice 并继续」先 setEngine('libreoffice') 再
+              // handleStart(...)，下一次渲染 readyGraphRisk 会立刻因为
+              // engine 已经不是 'graph' 而变回 'none'，风险横幅连同它的
+              // disabled 一起消失；但此时 handleStart 的 startTask 请求
+              // 仍在飞（这次 handleStart 不经过 ReadyCard 自己的 onStart，
+              // ReadyCard 内部的 starting 状态从未被置位）。不加这一条，
+              // ReadyCard 的「开始转换」在飞行期间完全可点，实测会让同一个
+              // taskId 被 start 两次，第二次拿 409 又被当成「已经在跑」加
+              // 进任务列表，同一个 taskId 进两次、TaskList 重复 key。
+              disabled={
+                readyGraphRisk !== 'none' || pendingReplacementFile !== null || startingReadyTask
+              }
             />
 
             {readyGraphRisk !== 'none' && (
