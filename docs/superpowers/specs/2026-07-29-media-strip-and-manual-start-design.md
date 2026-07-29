@@ -62,7 +62,9 @@ def strip_media(src: Path) -> StripResult   # 就地重写
 
 ### 接入点与取代语义
 
-接在 `pipeline.run_task` 的 `probe(src)` **之前**。剥离后的文件**覆盖原件**，此后 `size_bytes`、`needs_sharding`、切片、转换全部基于剥离后的文件。
+接在 `pipeline.run_task` 的 `probe(src)` **之后**。剥离后的文件**覆盖原件**，此后 `size_bytes`、`needs_sharding`、切片、转换全部基于剥离后的文件。
+
+顺序不是随意的：`probe` 提取的 `slide_count` / `slide_width_emu` / `slide_height_emu` / `fonts` 四个字段全部来自 `slides` / `slideMasters` / `slideLayouts` / `theme` / `presentation.xml` 这些 part，对媒体剥离免疫——剥离放在 probe 前后不影响这四个字段的结果。但反过来的风险是真的：`probe` 自带的校验（加密 / 非法 zip / 不是演示文稿）必须先跑完，用户才能拿到准确的错误码。`strip_media` 没有这层校验，直接 `zipfile.ZipFile(src)`；如果剥离先于 probe，一份加密 pptx（OLE/CFB 容器，不是合法 zip）会在 `strip_media` 里先炸出一个裸 `BadZipFile`，被钝化成远不如 `PPTX_ENCRYPTED` 准确的 `PPTX_INVALID_ZIP`——这是终审阶段发现的真实回归（commit `7668c51`），教训是"顺序错了，两边的单元测试都测不出来，只有端到端测试能拦住"。
 
 这样那份 83.7MB 的课件掉到约 28MB 后大概率根本不需要切片，直接走单次转换——既快又绕开了分片上限。
 
@@ -82,7 +84,9 @@ slide 正文里指向被删视频的 `r:id` 会**悬空**。这与三期已裁�
 
 ```
 ready → pending → parsing → queued → converting → merging → done / failed
-  └── 点「开始转换」后才离开 ready
+  ├── 点「开始转换」后才离开 ready
+  └── ready → failed（READY_EXPIRED）：超过 PPTX2PDF_READY_TTL_HOURS 未点
+      「开始转换」，由 purge_expired_ready 回收，原文件已删
 ```
 
 `ready` 插在最前面，是新增状态。
@@ -118,9 +122,9 @@ ready → pending → parsing → queued → converting → merging → done / f
 
 ### 引擎与选项的提交时机
 
-改由 `start` 的请求体带。这正是本期的目的——先传着，传的过程中慢慢选。
+改由 `start` 的请求体带，但 `engine` / `options` 都是**可选**的——不传就沿用上传时选的那份，这正是本期的目的：先传着，传的过程中慢慢选，想好了才提交，没想好也不强迫在 `start` 这一步重新做一次选择。
 
-`POST /api/uploads` 的 `engine` / `options` 字段**保留不废弃**（用户决定），但 `complete` 不再从 Upload 转写 `requested_engine` 到 Task。
+`POST /api/uploads` 的 `engine` / `options` 字段**保留不废弃**（用户决定），`complete` **仍**从 Upload 转写 `requested_engine` 到 Task，作为默认值；`start` 只在 `payload.engine is not None` 时才覆盖它（`options` 同款模式，`is not None` 才写）。用户裁决：沿用上传时选的（commit `fa92544`）——早先设计曾打算让 `complete` 不再转写，但那样 `start` 不传 `engine` 时会把上传时选好的引擎静默清空成 `None`，与两段式上传本身的动机（先传着、慢慢选，而不是被迫每次都重新选）相悖。
 
 ### 前端
 
@@ -128,15 +132,16 @@ ready → pending → parsing → queued → converting → merging → done / f
 
 四期那条「有风险时点确认前不发任何上传请求」的交互仍然成立，只是容量预判的决策点后移——现在用户在 `ready` 卡片上换引擎时才需要重新评估风险。
 
-**新增状态值必须同步三处**，一处不改就会在运行时崩：
+**新增状态值必须同步四处**，一处不改就会在运行时崩：
 
 | 文件 | 改什么 |
 |---|---|
 | `frontend/src/lib/api.ts` | `TaskDto['status']` 联合类型加 `'ready'`（现为 7 值） |
 | `frontend/src/components/TaskCard.tsx` | `STATUS` 映射表加 `ready` 条目 |
 | `frontend/src/hooks/useTaskPolling.ts` | `TERMINAL` 集合——`ready` **不是**终态，不要加进去 |
+| `frontend/src/components/TaskCard.test.tsx` | `ALL_STATUSES` 守卫加 `'ready'` |
 
-四期在这里踩过一次：`STATUS[未知值]` 是 `undefined`，取 `.badge` 直接抛 `TypeError`，而仓库没有 ErrorBoundary，React 18 会卸载整棵树。`TaskCard.test.tsx` 有一个遍历全部状态的 `ALL_STATUSES` 守卫，加状态时它也要跟着更新。
+四期在这里踩过一次：`STATUS[未知值]` 是 `undefined`，取 `.badge` 直接抛 `TypeError`，而仓库没有 ErrorBoundary，React 18 会卸载整棵树。`TaskCard.test.tsx` 的 `ALL_STATUSES` 就是防住这类回归的守卫（遍历全部状态渲染一遍，断言不抛异常），加状态时它必须跟着改，不是"顺带提一句"的散文，是清单里的第四行。
 
 ## 5. 数据模型
 
@@ -158,10 +163,12 @@ ready → pending → parsing → queued → converting → merging → done / f
 |---|---|---|
 | 任务不存在 | 404 | `TASK_NOT_FOUND`（复用现有） |
 | 任务不在 `ready` 状态（重复点、或已在转） | 409 | **`TASK_ALREADY_STARTED`（新增）** |
-| 任务已被 ready TTL 回收 | 409 | `TASK_ALREADY_STARTED`（同上——此时 status 已是 `failed`，不在 `ready`） |
+| 任务已被 ready TTL 回收 | 410 | **`READY_EXPIRED`（新增，commit `6a63918`）** |
 | Redis 不可达 | 503 | `ENGINE_UNAVAILABLE`（复用现有） |
 
-被 TTL 回收后原文件已删，即使强行入队也只会在 `run_task` 里因找不到源文件而失败。409 加上 Task 行里已有的 `READY_EXPIRED` 错误信息，足以让用户明白发生了什么。
+这行表格曾经把"被 TTL 回收"也归进 409 `TASK_ALREADY_STARTED`（理由是"此时 status 已是 `failed`，不在 `ready`，跟真的重复点是同一类冲突"），但那个论证在实现阶段被推翻了：前端从错误响应里只能拿到 `{code, message}` 这两个字段，没有 Task 行可读，两种 409 在客户端完全无法区分——用户"重复点了一次正在转换的任务"和"任务已经因为超时被回收、原文件已删"是两种需要不同界面反应的情况（前者该接上轮询，后者该退回可重新上传的界面），却会被同一个错误码盖过去。
+
+实际做法：`start_task` 显式检查 `status == "failed" and error_code == ReadyExpired.code`，命中就单独抛 410 `READY_EXPIRED`，不落进笼统的 409 分支；`message` 直接复用 `purge_expired_ready` 已经写入 Task 行的那句原话（含具体 TTL 小时数），不在 `start_task` 里另起一份措辞，避免两处话术慢慢跑偏。被 TTL 回收后原文件已删，即使强行入队也只会在 `run_task` 里因找不到源文件而失败，所以这里直接拦在 `start` 这一层，不必真的走一遍入队再失败。
 
 **不能复用 `TASK_NOT_READY`。** 它已经存在（`app/api/tasks.py:33`）且已有既定含义——`download` 端点用它表示「任务状态还不是 `done`，尚无可下载结果」。若拿它表示「任务已经离开 `ready` 状态」，同一个码会指向两个几乎相反的意思：一个是「还没到终点」，一个是「已经离开起点」。客户端无法区分。
 
@@ -189,11 +196,12 @@ ready → pending → parsing → queued → converting → merging → done / f
 
 ### 接线守护（重点）
 
-本项目在「函数写了但没人调用」上栽过五次，四期靠跨任务变异才补住。以下三条必须能被变异检查抓住：
+本项目在「函数写了但没人调用」上栽过五次，四期靠跨任务变异才补住。以下四条必须能被变异检查抓住：
 
 1. 剥离被调用
 2. 剥离结果取代了原件（而非只在某一步用一下）
 3. `start` 才入队（`complete` 不入队）
+4. `purge_expired_ready` 真的被 `main.startup` 与 `pipeline.run_task` 的 `finally` 调用——本清单原本漏了这一条：终审同时删掉这两处调用，跑全套测试依然全绿（这个项目专门在"函数写了但没人调用"上栽过五次，这份清单自己却在第五次栽的同一类问题上留了个洞）。删了之后，用户明确要的"1 小时回收保护磁盘"会静默变成死代码，无任何信号。
 
 ### 验收命令
 
