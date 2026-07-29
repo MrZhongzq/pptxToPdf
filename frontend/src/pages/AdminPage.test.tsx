@@ -4,149 +4,128 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { AdminPage } from './AdminPage'
 
-const CREDS = {
-  tenant_id: 't-1',
-  client_id: 'c-1',
-  site_id: 's-1',
-  drive_path: 'staging',
-  secret_configured: true,
-}
+const mocks = vi.hoisted(() => ({ getMe: vi.fn() }))
 
-function mockFetch(handler: (url: string, init?: RequestInit) => Response | Promise<Response>) {
-  const spy = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
-    handler(String(input), init),
-  )
-  vi.stubGlobal('fetch', spy)
-  return spy
-}
+vi.mock('../lib/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/api')>()
+  return { ...actual, getMe: mocks.getMe }
+})
 
-function json(body: unknown, status = 200): Response {
-  // undici 拒绝给 204 响应带 body（HTTP 规范上 204 不能带 body）——直接
-  // new Response(JSON.stringify(body), {status: 204}) 会抛
-  // "Response constructor: Invalid response status code 204"。
-  return new Response(status === 204 ? null : JSON.stringify(body), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  })
+const ADMIN = {
+  user_id: 'a1',
+  username: 'admin',
+  email: 'a@example.com',
+  role: 'admin' as const,
+  status: 'active' as const,
+  created_at: '2026-07-29T00:00:00Z',
 }
+const MEMBER = { ...ADMIN, user_id: 'u1', username: 'alice', role: 'user' as const }
+
+let replace: ReturnType<typeof vi.fn>
+let originalLocation: Location
 
 beforeEach(() => {
-  vi.restoreAllMocks()
+  mocks.getMe.mockReset()
+  replace = vi.fn()
+  originalLocation = window.location
+  Object.defineProperty(window, 'location', {
+    value: { ...originalLocation, pathname: '/admin', replace },
+    writable: true,
+  })
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () =>
+      new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    ),
+  )
 })
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  Object.defineProperty(window, 'location', { value: originalLocation, writable: true })
 })
 
-describe('AdminPage', () => {
-  it('未登录时显示口令输入框', async () => {
-    mockFetch(() => json({ code: 'ADMIN_UNAUTHORIZED' }, 401))
+describe('AdminPage 的访问守卫', () => {
+  it('未登录 -> 跳回主页', async () => {
+    mocks.getMe.mockResolvedValue(null)
     render(<AdminPage />)
-    expect(await screen.findByLabelText('管理口令')).toBeTruthy()
+    await waitFor(() => expect(replace).toHaveBeenCalledWith('/'))
   })
 
-  it('已登录时加载并显示配置，secret 显示为已配置而不回显', async () => {
-    mockFetch((url) => (url.includes('graph-credentials') ? json(CREDS) : json({}, 204)))
+  it('登录了但不是 admin -> 跳回主页', async () => {
+    mocks.getMe.mockResolvedValue(MEMBER)
     render(<AdminPage />)
-    await waitFor(() => expect((screen.getByLabelText('租户 ID') as HTMLInputElement).value).toBe('t-1'))
-    expect(screen.getByText(/已配置（不回显）/)).toBeTruthy()
+    await waitFor(() => expect(replace).toHaveBeenCalledWith('/'))
   })
 
-  it('口令错误时显示错误而不进入表单', async () => {
-    mockFetch((url) => {
-      if (url.includes('/login')) return json({ code: 'ADMIN_BAD_PASSWORD', message: '口令错误' }, 401)
-      return json({ code: 'ADMIN_UNAUTHORIZED' }, 401)
-    })
+  it('查身份失败 -> 跳回主页，不停在一个半开的面板上', async () => {
+    mocks.getMe.mockRejectedValue(new Error('network down'))
     render(<AdminPage />)
-    const input = await screen.findByLabelText('管理口令')
-    await userEvent.type(input, 'wrong')
-    await userEvent.click(screen.getByRole('button', { name: '登录' }))
-    expect(await screen.findByText(/口令错误/)).toBeTruthy()
+    await waitFor(() => expect(replace).toHaveBeenCalledWith('/'))
   })
 
-  it('保存成功后展示五步全绿', async () => {
-    const green = {
-      ok: true,
-      steps: [
-        { step: 'token', ok: true, detail: null },
-        { step: 'drive', ok: true, detail: null },
-        { step: 'upload', ok: true, detail: null },
-        { step: 'convert', ok: true, detail: null },
-        { step: 'delete', ok: true, detail: null },
-      ],
+  it('核验期间不渲染任何面板内容', async () => {
+    // getMe 永不 resolve，模拟核验还在路上
+    mocks.getMe.mockReturnValue(new Promise(() => {}))
+    render(<AdminPage />)
+
+    expect(screen.queryByRole('navigation', { name: '面板分区' })).toBeNull()
+    expect(screen.getByText('正在核验身份…')).toBeInTheDocument()
+  })
+
+  it('是 admin -> 正常渲染，不跳转', async () => {
+    mocks.getMe.mockResolvedValue(ADMIN)
+    render(<AdminPage />)
+
+    await screen.findByRole('heading', { name: '管理面板' })
+    expect(replace).not.toHaveBeenCalled()
+  })
+})
+
+describe('AdminPage 的侧边栏', () => {
+  beforeEach(() => {
+    mocks.getMe.mockResolvedValue(ADMIN)
+  })
+
+  it('四个分区都在', async () => {
+    render(<AdminPage />)
+    await screen.findByRole('heading', { name: '管理面板' })
+
+    const nav = screen.getByRole('navigation', { name: '面板分区' })
+    for (const label of ['用户管理', 'Azure 凭证', '访问白名单', '系统状态']) {
+      expect(nav).toHaveTextContent(label)
     }
-    mockFetch((url, init) => {
-      if (init?.method === 'PUT') return json(green)
-      if (url.includes('graph-credentials')) return json(CREDS)
-      return json({}, 204)
-    })
-    render(<AdminPage />)
-    await waitFor(() => screen.getByLabelText('租户 ID'))
-    await userEvent.click(screen.getByRole('button', { name: '测试并保存' }))
-    await waitFor(() => expect(screen.getAllByText('通过').length).toBe(5))
   })
 
-  it('自检失败时逐步展示诊断，未执行的步骤显示为未执行', async () => {
-    const failing = {
-      code: 'GRAPH_SELFTEST_FAILED',
-      message: 'Graph 凭证自检未通过',
-      steps: [
-        { step: 'token', ok: true, detail: null },
-        { step: 'drive', ok: false, detail: '找不到该站点，site_id 可能写错' },
-        { step: 'upload', ok: null, detail: null },
-        { step: 'convert', ok: null, detail: null },
-        { step: 'delete', ok: null, detail: null },
-      ],
-    }
-    mockFetch((url, init) => {
-      if (init?.method === 'PUT') return json(failing, 422)
-      if (url.includes('graph-credentials')) return json(CREDS)
-      return json({}, 204)
-    })
+  it('默认停在用户管理，且当前项标了 aria-current', async () => {
     render(<AdminPage />)
-    await waitFor(() => screen.getByLabelText('租户 ID'))
-    await userEvent.click(screen.getByRole('button', { name: '测试并保存' }))
-    expect(await screen.findByText(/site_id 可能写错/)).toBeTruthy()
-    expect(screen.getAllByText('未执行').length).toBe(3)
+    await screen.findByRole('heading', { name: '管理面板' })
+
+    const current = screen.getByRole('button', { name: /用户管理/ })
+    expect(current).toHaveAttribute('aria-current', 'page')
   })
 
-  it('自检进行中禁用保存按钮', async () => {
-    let release: (v: Response) => void = () => {}
-    const pending = new Promise<Response>((r) => (release = r))
-    mockFetch((url, init) => {
-      if (init?.method === 'PUT') return pending
-      if (url.includes('graph-credentials')) return json(CREDS)
-      return json({}, 204)
-    })
+  it('点侧边栏切换分区', async () => {
     render(<AdminPage />)
-    await waitFor(() => screen.getByLabelText('租户 ID'))
-    const btn = screen.getByRole('button', { name: '测试并保存' })
-    await userEvent.click(btn)
-    await waitFor(() => expect((btn as HTMLButtonElement).disabled).toBe(true))
-    release(json({ ok: true, steps: [] }))
+    await screen.findByRole('heading', { name: '管理面板' })
+
+    await userEvent.click(screen.getByRole('button', { name: /访问白名单/ }))
+
+    expect(screen.getByRole('button', { name: /访问白名单/ })).toHaveAttribute(
+      'aria-current',
+      'page',
+    )
+    // 白名单面板必须把「当前未启用」说清楚——否则管理员配了一堆条目却
+    // 发现没有任何效果，只会以为是坏的
+    expect(
+      await screen.findByText(/防跨站保护当前/),
+    ).toBeInTheDocument()
   })
 
-  it('服务端未设管理口令时显示未配置提示', async () => {
-    mockFetch(() => json({ code: 'ADMIN_NOT_CONFIGURED' }, 503))
+  it('有返回上传页的入口', async () => {
     render(<AdminPage />)
-    expect(await screen.findByText('管理入口未配置口令')).toBeTruthy()
-  })
+    await screen.findByRole('heading', { name: '管理面板' })
 
-  it('点击登出后回到未登录态', async () => {
-    let loggedOut = false
-    mockFetch((url) => {
-      if (url.includes('/logout')) {
-        loggedOut = true
-        return new Response(null, { status: 204 })
-      }
-      if (url.includes('graph-credentials')) {
-        return loggedOut ? json({ code: 'ADMIN_UNAUTHORIZED' }, 401) : json(CREDS)
-      }
-      return json({}, 204)
-    })
-    render(<AdminPage />)
-    await waitFor(() => screen.getByLabelText('租户 ID'))
-    await userEvent.click(screen.getByRole('button', { name: '登出' }))
-    expect(await screen.findByLabelText('管理口令')).toBeTruthy()
+    expect(screen.getByRole('link', { name: '返回上传页' })).toHaveAttribute('href', '/')
   })
 })

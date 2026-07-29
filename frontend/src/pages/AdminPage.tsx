@@ -1,223 +1,105 @@
-import { useEffect, useState, type FormEvent } from 'react'
-import {
-  getCredentials,
-  login,
-  logout,
-  putCredentials,
-  STEP_LABELS,
-  type SelftestStep,
-} from '../lib/adminApi'
+import { useEffect, useState } from 'react'
 
-type AuthState = 'checking' | 'unconfigured' | 'unauthed' | 'authed'
+import { getMe, type UserDto } from '../lib/api'
+import { GraphCredentialsPanel } from './admin/GraphCredentialsPanel'
+import { OriginsPanel } from './admin/OriginsPanel'
+import { StatsPanel } from './admin/StatsPanel'
+import { UsersPanel } from './admin/UsersPanel'
 
-// 五步顺序固定，后端 STEPS 与此一致——即使 steps 数组顺序有变化也按
-// 这个固定顺序渲染，避免 UI 顺序跟着一次意外的后端改动跳动。
-const STEP_ORDER = ['token', 'drive', 'upload', 'convert', 'delete']
+type Section = 'users' | 'graph' | 'origins' | 'stats'
 
-interface ApiErr extends Error {
-  code?: string
-  steps?: SelftestStep[]
-}
+const SECTIONS: { key: Section; label: string; hint: string }[] = [
+  { key: 'users', label: '用户管理', hint: '添加 / 暂停 / 删除账号' },
+  { key: 'graph', label: 'Azure 凭证', hint: 'Graph 通道与连通性自检' },
+  { key: 'origins', label: '访问白名单', hint: '防跨站（当前未启用）' },
+  { key: 'stats', label: '系统状态', hint: '任务与存储占用' },
+]
 
-function stepStatusText(ok: boolean | null): string {
-  if (ok === true) return '通过'
-  if (ok === false) return '失败'
-  return '未执行'
-}
-
-function stepBadgeClass(ok: boolean | null): string {
-  if (ok === true) return 'badge badge-success'
-  if (ok === false) return 'badge badge-danger'
-  return 'badge badge-neutral'
-}
-
+/**
+ * Admin 面板，侧边栏分区。
+ *
+ * 未登录或非 admin 一律跳回主页。但**跳转只是体验**：真正的边界在后端，
+ * 每个 /api/admin/* 端点都挂了 require_admin。绕过前端直接打 API 是最
+ * 基本的渗透手法，只做前端等于没做。
+ */
 export function AdminPage() {
-  const [authState, setAuthState] = useState<AuthState>('checking')
-
-  const [loginPassword, setLoginPassword] = useState('')
-  const [loginError, setLoginError] = useState<string | null>(null)
-  const [loggingIn, setLoggingIn] = useState(false)
-
-  const [tenantId, setTenantId] = useState('')
-  const [clientId, setClientId] = useState('')
-  const [siteId, setSiteId] = useState('')
-  const [drivePath, setDrivePath] = useState('')
-  const [clientSecret, setClientSecret] = useState('')
-  const [secretConfigured, setSecretConfigured] = useState(false)
-
-  const [saving, setSaving] = useState(false)
-  const [steps, setSteps] = useState<SelftestStep[] | null>(null)
-  const [saveError, setSaveError] = useState<string | null>(null)
-
-  const loadCredentials = async () => {
-    const data = await getCredentials()
-    setTenantId(data.tenant_id)
-    setClientId(data.client_id)
-    setSiteId(data.site_id)
-    setDrivePath(data.drive_path)
-    setSecretConfigured(data.secret_configured)
-    setClientSecret('')
-    setAuthState('authed')
-  }
+  const [checking, setChecking] = useState(true)
+  const [user, setUser] = useState<UserDto | null>(null)
+  const [section, setSection] = useState<Section>('users')
 
   useEffect(() => {
-    loadCredentials().catch((err: unknown) => {
-      const code = (err as ApiErr | undefined)?.code
-      setAuthState(code === 'ADMIN_NOT_CONFIGURED' ? 'unconfigured' : 'unauthed')
-    })
+    let alive = true
+    getMe()
+      .then((u) => {
+        if (!alive) return
+        if (u?.role === 'admin') {
+          setUser(u)
+          setChecking(false)
+        } else {
+          // replace 而不是 href：不留历史记录，用户按后退不会又弹回
+          // /admin 再跳一次
+          window.location.replace('/')
+        }
+      })
+      .catch(() => window.location.replace('/'))
+    return () => {
+      alive = false
+    }
   }, [])
 
-  const handleLogin = async (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    setLoginError(null)
-    setLoggingIn(true)
-    try {
-      await login(loginPassword)
-      await loadCredentials()
-    } catch (err) {
-      setLoginError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setLoggingIn(false)
-    }
-  }
-
-  const handleSave = async (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    setSaving(true)
-    setSaveError(null)
-    setSteps(null)
-    try {
-      const result = await putCredentials({
-        tenant_id: tenantId,
-        client_id: clientId,
-        client_secret: clientSecret,
-        site_id: siteId,
-        drive_path: drivePath,
-      })
-      setSteps(result.steps)
-    } catch (err) {
-      const apiErr = err as ApiErr
-      if (apiErr.steps) setSteps(apiErr.steps)
-      setSaveError(apiErr.message || '保存失败')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const handleLogout = async () => {
-    await logout()
-    setAuthState('unauthed')
-  }
-
-  if (authState === 'checking') {
+  if (checking || !user) {
     return (
       <div className="layout">
-        <p>加载中…</p>
+        <p style={{ color: 'var(--c-text-muted)' }}>正在核验身份…</p>
       </div>
     )
   }
-
-  if (authState === 'unconfigured') {
-    return (
-      <div className="layout">
-        <header className="page-head">
-          <h1 className="page-title">管理入口</h1>
-        </header>
-        <p role="alert" className="alert alert-danger">
-          管理入口未配置口令
-        </p>
-      </div>
-    )
-  }
-
-  if (authState === 'unauthed') {
-    return (
-      <div className="layout">
-        <header className="page-head">
-          <h1 className="page-title">管理入口</h1>
-        </header>
-        <form className="card" style={{ padding: 'var(--space-4)' }} onSubmit={handleLogin}>
-          <label htmlFor="admin-password">管理口令</label>
-          <input
-            id="admin-password"
-            type="password"
-            value={loginPassword}
-            onChange={(e) => setLoginPassword(e.target.value)}
-          />
-          <button type="submit" className="btn btn-primary" disabled={loggingIn}>
-            {loggingIn ? '登录中…' : '登录'}
-          </button>
-          {loginError && (
-            <p role="alert" className="alert alert-danger">
-              {loginError}
-            </p>
-          )}
-        </form>
-      </div>
-    )
-  }
-
-  // authState === 'authed'
-  // steps 优先用固定顺序渲染；后端返回的数组顺序理应一致，这里再兜底一次。
-  const orderedSteps = steps
-    ? STEP_ORDER.map((name) => steps.find((s) => s.step === name)).filter(
-        (s): s is SelftestStep => s !== undefined,
-      )
-    : null
 
   return (
     <div className="layout">
-      <header className="page-head">
-        <h1 className="page-title">Graph 凭证配置</h1>
-        <button type="button" className="btn btn-ghost" onClick={() => void handleLogout()}>
-          登出
-        </button>
+      <header className="page-head" style={{ position: 'relative' }}>
+        <div>
+          <h1 className="page-title">管理面板</h1>
+          <span className="page-sub">{user.username}</span>
+        </div>
+        <div style={{ position: 'absolute', top: 0, right: 0 }}>
+          <a className="btn btn-ghost" href="/">
+            返回上传页
+          </a>
+        </div>
       </header>
-      <form className="card" style={{ padding: 'var(--space-4)' }} onSubmit={handleSave}>
-        <label htmlFor="tenant-id">租户 ID</label>
-        <input id="tenant-id" value={tenantId} onChange={(e) => setTenantId(e.target.value)} />
 
-        <label htmlFor="client-id">客户端 ID</label>
-        <input id="client-id" value={clientId} onChange={(e) => setClientId(e.target.value)} />
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'minmax(150px, 190px) 1fr',
+          gap: 'var(--space-5)',
+          alignItems: 'start',
+        }}
+      >
+        <nav aria-label="面板分区" style={{ display: 'grid', gap: 'var(--space-2)' }}>
+          {SECTIONS.map((s) => (
+            <button
+              key={s.key}
+              type="button"
+              className={s.key === section ? 'btn btn-primary' : 'btn btn-ghost'}
+              aria-current={s.key === section ? 'page' : undefined}
+              onClick={() => setSection(s.key)}
+              style={{ display: 'grid', justifyItems: 'start', textAlign: 'left' }}
+            >
+              <span>{s.label}</span>
+              <span style={{ fontSize: 11, opacity: 0.75, fontWeight: 400 }}>{s.hint}</span>
+            </button>
+          ))}
+        </nav>
 
-        <label htmlFor="client-secret">客户端密钥</label>
-        <input
-          id="client-secret"
-          type="password"
-          value={clientSecret}
-          onChange={(e) => setClientSecret(e.target.value)}
-          placeholder={secretConfigured ? '已配置（不回显），留空则沿用' : '首次配置必须填写'}
-        />
-        {secretConfigured && <p className="check-hint">已配置（不回显），留空则沿用</p>}
-
-        <label htmlFor="site-id">站点 ID</label>
-        <input id="site-id" value={siteId} onChange={(e) => setSiteId(e.target.value)} />
-
-        <label htmlFor="drive-path">云盘路径</label>
-        <input id="drive-path" value={drivePath} onChange={(e) => setDrivePath(e.target.value)} />
-
-        <button type="submit" className="btn btn-primary" disabled={saving}>
-          {saving ? '自检中…' : '测试并保存'}
-        </button>
-
-        {saveError && (
-          <p role="alert" className="alert alert-danger">
-            {saveError}
-          </p>
-        )}
-
-        {orderedSteps && (
-          <ul>
-            {orderedSteps.map((s) => (
-              <li key={s.step}>
-                <span>{STEP_LABELS[s.step] ?? s.step}</span>
-                <span className={stepBadgeClass(s.ok)}>{stepStatusText(s.ok)}</span>
-                {s.ok === false && s.detail && <p>{s.detail}</p>}
-              </li>
-            ))}
-          </ul>
-        )}
-      </form>
+        <div style={{ display: 'grid', gap: 'var(--space-4)' }}>
+          {section === 'users' && <UsersPanel currentUserId={user.user_id} />}
+          {section === 'graph' && <GraphCredentialsPanel />}
+          {section === 'origins' && <OriginsPanel />}
+          {section === 'stats' && <StatsPanel />}
+        </div>
+      </div>
     </div>
   )
 }

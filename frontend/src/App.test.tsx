@@ -229,23 +229,73 @@ describe('App 上传前的容量启发式预判与确认时机', () => {
     expect(screen.getByRole('button', { name: /Microsoft Graph/ })).not.toBeDisabled()
   })
 
-  it('/admin 路径渲染管理页而不是上传界面', async () => {
+  it('/admin 路径：admin 用户看到管理面板', async () => {
     const original = window.location
     Object.defineProperty(window, 'location', {
-      value: { ...original, pathname: '/admin' },
+      value: { ...original, pathname: '/admin', replace: vi.fn() },
       writable: true,
     })
+    mocks.getMe.mockResolvedValue({
+      user_id: 'a1',
+      username: 'admin',
+      email: 'a@example.com',
+      role: 'admin',
+      status: 'active',
+      created_at: '2026-07-29T00:00:00Z',
+    })
+    // 面板里的各分区会各自拉数据，给一个空响应就够——这条测的是路由分发
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
-        new Response(JSON.stringify({ code: 'ADMIN_UNAUTHORIZED' }), {
-          status: 401,
-          headers: { 'Content-Type': 'application/json' },
-        }),
+        new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } }),
       ),
     )
+
     render(<App />)
-    expect(await screen.findByLabelText('管理口令')).toBeTruthy()
+
+    expect(await screen.findByRole('heading', { name: '管理面板' })).toBeTruthy()
+    expect(window.location.replace).not.toHaveBeenCalled()
+
+    // 必须还原：不还原的话被 stub 的 fetch 会漏给后面每一个用例，
+    // 表现是它们莫名其妙地超时——本文件此前就一直带着这个污染。
+    vi.unstubAllGlobals()
+    Object.defineProperty(window, 'location', { value: original, writable: true })
+  })
+
+  it('/admin 路径：非 admin 被跳回主页', async () => {
+    const original = window.location
+    const replace = vi.fn()
+    Object.defineProperty(window, 'location', {
+      value: { ...original, pathname: '/admin', replace },
+      writable: true,
+    })
+    mocks.getMe.mockResolvedValue({
+      user_id: 'u1',
+      username: 'alice',
+      email: 'a@example.com',
+      role: 'user',
+      status: 'active',
+      created_at: '2026-07-29T00:00:00Z',
+    })
+
+    render(<App />)
+
+    await waitFor(() => expect(replace).toHaveBeenCalledWith('/'))
+    Object.defineProperty(window, 'location', { value: original, writable: true })
+  })
+
+  it('/admin 路径：未登录被跳回主页', async () => {
+    const original = window.location
+    const replace = vi.fn()
+    Object.defineProperty(window, 'location', {
+      value: { ...original, pathname: '/admin', replace },
+      writable: true,
+    })
+    mocks.getMe.mockResolvedValue(null)
+
+    render(<App />)
+
+    await waitFor(() => expect(replace).toHaveBeenCalledWith('/'))
     Object.defineProperty(window, 'location', { value: original, writable: true })
   })
 })
