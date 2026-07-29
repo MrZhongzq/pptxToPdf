@@ -1,7 +1,11 @@
 import { useState } from 'react'
 import {
   ApiError,
+  downloadConcurrently,
+  getDownloadSize,
   preflightDownload,
+  saveBlob,
+  shouldDownloadConcurrently,
   triggerNativeDownload,
   type TaskDto,
 } from '../lib/api'
@@ -46,13 +50,35 @@ export function TaskCard({ taskId }: { taskId: string }) {
   const { task, pollingTimedOut } = useTaskPolling(taskId)
   const [downloadError, setDownloadError] = useState<string | null>(null)
   const [checking, setChecking] = useState(false)
+  const [downloadPct, setDownloadPct] = useState<number | null>(null)
 
   async function handleDownload() {
     if (!task) return
     setDownloadError(null)
     setChecking(true)
+    setDownloadPct(null)
     try {
       await preflightDownload(task.task_id)
+
+      const total = await getDownloadSize(task.task_id)
+      if (shouldDownloadConcurrently(total)) {
+        try {
+          const blob = await downloadConcurrently(task.task_id, total as number, (p) =>
+            setDownloadPct(Math.round((p.loaded / p.total) * 100)),
+          )
+          const stem = task.original_filename.replace(/\.pptx$/i, '')
+          saveBlob(blob, `${stem}.pdf`)
+          return
+        } catch {
+          // 任一分块失败就整体退回原生下载，且不打扰用户。
+          //
+          // 这看似违反项目铁律「绝不静默回退」，但那条约束的是**转换引擎
+          // 的选择**——用户显式选了 Graph 就不能偷偷用 LibreOffice，因为
+          // 两者的产出保真度不同。下载是幂等的字节搬运，两条路径产出完全
+          // 相同的文件，回退对用户没有任何可感知的差异，报错反而是噪音。
+          setDownloadPct(null)
+        }
+      }
       triggerNativeDownload(task.task_id)
     } catch (err) {
       setDownloadError(
@@ -64,6 +90,7 @@ export function TaskCard({ taskId }: { taskId: string }) {
       )
     } finally {
       setChecking(false)
+      setDownloadPct(null)
     }
   }
 
@@ -237,7 +264,11 @@ export function TaskCard({ taskId }: { taskId: string }) {
           disabled={checking}
           style={{ marginTop: 'var(--space-3)' }}
         >
-          {checking ? '准备中…' : '下载 PDF'}
+          {downloadPct !== null
+            ? `下载中 ${downloadPct}%`
+            : checking
+              ? '准备中…'
+              : '下载 PDF'}
         </button>
       )}
 
