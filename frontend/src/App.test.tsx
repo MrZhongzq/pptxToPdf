@@ -597,6 +597,46 @@ describe('App 覆盖已有 ready 任务前的确认——异步窗口（复审 I
     expect(screen.getByRole('button', { name: /Microsoft Graph/ })).not.toBeDisabled()
   })
 
+  it('走「改用 LibreOffice 并继续」飞行期间：ReadyCard 的「开始转换」按钮与引擎面板必须同时被禁用（复审 Important-2）', async () => {
+    // 复审变异④：删掉 ReadyCard disabled 表达式里的 startingReadyTask，
+    // 96 条测试全绿，零检出——上一轮报告误称这条改动"包含在 Important-1
+    // 的测试里一并验证"，被证伪：Important-1 的测试断言的是"最终结果
+    // 正确"，从不检查飞行期间按钮是不是可点，两者是不同的断言维度。
+    //
+    // 这条守护承重的不只是"重复入队"：readyGraphRisk 会在
+    // setEngine('libreoffice') 生效的下一次渲染立刻变 'none'，风险横幅
+    // 连同它的 disabled 一起消失，但这次 handleStart 不经过 ReadyCard
+    // 自己的 onStart，ReadyCard 内部的 starting 状态从未被置位。没有
+    // startingReadyTask 这道守护，飞行期间「开始转换」与引擎面板完全
+    // 可点——用户能在这个窗口把引擎切回 Graph，兑现的文件却仍按飞行中
+    // 那次 handleStart 已经传入的 libreoffice 传出去，且不告知用户，
+    // 直接踩"绝不静默回退"这条铁律。
+    mocks.uploadFile.mockResolvedValueOnce({ taskId: 'T1' })
+    const start = deferred<{ taskId: string }>()
+    mocks.startTask.mockReturnValue(start.promise)
+
+    render(<App />)
+    await waitFor(() => expect(mocks.getCapacityConfig).toHaveBeenCalled())
+    chooseFile(fileOfSize(50 * MIB, 'deck.pptx'))
+    await screen.findByText('deck.pptx')
+
+    fireEvent.click(screen.getByRole('button', { name: /Microsoft Graph/ }))
+    const switchBtn = await screen.findByRole('button', { name: /改用 LibreOffice/ })
+    fireEvent.click(switchBtn)
+    await waitFor(() => expect(mocks.startTask).toHaveBeenCalled())
+
+    // 飞行期间：ReadyCard 的「开始转换」按钮必须被禁用……
+    expect(screen.getByRole('button', { name: '开始转换' })).toBeDisabled()
+    // ……引擎面板（同一个 disabled 也传给了 ReadyCard 内部的
+    // ConversionOptionsPanel）必须一并被禁用，用户不能在这个窗口把
+    // 引擎切回 Graph。
+    expect(screen.getByRole('button', { name: /Microsoft Graph/ })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /^LibreOffice/ })).toBeDisabled()
+
+    start.resolve({} as { taskId: string })
+    await waitFor(() => expect(screen.getByTestId('task-ids')).toHaveTextContent('T1'))
+  })
+
   it('start 请求在飞时选中 B，start 以 409 TASK_ALREADY_STARTED 拒绝：B 仍必须被兑现，不能残留（复审 Minor-1）', async () => {
     // 复审做了个变异：只把 409/410 两条分支改回 setReadyTask(null)、保留
     // 成功路径的 helper——93 条测试全绿，零检出。这条测试补上这个接线
