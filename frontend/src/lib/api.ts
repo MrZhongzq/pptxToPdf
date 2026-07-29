@@ -218,3 +218,124 @@ export function triggerNativeDownload(taskId: string): void {
   link.click()
   link.remove()
 }
+
+// ---- 六期：账号 ----
+
+export interface UserDto {
+  user_id: string
+  username: string
+  email: string
+  role: 'admin' | 'user'
+  status: 'active' | 'suspended'
+  created_at: string
+}
+
+export async function login(username: string, password: string): Promise<UserDto> {
+  const resp = await fetch('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  })
+  return parse<UserDto>(resp)
+}
+
+export async function logout(): Promise<void> {
+  await fetch('/api/auth/logout', { method: 'POST' })
+}
+
+/**
+ * 当前登录用户，未登录返回 null。
+ *
+ * 未登录是完全正常的状态（站点对匿名访客可用，只有 Graph 通道要求
+ * 登录），所以后端用 200 + null 而不是 401 表达——用 401 会让浏览器
+ * 控制台常态化地红一片，也会诱使这里把「正常的未登录」和「会话过期」
+ * 写成同一条错误分支。
+ */
+export async function getMe(): Promise<UserDto | null> {
+  const resp = await fetch('/api/auth/me')
+  if (!resp.ok) return null
+  return (await resp.json()) as UserDto | null
+}
+
+// ---- 六期：并发分块下载 ----
+
+/** 小于这个体积不值得并发——几次握手的开销就吃掉了并行的收益。 */
+const CONCURRENT_MIN_BYTES = 4 * 1024 * 1024
+/**
+ * 超过这个体积退回原生下载。并发必须先把整份 PDF 攒进内存才能拼成
+ * Blob，而原生下载是流式的、不占页面内存。几百 MB 的产出宁可慢一点
+ * 也不能让标签页 OOM。
+ */
+const CONCURRENT_MAX_BYTES = 200 * 1024 * 1024
+const CONCURRENCY = 4
+
+export interface DownloadProgress {
+  loaded: number
+  total: number
+}
+
+/**
+ * 并发分块下载，返回 Blob。后端的 FileResponse（Starlette）原生支持
+ * Range 与 206 Partial Content，不需要额外端点。
+ *
+ * 相比原生下载多了一件事：进度可见。原生下载对大文件只有浏览器自己的
+ * 进度条，页面上看不到，用户常以为按钮没反应。
+ */
+export async function downloadConcurrently(
+  taskId: string,
+  totalBytes: number,
+  onProgress?: (p: DownloadProgress) => void,
+): Promise<Blob> {
+  const url = downloadUrl(taskId)
+  const chunkSize = Math.ceil(totalBytes / CONCURRENCY)
+  const ranges: Array<[number, number]> = []
+  for (let start = 0; start < totalBytes; start += chunkSize) {
+    ranges.push([start, Math.min(start + chunkSize, totalBytes) - 1])
+  }
+
+  let loaded = 0
+  const parts = await Promise.all(
+    ranges.map(async ([start, end]) => {
+      const resp = await fetch(url, { headers: { Range: `bytes=${start}-${end}` } })
+      if (resp.status !== 206) {
+        throw new Error(`服务端未按 Range 响应（HTTP ${resp.status}）`)
+      }
+      const buf = await resp.arrayBuffer()
+      loaded += buf.byteLength
+      onProgress?.({ loaded, total: totalBytes })
+      return buf
+    }),
+  )
+  return new Blob(parts, { type: 'application/pdf' })
+}
+
+/**
+ * 取下载体积。返回 null 表示拿不到（服务端没给 Content-Length），
+ * 调用方据此退回原生下载。
+ */
+export async function getDownloadSize(taskId: string): Promise<number | null> {
+  const head = await fetch(downloadUrl(taskId), { method: 'HEAD' })
+  if (!head.ok) return null
+  const len = head.headers.get('content-length')
+  if (!len) return null
+  const n = Number(len)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+export function shouldDownloadConcurrently(totalBytes: number | null): boolean {
+  if (totalBytes === null) return false
+  return totalBytes >= CONCURRENT_MIN_BYTES && totalBytes <= CONCURRENT_MAX_BYTES
+}
+
+/** 把 Blob 存成文件。文件名由调用方给——Blob 没有服务端的 Content-Disposition。 */
+export function saveBlob(blob: Blob, filename: string): void {
+  const href = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = href
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  // 立刻 revoke 会让 Firefox 偶发拿不到内容，延后一拍
+  setTimeout(() => URL.revokeObjectURL(href), 10_000)
+}

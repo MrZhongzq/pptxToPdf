@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { ConversionOptionsPanel } from './components/ConversionOptions'
+import { UserMenu } from './components/UserMenu'
 import { ReadyCard } from './components/ReadyCard'
 import { TaskList } from './components/TaskList'
 import { UploadDropzone } from './components/UploadDropzone'
@@ -12,6 +13,7 @@ import {
   type CapacityConfig,
   type ConversionOptions,
   type EngineName,
+  type UserDto,
 } from './lib/api'
 import { assessGraphRisk, GRAPH_RISK_MESSAGE, type GraphRisk } from './lib/graphCapacity'
 import {
@@ -66,6 +68,7 @@ function UploadPage() {
   // 拿它做上传前拦截。
   const [capacity, setCapacity] = useState<CapacityConfig | null>(null)
   // 五期两段式上传：传完先停在这里，等用户点「开始转换」，不直接入队。
+  const [currentUser, setCurrentUser] = useState<UserDto | null>(null)
   const [readyTask, setReadyTask] = useState<ReadyTask | null>(null)
   // 复审 Important：UploadDropzone 在有 readyTask 时依旧照常可点可拖，
   // 用户传完 A 去泡咖啡、回来传 B 是完全正常的操作路径，不是多标签页
@@ -323,11 +326,16 @@ function UploadPage() {
 
   return (
     <div className="layout">
-      <header className="page-head">
-        <h1 className="page-title">pptx → PDF</h1>
-        <span className="page-sub">
-          转成能直接导入 GoodNotes / OneNote 的 PDF
-        </span>
+      <header className="page-head" style={{ position: 'relative' }}>
+        <div>
+          <h1 className="page-title">pptx → PDF</h1>
+          <span className="page-sub">
+            转成能直接导入 GoodNotes / OneNote 的 PDF
+          </span>
+        </div>
+        <div style={{ position: 'absolute', top: 0, right: 0 }}>
+          <UserMenu onUserChange={setCurrentUser} />
+        </div>
       </header>
 
       <div className="col">
@@ -489,6 +497,7 @@ function UploadPage() {
             options={options}
             onOptionsChange={setOptions}
             disabled={uploading || awaitingRiskDecision}
+            loggedIn={currentUser !== null}
           />
         )}
       </div>

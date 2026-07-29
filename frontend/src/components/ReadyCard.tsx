@@ -17,6 +17,8 @@ interface Props {
   /** 容量预判待确认时由 App 传入，锁住引擎/选项与开始按钮，语义与
    *  ConversionOptionsPanel 自己的 disabled 一致。 */
   disabled?: boolean
+  /** 未登录时 Graph 不可选，透传给 ConversionOptionsPanel。 */
+  loggedIn?: boolean
 }
 
 export function ReadyCard({
@@ -28,6 +30,7 @@ export function ReadyCard({
   onOptionsChange,
   onStart,
   disabled = false,
+  loggedIn = true,
 }: Props) {
   // 用户原话「有时候手没那么快」——开始转换前留出改引擎/选项的窗口，这个
   // 组件存在的全部理由。starting 只锁按钮本身，不锁上面的选择面板之外的
@@ -69,6 +72,7 @@ export function ReadyCard({
 
       <div style={{ marginTop: 'var(--space-4)' }}>
         <ConversionOptionsPanel
+          loggedIn={loggedIn}
           engine={engine}
           onEngineChange={onEngineChange}
           options={options}

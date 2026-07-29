@@ -14,13 +14,19 @@ const CAPACITY: CapacityConfig = {
 
 const mocks = vi.hoisted(() => ({
   getCapacityConfig: vi.fn(),
+  getMe: vi.fn(),
   uploadFile: vi.fn(),
   startTask: vi.fn(),
 }))
 
 vi.mock('./lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./lib/api')>()
-  return { ...actual, getCapacityConfig: mocks.getCapacityConfig, startTask: mocks.startTask }
+  return {
+    ...actual,
+    getCapacityConfig: mocks.getCapacityConfig,
+    startTask: mocks.startTask,
+    getMe: mocks.getMe,
+  }
 })
 
 vi.mock('./lib/uploadClient', async (importOriginal) => {
@@ -55,6 +61,16 @@ function chooseFile(file: File) {
 describe('App 上传前的容量启发式预判与确认时机', () => {
   beforeEach(() => {
     mocks.getCapacityConfig.mockReset().mockResolvedValue(CAPACITY)
+    // 六期起 Graph 通道要求登录，未登录时那个选项是灰的。本文件的用例
+    // 大量依赖「用户选了 Graph」这个前提，所以默认按已登录跑。
+    mocks.getMe.mockReset().mockResolvedValue({
+      user_id: 'u1',
+      username: 'tester',
+      email: 't@example.com',
+      role: 'user',
+      status: 'active',
+      created_at: '2026-07-29T00:00:00Z',
+    })
     // uploadFile 挂起不 resolve，模拟"上传正在进行"的窗口，方便断言
     // 「是否已经发起过」而不受上传完成时序干扰。
     mocks.uploadFile.mockReset().mockReturnValue(new Promise(() => {}))
@@ -237,6 +253,16 @@ describe('App 上传前的容量启发式预判与确认时机', () => {
 describe('App 两段式上传：ReadyCard 与「开始转换」', () => {
   beforeEach(() => {
     mocks.getCapacityConfig.mockReset().mockResolvedValue(CAPACITY)
+    // 六期起 Graph 通道要求登录，未登录时那个选项是灰的。本文件的用例
+    // 大量依赖「用户选了 Graph」这个前提，所以默认按已登录跑。
+    mocks.getMe.mockReset().mockResolvedValue({
+      user_id: 'u1',
+      username: 'tester',
+      email: 't@example.com',
+      role: 'user',
+      status: 'active',
+      created_at: '2026-07-29T00:00:00Z',
+    })
     mocks.uploadFile.mockReset().mockResolvedValue({ taskId: 'T1' })
     mocks.startTask.mockReset()
   })
@@ -323,6 +349,16 @@ describe('App 两段式上传：ReadyCard 与「开始转换」', () => {
 describe('App 覆盖已有 ready 任务前的确认（复审 Important：UploadDropzone 传完一直可点可拖，用户中途拖入第二个文件是正常操作路径，不是边角场景）', () => {
   beforeEach(() => {
     mocks.getCapacityConfig.mockReset().mockResolvedValue(CAPACITY)
+    // 六期起 Graph 通道要求登录，未登录时那个选项是灰的。本文件的用例
+    // 大量依赖「用户选了 Graph」这个前提，所以默认按已登录跑。
+    mocks.getMe.mockReset().mockResolvedValue({
+      user_id: 'u1',
+      username: 'tester',
+      email: 't@example.com',
+      role: 'user',
+      status: 'active',
+      created_at: '2026-07-29T00:00:00Z',
+    })
     mocks.uploadFile.mockReset().mockResolvedValue({ taskId: 'T1' })
     mocks.startTask.mockReset()
   })
@@ -457,6 +493,16 @@ describe('App 覆盖已有 ready 任务前的确认——异步窗口（复审 I
   // disabled 从一开始就不适用。
   beforeEach(() => {
     mocks.getCapacityConfig.mockReset().mockResolvedValue(CAPACITY)
+    // 六期起 Graph 通道要求登录，未登录时那个选项是灰的。本文件的用例
+    // 大量依赖「用户选了 Graph」这个前提，所以默认按已登录跑。
+    mocks.getMe.mockReset().mockResolvedValue({
+      user_id: 'u1',
+      username: 'tester',
+      email: 't@example.com',
+      role: 'user',
+      status: 'active',
+      created_at: '2026-07-29T00:00:00Z',
+    })
     mocks.uploadFile.mockReset()
     mocks.startTask.mockReset()
   })

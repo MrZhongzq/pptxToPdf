@@ -6,6 +6,8 @@ interface Props {
   options: ConversionOptions
   onOptionsChange: (options: ConversionOptions) => void
   disabled?: boolean
+  /** 未登录时 Graph 通道不可选。前端置灰只是体验，后端 start_task 才是边界。 */
+  loggedIn?: boolean
 }
 
 const ENGINES: {
@@ -53,6 +55,7 @@ export function ConversionOptionsPanel({
   options,
   onOptionsChange,
   disabled = false,
+  loggedIn = true,
 }: Props) {
   return (
     <div className="card" style={{ padding: 'var(--space-4)' }}>
@@ -65,7 +68,12 @@ export function ConversionOptionsPanel({
               type="button"
               className="segment"
               aria-pressed={engine === e.value}
-              disabled={disabled}
+              disabled={disabled || (e.value === 'graph' && !loggedIn)}
+              title={
+                e.value === 'graph' && !loggedIn
+                  ? 'Microsoft Graph 通道需要登录后使用'
+                  : undefined
+              }
               onClick={() => onEngineChange(e.value)}
             >
               <span className="segment-title">{e.title}</span>
