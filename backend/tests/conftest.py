@@ -29,6 +29,7 @@ def _isolate_app_db(tmp_path, monkeypatch):
     import app.db as db_module
     import app.services.pipeline as pipeline_module
     import app.services.retention as retention_module
+    import app.services.shard_pipeline as shard_pipeline_module
 
     test_engine = create_engine(
         f"sqlite:///{tmp_path / 'isolated.db'}",
@@ -46,6 +47,13 @@ def _isolate_app_db(tmp_path, monkeypatch):
     # 顶层 `from app.db import SessionLocal`，同一个理由：只 patch
     # db_module.SessionLocal 改不到这份早绑定的引用，得单独同步。
     monkeypatch.setattr(retention_module, "SessionLocal", test_session_local)
+    # GraphEngine 不再需要在这里补丁：Task 8 把它的凭证读取移到了
+    # engines/get_engine()，GraphEngine 本身已经完全不碰 SessionLocal
+    # （模块里已经没有这个名字，补丁会直接 AttributeError）。
+    # 三期的分片流水线同样在模块顶层 `from app.db import SessionLocal`——
+    # convert_shard / merge_shards 是 RQ 子 job 的入口，各自自开会话，
+    # 不补这一条它们会静默连到开发者本机真实库。
+    monkeypatch.setattr(shard_pipeline_module, "SessionLocal", test_session_local)
 
     yield
 
@@ -59,7 +67,11 @@ def _force_placeholder_engine(monkeypatch):
     真实转换在测试机上验证，见计划的完成判据。"""
     monkeypatch.setattr(
         "app.services.pipeline.select_engine",
-        lambda meta, size_bytes, requested=None: "placeholder",
+        # graph_configured= 是 Task 8 审查后新增的关键字参数（I1）：真实
+        # select_engine 现在要求调用方传它，pipeline.run_task 总是会传，
+        # 这个假替身必须照单全收，否则不是这里要测的东西也会被这个
+        # 签名不匹配的 TypeError 挡住。
+        lambda meta, size_bytes, requested=None, graph_configured=False: "placeholder",
     )
 
 

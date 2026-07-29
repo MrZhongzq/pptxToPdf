@@ -532,10 +532,61 @@
           }
         }
       }
+    },
+    "/api/config/capacity": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Get Capacity",
+        "description": "只读，只吐容量相关的数字，供前端在选 Graph 引擎时做上传前的启发式\n预判——避免用户白传几百 MB 才在分片规划阶段吃 422，见\napp.config.settings.graph_max_shards 的文档字符串。\n\n值现读 settings 单例（不是端点里抄一份常量），四期上真实租户后回调\nsettings 里的倍率/上限时，本端点自动跟着变，不需要同步改这里。\n绝不返回任何凭证/配置状态（如 Graph 是否已配置）——那是四期管理页的\n范畴，也是信息泄露面。",
+        "operationId": "get_capacity_api_config_capacity_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapacityConfig"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
     "schemas": {
+      "CapacityConfig": {
+        "properties": {
+          "max_file_size": {
+            "type": "integer",
+            "title": "Max File Size"
+          },
+          "graph_max_shards": {
+            "type": "integer",
+            "title": "Graph Max Shards"
+          },
+          "graph_max_shard_bytes": {
+            "type": "integer",
+            "title": "Graph Max Shard Bytes"
+          },
+          "graph_max_merge_bytes": {
+            "type": "integer",
+            "title": "Graph Max Merge Bytes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "max_file_size",
+          "graph_max_shards",
+          "graph_max_shard_bytes",
+          "graph_max_merge_bytes"
+        ],
+        "title": "CapacityConfig",
+        "description": "容量相关的只读配置，供前端在选 Graph 引擎时做上传前的启发式预判。\n\n只吐这几个纯数字，不吐任何凭证/配置状态（如 Graph 是否已配置）——那属于\n四期管理页范畴，也是信息泄露面，这轮不碰。四个字段直接来自\napp.config.settings 单例，端点里不另存一份，避免和后端实际配置漂移。"
+      },
       "ChunkAck": {
         "properties": {
           "index": {
@@ -618,7 +669,8 @@
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 32
+                "maxLength": 32,
+                "minLength": 1
               },
               {
                 "type": "null"
@@ -769,6 +821,22 @@
           },
           "options": {
             "$ref": "#/components/schemas/ConversionOptions"
+          },
+          "shard_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shard Total"
+          },
+          "shard_done": {
+            "type": "integer",
+            "title": "Shard Done",
+            "default": 0
           },
           "error_code": {
             "anyOf": [

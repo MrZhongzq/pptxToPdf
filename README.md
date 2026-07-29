@@ -2,7 +2,7 @@
 
 把课程 pptx 转成能直接导入 GoodNotes / OneNote 的 PDF。
 
-**当前进度：二期（LibreOffice 引擎）。** 一期的占位 PDF 已被真实转换取代。
+**当前进度：三期（Microsoft Graph 引擎 + 转换切片合并）开发完成，本机可验证；按计划暂不部署，审核通过后再开四期。** 一期的占位 PDF 已被二期真实转换取代。
 
 ## 保真度边界
 
@@ -18,6 +18,79 @@ pptx 只存字体名不存字形，字体缺失时渲染端会替换，替换字
 要消除中文偏差，把你自己 Windows 的 `C:\Windows\Fonts` 里的等线、微软雅黑
 拷进宿主机的 `fonts-extra/` 目录，容器启动时会自动加载并优先使用。
 
+## Graph 通道（三期）
+
+Microsoft Graph 用微软自己的渲染服务转换，保真度是天花板，但它有硬限制：
+约 100 页、约 50MB、45 秒同步超时，且没有异步 API。超出限制的文件会被
+切分成多片分别转换再合并（`12 × 40MiB` = 480MiB 是分片 **pptx 产物**总量
+的上界，不是「保证能过」的原文件体积——每片各自还带一份 masters/主题/
+字体等共享部分，实际能接受的原文件上限严格小于 480MiB；合并预算另外
+卡 240MiB，见下方「关键配置」表）。自动路由只覆盖小文件（≤80 页且
+≤40MB）；更大的文件要显式在上传时选择 Graph 引擎才会走切片路径，因为
+切片意味着数十次 HTTP 往返和几分钟等待，不适合当默认行为。
+
+**三期本机可验证，但没有部署、也没有可用的凭证配置入口。** 用户可以在
+上传时显式选择 `graph` 引擎并跑通全部单元/集成测试，但生产部署里，Graph
+凭证的写入路径（`app.services.graph_credentials.save_credentials`）只有
+四期的管理页面会调用；三期没有任何路由把 tenant_id / client_id /
+client_secret 写进数据库。也就是说：**在四期管理页面上线之前，即便部署了
+三期，选择 Graph 引擎的任务也会稳定收到 `GRAPH_NOT_CONFIGURED`（503）**——
+这是预期行为，不是 bug，`select_engine` 的 `auto` 分支因此也会一直选
+`libreoffice`（见 `app/services/engine_router.py`）。
+
+**Azure 凭证不写在 `.env` 里。** `.env` 只放 `PPTX2PDF_SECRET_KEY`——解密
+数据库里凭证用的 Fernet 主密钥；tenant_id / client_id / client_secret /
+SharePoint site_id 全部加密存在 `graph_credentials` 表，由四期的管理页面
+写入。不要去 `.env` 里找 tenant_id，那里没有也不应该有。
+
+四期管理页面上线后，配置步骤会是：
+
+1. 注册 Azure AD 应用，拿到 tenant_id / client_id / client_secret
+2. 授予应用权限并管理员同意
+3. 建一个专用 SharePoint 站点作为中转库
+4. 生成 Fernet 密钥并写入 `PPTX2PDF_SECRET_KEY`：
+   ```bash
+   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+   ```
+5. **改完 `.env` 必须 `docker compose up -d` 重启 api 与 worker 容器**——
+   `settings = Settings()` 是模块级单例，只在进程启动时读一次环境变量，
+   运行中的容器不会热加载 `.env`。漏了这一步会看到「未配置
+   `PPTX2PDF_SECRET_KEY`，Graph 引擎不可用」，容易误以为是密钥格式写错，
+   反复检查 `.env` 却找不到问题——其实只是容器还没重启
+6. 重启生效后，在管理页面填写 Azure 凭证，落库前用上一步的密钥加密
+
+**密钥丢失等于凭证全废**——数据库里的 client secret 再也解不开，只能去
+Azure 重新生成。请把 `PPTX2PDF_SECRET_KEY` 与 `.env` 一起妥善备份；换密钥
+后旧凭证会在下次读取时报「Graph 凭证无法解密」。
+
+**合并内存预算的由来**：`graph_max_merge_bytes`（240MiB）基于 tracemalloc
+（不是 RSS）测得的 3.01× 内存倍率——4 片共 54.1MB 的图片密集型 PDF，
+tracemalloc 测得峰值 162.9MB。`merge_pdfs` 把所有分片一次性载入同一个
+`PdfWriter`（pypdf 没有真正的流式合并 API），峰值随分片 PDF 总字节而不是
+分片数增长，所以单独卡这一条而不是只卡分片数。tracemalloc 不含解释器
+基线与分配器碎片，真实 RSS 更高——**四期上真实租户后应实测 RSS 再回调
+这个值**（以及下方 worker 的内存限额）。
+
+**权限的已知不确定性**：清理中转文件用的 `permanentDelete`，文档标注需要
+`Files.ReadWrite.All` 或 `Sites.ReadWrite.All`（租户级宽权限），与最小权限
+的 `Sites.Selected` 可能冲突；社区也有报告称它有时仍把文件送进回收站。
+代码里做了降级（403 时退回普通 DELETE 并告警），四期实测后再收敛。
+中转文件若进了回收站，记得定期清空——两级回收站仍占 SharePoint 配额。
+
+**分片目录的保留策略**：`purge_expired_shards()` 有两个触发点——
+`pipeline.py` 的 `finally`（每次任务结束顺带清一次，惰性）和 `main.py`
+的启动钩子（服务重启时补一次，覆盖 worker 被 OOM killer 杀掉、没有
+`finally` 跑过的残骸）。它的安全性依赖一条不变量：
+`OUTPUT_TTL_HOURS × 3600 > CONVERT_TIMEOUT_MAX_S`（默认 86400 > 1800，
+48 倍余量）。**把 `PPTX2PDF_OUTPUT_TTL_HOURS` 调得比默认小很多之前，先确认
+这条不变量还成立**——它纯按目录 mtime 判断，不查任务表，调太小会把仍在
+转换中任务的分片目录当过期垃圾删掉。
+
+**只读容量端点**：`GET /api/config/capacity` 返回 `max_file_size` /
+`graph_max_shards` / `graph_max_shard_bytes` / `graph_max_merge_bytes`
+四个数字，供前端在用户选择 Graph 引擎时做上传前的容量预判，避免白传几百
+MB 才在分片规划阶段吃 422。不返回任何凭证状态。
+
 ## 部署
 
 需要 Docker 与 docker-compose。目标平台 ARM64 或 x86_64 均可。
@@ -32,6 +105,14 @@ mkdir -p fonts-extra      # 可选：把 Office 字体放进去
 docker compose up -d --build
 docker compose logs -f
 ```
+
+`cp .env.example .env` 只对全新安装成立。**已有部署 `git pull` 之后不会
+自动获得新增的环境变量**——`.env` 是 `.gitignore` 掉的持久文件，`git pull`
+不碰它。升级前跑一下 `diff .env .env.example`，把 diff 里只在
+`.env.example` 出现的新键手动补进 `.env`（当前仓库自己的 `.env` 和
+`.env.example` 之间就漏了好几个键，包括二期就加入却一直没同步的
+`PPTX2PDF_CONVERT_TIMEOUT_PER_MB_S`）。漏配不会报错、不会有任何日志
+提示，只会静默落回代码里的默认值。
 
 起来之后访问 `http://<主机>:18993`。四个容器：`frontend`（nginx，唯一对外端口）、`api`、`worker` ×2、`redis`。
 
@@ -56,8 +137,18 @@ sudo netfilter-persistent save    # 没有这个命令就 apt install iptables-p
 | `WORKER_REPLICAS` | 2 | 并发转换数。4 核机器建议 2，留 1 核给上传 |
 | `PPTX2PDF_CONVERT_TIMEOUT_PER_SLIDE_S` | 4 | 每页超时系数。ARM 机器偏慢，转换总超时 = `min(max(180, 页数×4 + 体积MB×2), 1800)` 秒 |
 | `PPTX2PDF_CONVERT_TIMEOUT_PER_MB_S` | 2 | 每 MB 超时系数，覆盖「页数少但内嵌大量图片/视频」的重课件 |
-| `PPTX2PDF_OUTPUT_TTL_HOURS` | 24 | 输出 PDF 保留时长，过期自动清理 |
+| `PPTX2PDF_OUTPUT_TTL_HOURS` | 24 | 输出 PDF 保留时长，过期自动清理；也是三期分片目录残骸清理的安全边界，见下方 Graph 通道一节 |
 | `PPTX2PDF_STALE_TASK_MINUTES` | 45 | 孤儿任务回收阈值，必须大于最大转换超时 |
+| `PPTX2PDF_MAX_FILE_SIZE` | 629145600（600MiB） | 单次上传允许的最大原文件体积。LibreOffice 路径不受此限约束；Graph 路径的实际可用上界更低，见下一行 |
+| `PPTX2PDF_SECRET_KEY` | 空 | Graph 凭证的 Fernet 主密钥。未配置则 Graph 引擎不可用 |
+| `PPTX2PDF_GRAPH_MAX_PAGES_PER_SHARD` | 80 | 每片页数上限，对 Graph 的 100 页硬限留余量 |
+| `PPTX2PDF_GRAPH_MAX_SHARD_BYTES` | 41943040（40MiB） | 每片体积上限，对 Graph 实测 ~50MB 失败点留余量 |
+| `PPTX2PDF_GRAPH_MAX_SHARDS` | 12 | 分片数上限。本值 × `GRAPH_MAX_SHARD_BYTES` = 480MiB 是分片产物总量的上界（不是保证能过的原文件体积，见上方 Graph 通道一节），且低于 `PPTX2PDF_MAX_FILE_SIZE`（600MiB）——这是 Graph 硬限的固有后果，不要调大本值去对齐 |
+| `PPTX2PDF_GRAPH_MAX_MERGE_BYTES` | 251658240（240MiB） | 合并阶段各分片 PDF 总字节上限，基于 tracemalloc（非 RSS）测得的 3.01× 倍率算出，详见下方 Graph 通道一节 |
+| `PPTX2PDF_GRAPH_REQUEST_TIMEOUT_S` | 50 | 单次 Graph 转换请求超时，Graph 自身约 45 秒硬超时 + 5 秒网络余量 |
+| `PPTX2PDF_GRAPH_MAX_RETRIES` | 3 | Graph 请求失败重试次数（429/5xx 退避重试）|
+
+worker 单容器内存上限硬编码在 `docker-compose.yml`（三期从 3G 提到 8G），**不通过 `.env` 控制**。这是保守取值，不是从测得的 RSS 反推的结论——上面 `GRAPH_MAX_MERGE_BYTES` 那行的 3.01× 倍率来自 tracemalloc（不含解释器基线与分配器碎片，真实 RSS 更高，且推算出的堆峰值约 720MB，原有的 3G 本就有约 4× 余量）；8G 是「提高限额 + 流式切片」两手一起上的既定方案，四期上真实租户后应实测 RSS 再回调。24GB 机器上 2 个 worker × 8G = 16G，留 8G 给 api、redis 与系统；换机器规格需要同步改 `docker-compose.yml` 里的 `memory:` 值。
 
 ### 排查：故障注入开关
 
@@ -73,13 +164,13 @@ sudo netfilter-persistent save    # 没有这个命令就 apt install iptables-p
 
 ## 开发
 
-后端（一期的 49 个测试是回归网，二期不新增测试）：
+后端：
 
 ```bash
 cd backend
 python -m venv .venv
 .venv/Scripts/pip install -r requirements-dev.txt   # Linux 用 .venv/bin/
-.venv/Scripts/python -m pytest -q                   # 期望 49 passed
+.venv/Scripts/python -m pytest -q                   # 期望 225 passed
 ```
 
 前端：
@@ -87,7 +178,7 @@ python -m venv .venv
 ```bash
 cd frontend
 npm install
-npm test          # 期望 19 passed
+npm test          # 期望 58 passed
 npm run dev       # 开发服务器在 5173，/api 已代理到 8000
 ```
 
@@ -104,14 +195,20 @@ npm run dev       # 开发服务器在 5173，/api 已代理到 8000
 - 转换结果只保留 24 小时（`PPTX2PDF_OUTPUT_TTL_HOURS`），过期自动清理，请
   及时下载；过期后再请求下载会返回 `RESULT_EXPIRED`，需要重新上传。原始
   pptx 在转换结束后立即删除，不论成败
+- Graph 通道（三期）已实现且测试覆盖，但没有凭证配置入口——四期管理页面
+  上线前，选 Graph 引擎的任务会稳定报 `GRAPH_NOT_CONFIGURED`，详见上方
+  「Graph 通道（三期）」一节
+- 分片转换的中间产物体积是原文件的两倍（分片 pptx + 分片 PDF），汇总后
+  立即清理；worker 异常退出时残留的分片目录由保留策略按
+  `PPTX2PDF_OUTPUT_TTL_HOURS` 回收
 
 ## 分期
 
 | 期 | 内容 | 状态 |
 |---|---|---|
 | 一 | 前端三端 UI + 分片上传全链路 + 元信息解析 + 占位 PDF | 完成 |
-| 二 | LibreOffice 引擎 + 容器化 + 队列 + 资源治理 | 进行中 |
-| 三 | Microsoft Graph 引擎（小文件高保真）+ 转换切片合并 | 未开始 |
-| 四 | 账号、配额、风控、管理面板 | 未开始 |
+| 二 | LibreOffice 引擎 + 容器化 + 队列 + 资源治理 | 完成 |
+| 三 | Microsoft Graph 引擎（小文件高保真）+ 转换切片合并 | 开发完成，未部署（审核通过后开四期） |
+| 四 | 账号、配额、风控、管理面板（含 Graph 凭证配置入口） | 未开始 |
 
 设计文档见 `docs/superpowers/specs/`，实施计划见 `docs/superpowers/plans/`。

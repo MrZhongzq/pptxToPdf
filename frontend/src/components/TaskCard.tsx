@@ -8,11 +8,17 @@ import {
 import { formatBytes } from '../lib/chunking'
 import { useTaskPolling } from '../hooks/useTaskPolling'
 
+// 必须覆盖 TaskDto['status'] 的每一个取值：后端的 status 是裸 str、API 原样
+// 吐出，这张表是唯一的兜底。少一个键就是 `STATUS[x].badge` 读 undefined，
+// 而仓库里没有 ErrorBoundary，React 未捕获的渲染异常会卸载整棵树。
+// Record<联合类型, …> 让漏键在 tsc 阶段就报错，TaskCard.test.tsx 再守一层运行时。
 const STATUS: Record<TaskDto['status'], { label: string; badge: string }> = {
   pending: { label: '排队中', badge: 'badge-neutral' },
   parsing: { label: '解析中', badge: 'badge-accent' },
   queued: { label: '等待转换', badge: 'badge-neutral' },
   converting: { label: '转换中', badge: 'badge-accent' },
+  // 三期分片路径专有：N 片各自转完之后合并回一份 PDF。
+  merging: { label: '合并中', badge: 'badge-accent' },
   done: { label: '完成', badge: 'badge-success' },
   failed: { label: '失败', badge: 'badge-danger' },
 }
@@ -89,9 +95,21 @@ export function TaskCard({ taskId }: { taskId: string }) {
     .filter(([, on]) => on)
     .map(([k]) => OPTION_LABEL[k] ?? k)
   const inFlight = !['done', 'failed'].includes(task.status)
+  // 分片任务：从一开始就要在 UX 上特殊显示，不能和普通任务长得一模一样
+  // 让用户干等——用户原话「只要不是静默让用户等 10 分钟就行」。
+  const sharded = task.shard_total !== null && task.shard_total > 0
+  const shardPct = sharded
+    ? Math.round((task.shard_done / (task.shard_total as number)) * 100)
+    : 0
 
   return (
-    <div className="card" style={{ padding: 'var(--space-4)' }}>
+    <div
+      className="card"
+      style={{
+        padding: 'var(--space-4)',
+        ...(sharded ? { borderLeft: '4px solid var(--c-notable)' } : null),
+      }}
+    >
       <div
         style={{
           display: 'flex',
@@ -142,20 +160,59 @@ export function TaskCard({ taskId }: { taskId: string }) {
       )}
 
       {inFlight && (
-        <div
-          className="sunken"
-          style={{ height: 3, marginTop: 'var(--space-3)', overflow: 'hidden' }}
-        >
+        <>
+          {sharded && (
+            <p
+              style={{
+                fontSize: 13,
+                color: 'var(--c-notable)',
+                marginTop: 'var(--space-3)',
+              }}
+            >
+              已完成 {task.shard_done} / {task.shard_total} 片
+            </p>
+          )}
           <div
+            className="sunken"
             style={{
-              width: '35%',
-              height: '100%',
-              background: 'var(--c-accent)',
-              borderRadius: 999,
-              animation: 'indeterminate 1.4s ease-in-out infinite',
+              height: 4,
+              marginTop: 'var(--space-2)',
+              overflow: 'hidden',
             }}
-          />
-        </div>
+          >
+            <div
+              style={
+                sharded
+                  ? shardPct > 0
+                    ? {
+                        width: `${shardPct}%`,
+                        height: '100%',
+                        background: 'var(--c-notable)',
+                        borderRadius: 999,
+                        transition: 'width 300ms ease',
+                      }
+                    : {
+                        // 第一片还没转完：shard_done=0 时若给静态 0% 宽度，
+                        // 用户会盯着一根纹丝不动的空槽看好几分钟，比普通
+                        // 任务的 indeterminate 动画更像"卡死"。保留动感，
+                        // 只是换成紫色，直到第一片真的转完再切到实际进度。
+                        width: '35%',
+                        height: '100%',
+                        background: 'var(--c-notable)',
+                        borderRadius: 999,
+                        animation: 'indeterminate 1.4s ease-in-out infinite',
+                      }
+                  : {
+                      width: '35%',
+                      height: '100%',
+                      background: 'var(--c-accent)',
+                      borderRadius: 999,
+                      animation: 'indeterminate 1.4s ease-in-out infinite',
+                    }
+              }
+            />
+          </div>
+        </>
       )}
 
       {task.status === 'failed' && (
