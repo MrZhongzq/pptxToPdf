@@ -1,15 +1,17 @@
 import json
 import logging
+import zipfile
 from datetime import datetime, timezone
 
 from app.config import settings
 from app.db import SessionLocal
-from app.errors import AppError, GraphNotConfigured
+from app.errors import AppError, GraphNotConfigured, PptxInvalidZip
 from app.models import Task
 from app.queue import enqueue_shards
 from app.services.engine_router import select_engine
 from app.services.engines import get_engine
 from app.services.graph_credentials import is_graph_configured
+from app.services.media_strip import strip_media
 from app.services.pptx_probe import probe
 from app.services.retention import (
     drop_original,
@@ -85,8 +87,30 @@ def run_task(task_id: str) -> None:
 
         try:
             _set_status(session, task, "parsing")
+            # 剥离内嵌媒体。必须在 probe 之前：PDF 放不了视频，而那些
+            # 字节会让 size_bytes 虚高、把本来单次能转的 deck 推进切片
+            # 路径甚至撞上分片上限。剥离后的文件覆盖原件，此后所有判断
+            # （size_bytes / needs_sharding / 切片 / 转换）都基于它。
+            #
+            # strip_media 内部直接 zipfile.ZipFile(src)，不像 probe() 那样
+            # 把 BadZipFile 归一成 PptxInvalidZip——顺序调换之后，一份根本
+            # 不是 zip 的上传会在这里先炸，裸的 BadZipFile 若不接住会被最外层
+            # `except Exception` 兜底成不知所云的 INTERNAL_ERROR，而不是
+            # probe() 原本给用户的 PPTX_INVALID_ZIP（422，可操作的错误码）。
+            try:
+                strip = strip_media(src)
+            except zipfile.BadZipFile as exc:
+                raise PptxInvalidZip(f"不是合法的 zip 容器: {exc}") from exc
+            if strip.stripped:
+                logger.info(
+                    "media stripped id=%s parts=%d %d -> %d bytes",
+                    task_id, strip.removed_parts, strip.bytes_before, strip.bytes_after,
+                )
             meta = probe(src)
             size_bytes = src.stat().st_size
+            # 剥离后的体积取代上传时记的原始体积——task.size_bytes 从这里
+            # 起是"参与转换判断的那个值"，不再是用户上传时的原始大小。
+            task.size_bytes = size_bytes
             task.slide_count = meta.slide_count
             task.slide_width_emu = meta.slide_width_emu
             task.slide_height_emu = meta.slide_height_emu
