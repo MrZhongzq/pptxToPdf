@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ConversionOptionsPanel } from './components/ConversionOptions'
 import { ReadyCard } from './components/ReadyCard'
 import { TaskList } from './components/TaskList'
@@ -75,6 +75,17 @@ function UploadPage() {
   // 被清除"，一样属于"绝不静默"要挡住的范围。这里存一下待确认的新文件，
   // 等用户明确选"继续上传"才真的丢弃旧的 ready 任务。
   const [pendingReplacementFile, setPendingReplacementFile] = useState<File | null>(null)
+  // 复审 Important（第二轮）：handleStart 里 setReadyTask(null) 发生在
+  // await startTask(...) 之后，这段异步窗口里 UploadDropzone 从未被禁用，
+  // 用户可以在窗口期间选中文件、让 pendingReplacementFile 从 null 变成
+  // 非空。handleStart 的 async 函数体是按"调用那一刻"的渲染闭包在跑的，
+  // await 恢复后再读闭包里的 pendingReplacementFile 拿到的还是调用时刻
+  // 的旧值（这一整个函数体不会因为后续 setState 而重新求值）——必须用
+  // ref 才能在 await 之后读到真正最新的值。
+  const pendingReplacementFileRef = useRef<File | null>(null)
+  useEffect(() => {
+    pendingReplacementFileRef.current = pendingReplacementFile
+  }, [pendingReplacementFile])
   // 只用来给风险确认横幅上的两个按钮做防抖——ReadyCard 自己的按钮已经
   // 用组件内部的 starting 挡过一次快速点击，但确认横幅是 App 直接渲染的，
   // 不经过 ReadyCard，没有那层保护，得单独补上。
@@ -131,54 +142,6 @@ function UploadPage() {
     }
   }
 
-  // 真正把 ready 任务送入队列。engine/options 单独传参而不是闭包读
-  // App 的 engine/options state——"仍然继续"/"改用 LibreOffice"这两个
-  // confirm 分支里，setEngine 还没来得及触发重渲染，闭包里的 engine 仍是
-  // 旧值，必须显式传当前要用的那个，跟四期 startUpload(file, engineToUse)
-  // 同一个理由。
-  const handleStart = async (engineToUse: EngineName, optionsToUse: ConversionOptions) => {
-    if (!readyTask) return
-    const taskId = readyTask.taskId
-    setStartingReadyTask(true)
-    setError(null)
-    try {
-      await startTask(taskId, engineToUse, optionsToUse)
-      setTaskIds((prev) => [taskId, ...prev])
-      setReadyTask(null)
-    } catch (err) {
-      if (err instanceof ApiError && err.code === 'TASK_ALREADY_STARTED') {
-        // 任务已经真的被启动过一次（比如另一个标签页抢先点了「开始转换」）
-        // ——它在正常转换，接上轮询才是对用户有用的恢复，不是当错误处理。
-        setTaskIds((prev) => [taskId, ...prev])
-        setReadyTask(null)
-      } else if (err instanceof ApiError && err.code === 'READY_EXPIRED') {
-        // ready 任务有 1 小时 TTL，原文件已经被回收——ReadyCard 停在原地
-        // 再点也没用，退回可以重新上传的状态。message 用后端已经写好的
-        // 原话（含具体 TTL 小时数），这里不重复拼一遍。
-        setReadyTask(null)
-        setError(err.message)
-      } else {
-        // 终审 M-4：这句"重试"对多数瞬时错误（网络故障等）成立——原文件
-        // 还在，ReadyCard 原样留着确实能直接重试。但对 503
-        // ENGINE_UNAVAILABLE 不成立：start_task 那条路径已经
-        // drop_original 并把任务标 failed（app/api/tasks.py），原文件
-        // 已经没了。用户看着 ReadyCard 再点一次「开始转换」，实际拿到的
-        // 是 409 TASK_ALREADY_STARTED——但任务真实状态是 failed，不是
-        // "已经在正常跑"，上面那个分支"接上轮询"的假设在这条路径下并
-        // 不成立。
-        setError(
-          err instanceof ApiError
-            ? `${err.code}：${err.message}`
-            : err instanceof Error
-              ? err.message
-              : '启动转换失败',
-        )
-      }
-    } finally {
-      setStartingReadyTask(false)
-    }
-  }
-
   // 选中文件后先评估风险、再决定要不要传——不能像之前那样先
   // setPendingFile 再同步进 uploadFile：uploadFile 在第一个 await 之前
   // 就已经发出 POST /api/uploads，等 React 把警告刷到屏幕上时上传其实
@@ -202,6 +165,82 @@ function UploadPage() {
     // ConversionOptionsPanel 锁死到再也切不了引擎。
     setPendingFile(null)
     void startUpload(file, engine)
+  }
+
+  // 复审 Important（第二轮）：readyTask 的清空点有三处（start 成功、
+  // TASK_ALREADY_STARTED 接入轮询、READY_EXPIRED 过期），全在 handleStart
+  // 的 await 之后。这三种情况共同点是——"是否要放弃当前 ready 任务"这个
+  // 问题都已经自行解决（成功启动了/已经在别处跑了/已经过期了，都不再
+  // 有"被放弃"的风险）。如果这时候 pendingReplacementFileRef 里还压着一个
+  // 用户在等待期间选中的文件，那个确认横幅问的问题已经不存在了，但用户
+  // 选那个文件的真实意图——"传它"——仍然存在，不能因为问题恰好消失就把
+  // 意图也一起吞掉。这里统一清空 readyTask 的同时，把压着的文件"兑现"：
+  // 直接送进 proceedWithFileSelection，跟用户自己点"继续上传"是同一条
+  // 路径，不另写一套。
+  //
+  // 只用 ref 不用闭包里的 pendingReplacementFile：handleStart 是在按钮
+  // 点击那一刻的渲染闭包里执行的，await 恢复后再读闭包变量拿到的是调用
+  // 时刻的旧值，不会跟着后续的 setPendingReplacementFile 变化——ref 才是
+  // 调用时刻之后仍然实时的那份。
+  const clearReadyTaskAndFulfillPendingReplacement = () => {
+    setReadyTask(null)
+    const pending = pendingReplacementFileRef.current
+    if (pending) {
+      setPendingReplacementFile(null)
+      proceedWithFileSelection(pending)
+    }
+  }
+
+  // 真正把 ready 任务送入队列。engine/options 单独传参而不是闭包读
+  // App 的 engine/options state——"仍然继续"/"改用 LibreOffice"这两个
+  // confirm 分支里，setEngine 还没来得及触发重渲染，闭包里的 engine 仍是
+  // 旧值，必须显式传当前要用的那个，跟四期 startUpload(file, engineToUse)
+  // 同一个理由。
+  const handleStart = async (engineToUse: EngineName, optionsToUse: ConversionOptions) => {
+    if (!readyTask) return
+    const taskId = readyTask.taskId
+    setStartingReadyTask(true)
+    setError(null)
+    try {
+      await startTask(taskId, engineToUse, optionsToUse)
+      setTaskIds((prev) => [taskId, ...prev])
+      clearReadyTaskAndFulfillPendingReplacement()
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'TASK_ALREADY_STARTED') {
+        // 任务已经真的被启动过一次（比如另一个标签页抢先点了「开始转换」）
+        // ——它在正常转换，接上轮询才是对用户有用的恢复，不是当错误处理。
+        setTaskIds((prev) => [taskId, ...prev])
+        clearReadyTaskAndFulfillPendingReplacement()
+      } else if (err instanceof ApiError && err.code === 'READY_EXPIRED') {
+        // ready 任务有 1 小时 TTL，原文件已经被回收——ReadyCard 停在原地
+        // 再点也没用，退回可以重新上传的状态。message 用后端已经写好的
+        // 原话（含具体 TTL 小时数），这里不重复拼一遍。
+        clearReadyTaskAndFulfillPendingReplacement()
+        setError(err.message)
+      } else {
+        // 终审 M-4：这句"重试"对多数瞬时错误（网络故障等）成立——原文件
+        // 还在，ReadyCard 原样留着确实能直接重试。但对 503
+        // ENGINE_UNAVAILABLE 不成立：start_task 那条路径已经
+        // drop_original 并把任务标 failed（app/api/tasks.py），原文件
+        // 已经没了。用户看着 ReadyCard 再点一次「开始转换」，实际拿到的
+        // 是 409 TASK_ALREADY_STARTED——但任务真实状态是 failed，不是
+        // "已经在正常跑"，上面那个分支"接上轮询"的假设在这条路径下并
+        // 不成立。
+        //
+        // 这条分支不清 readyTask，pendingReplacementFile 也就不去动它——
+        // 它对应的是"用户还没决定要不要放弃当前 ready 任务"，跟上面三条
+        // "问题已经自行解决"的情形不是一回事，不能套同一个兑现逻辑。
+        setError(
+          err instanceof ApiError
+            ? `${err.code}：${err.message}`
+            : err instanceof Error
+              ? err.message
+              : '启动转换失败',
+        )
+      }
+    } finally {
+      setStartingReadyTask(false)
+    }
   }
 
   const handleFileSelected = (file: File) => {

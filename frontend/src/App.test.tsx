@@ -446,3 +446,101 @@ describe('App 覆盖已有 ready 任务前的确认（复审 Important：UploadD
     expect(mocks.uploadFile.mock.calls[0][0].name).toBe('deck3.pptx')
   })
 })
+
+describe('App 覆盖已有 ready 任务前的确认——异步窗口（复审 Important：disabled 挡不住 handleStart 的 await 期间选中第二个文件）', () => {
+  // handleStart 是 async，setReadyTask(null) 发生在 await startTask(...)
+  // 之后。这段请求在飞的窗口里 UploadDropzone 从未被任何条件禁用，用户
+  // 可以在这段时间选中文件 B——pendingReplacementFile 因此可能在
+  // handleStart 已经开始执行之后才变成非空。上一轮"给按钮加 disabled"
+  // 的修复堵的是"两个横幅同屏时点按钮"这条路径，堵不住这条：这里点的
+  // 是 ReadyCard 自己的「开始转换」按钮，此时还没有任何风险横幅，
+  // disabled 从一开始就不适用。
+  beforeEach(() => {
+    mocks.getCapacityConfig.mockReset().mockResolvedValue(CAPACITY)
+    mocks.uploadFile.mockReset()
+    mocks.startTask.mockReset()
+  })
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void
+    const promise = new Promise<T>((res) => {
+      resolve = res
+    })
+    return { promise, resolve }
+  }
+
+  it('start 请求在飞时选中 B：start 成功后 B 必须被真正上传，不能无声消失', async () => {
+    mocks.uploadFile.mockResolvedValueOnce({ taskId: 'T1' })
+    const start = deferred<{ taskId: string }>()
+    mocks.startTask.mockReturnValue(start.promise)
+
+    render(<App />)
+    await waitFor(() => expect(mocks.getCapacityConfig).toHaveBeenCalled())
+    chooseFile(fileOfSize(2 * MIB, 'deck.pptx'))
+    await screen.findByText('deck.pptx')
+
+    fireEvent.click(screen.getByRole('button', { name: '开始转换' }))
+    await waitFor(() => expect(mocks.startTask).toHaveBeenCalled())
+
+    // start 请求还在飞——这时候选中第二个文件 B。
+    mocks.uploadFile.mockResolvedValueOnce({ taskId: 'T2' })
+    chooseFile(fileOfSize(3 * MIB, 'deck2.pptx'))
+    await screen.findByText(/继续上传会放弃它/)
+    expect(mocks.uploadFile).not.toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'deck2.pptx' }),
+      expect.anything(),
+    )
+
+    // start 成功返回——readyTask 被清空，冲突（是否放弃 A）已经自行解除。
+    start.resolve({} as { taskId: string })
+
+    // B 必须被真正上传，不是静默消失。
+    await waitFor(() =>
+      expect(mocks.uploadFile).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'deck2.pptx' }),
+        expect.anything(),
+      ),
+    )
+    expect(screen.queryByText(/继续上传会放弃它/)).toBeNull()
+  })
+
+  it('B 自动接续上传后再选 C：确认横幅必须准确指向 B，不能残留张冠李戴、点下去传错文件', async () => {
+    mocks.uploadFile.mockResolvedValueOnce({ taskId: 'T1' })
+    const start = deferred<{ taskId: string }>()
+    mocks.startTask.mockReturnValue(start.promise)
+
+    render(<App />)
+    await waitFor(() => expect(mocks.getCapacityConfig).toHaveBeenCalled())
+    chooseFile(fileOfSize(2 * MIB, 'deck.pptx'))
+    await screen.findByText('deck.pptx')
+
+    fireEvent.click(screen.getByRole('button', { name: '开始转换' }))
+    await waitFor(() => expect(mocks.startTask).toHaveBeenCalled())
+
+    mocks.uploadFile.mockResolvedValueOnce({ taskId: 'T2' })
+    chooseFile(fileOfSize(3 * MIB, 'deck2.pptx'))
+    await screen.findByText(/继续上传会放弃它/)
+
+    start.resolve({} as { taskId: string })
+    // B（deck2.pptx）自动接续上传，成为新的 ready 任务。
+    await screen.findByText('deck2.pptx')
+
+    // 现在选 C——确认横幅必须准确说"放弃 deck2.pptx"（当前真实的 ready
+    // 任务），不能是任何残留状态导致的错位文案。
+    mocks.uploadFile.mockResolvedValueOnce({ taskId: 'T3' })
+    chooseFile(fileOfSize(1 * MIB, 'deck3.pptx'))
+    await screen.findByText(/继续上传会放弃它/)
+    expect(screen.getByText('deck2.pptx')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '继续上传' }))
+
+    // 点下去真正传的必须是 C，不是残留的 B。
+    await screen.findByText('deck3.pptx')
+    expect(mocks.uploadFile).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'deck3.pptx' }),
+      expect.anything(),
+    )
+    expect(screen.queryByText('deck2.pptx')).toBeNull()
+    expect(screen.queryByText('deck.pptx')).toBeNull()
+  })
+})
