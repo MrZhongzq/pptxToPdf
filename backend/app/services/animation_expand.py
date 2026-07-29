@@ -181,6 +181,24 @@ def _drop_paragraphs(shape: ET.Element, indices: set[int]) -> None:
             tx_body.remove(paragraphs[idx])
 
 
+def _drop_timing(slide_root: ET.Element) -> None:
+    """删掉 <p:timing>。
+
+    展开之后每一版都是静态快照，动画信息已经没有意义。更要紧的是：
+    timing 里的 <p:spTgt spid="N"/> 会引用被这一版删掉的形状，而 Office
+    在线服务对这种「动画指向不存在的形状」零容忍，整份文档返回 406
+    NotAcceptable——五期剥离媒体时踩过一模一样的坑（<p:video> 指向一个
+    已经不再是媒体的形状），当时同样是 LibreOffice 照转不误、Graph 拒绝。
+
+    原页（保留全部形状的那一版）本可以留着 timing，但同样删掉：留着它
+    只会让 Office 按动画规则渲染，而那正是用户抱怨的「所有元素叠在
+    一页上」。
+    """
+    timing = slide_root.find(f"{P}timing")
+    if timing is not None:
+        slide_root.remove(timing)
+
+
 def _has_alternate_content(raw: bytes) -> bool:
     return b"AlternateContent" in raw
 
@@ -294,6 +312,7 @@ def _build(
     """
     next_slide_no, next_rid_no, next_sld_id = _next_ids(zf)
 
+    rewritten_originals: dict[str, bytes] = {}  # 原 part -> 去掉 timing 的正文
     new_parts: dict[str, bytes] = {}      # part 名 -> slide xml
     new_rels: dict[str, bytes] = {}       # part 名 -> 它的 rels（复制原页的）
     # 原 part -> 要插在它前面的 [(part_name, rId, sldId)]
@@ -310,6 +329,13 @@ def _build(
         except KeyError:
             rels_blob = None
 
+        # 原页作为「全部出现」的最后一版，同样去掉 timing——理由见 _drop_timing
+        original_root = ET.fromstring(raw)
+        _drop_timing(original_root)
+        rewritten_originals[part] = ET.tostring(
+            original_root, xml_declaration=True, encoding="UTF-8"
+        )
+
         for k in range(len(steps)):
             # 第 k 版显示前 k 步，隐藏第 k 步及之后的所有目标
             hidden: list[Target] = []
@@ -318,6 +344,7 @@ def _build(
 
             root = ET.fromstring(raw)
             _hide(root, hidden)
+            _drop_timing(root)
             new_name = f"ppt/slides/slide{next_slide_no}.xml"
             new_parts[new_name] = ET.tostring(root, xml_declaration=True, encoding="UTF-8")
             if rels_blob is not None:
@@ -346,6 +373,8 @@ def _build(
                 zout.writestr(item, pres_rels)
             elif name == "[Content_Types].xml":
                 zout.writestr(item, content_types)
+            elif name in rewritten_originals:
+                zout.writestr(item, rewritten_originals[name])
             else:
                 zout.writestr(item, zf.read(name))
         for name, blob in new_parts.items():

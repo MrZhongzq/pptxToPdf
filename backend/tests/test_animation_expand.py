@@ -355,3 +355,47 @@ def test_alternate_content_page_is_skipped_with_warning(tmp_path):
 
     assert result.expanded is False
     assert any("AlternateContent" in w for w in result.warnings)
+
+
+def test_timing_is_dropped_from_every_version(tmp_path):
+    """五期教训的重演：删了形状却留着引用它的 <p:timing>，Office 在线服务
+    整份返回 406——而 LibreOffice 照转不误，所以只测 LibreOffice 会假绿。
+    真机上这条正是第一次验证时炸出来的。
+    """
+    base = _deck(tmp_path / "base.pptx", pages=1)
+    deck = _inject(
+        base, tmp_path / "a.pptx", 1,
+        _timing(_STEP_TEMPLATE.format(behaviors=_behavior("99"))),
+        shapes_xml=_shape("99", "框"),
+    )
+
+    expand_animations(deck)
+
+    with zipfile.ZipFile(deck) as zf:
+        for name in zf.namelist():
+            if name.startswith("ppt/slides/slide"):
+                assert b"<p:timing>" not in zf.read(name), f"{name} 仍留着 timing"
+
+
+def test_no_animation_target_dangles(tmp_path):
+    """更强的表述：任何一版里都不该存在「动画指向不存在的形状」。"""
+    base = _deck(tmp_path / "base.pptx", pages=1)
+    deck = _inject(
+        base, tmp_path / "a.pptx", 1,
+        _timing(
+            _STEP_TEMPLATE.format(behaviors=_behavior("101")),
+            _STEP_TEMPLATE.format(behaviors=_behavior("102")),
+        ),
+        shapes_xml=_shape("101", "一") + _shape("102", "二"),
+    )
+
+    expand_animations(deck)
+
+    with zipfile.ZipFile(deck) as zf:
+        for name in zf.namelist():
+            if not name.startswith("ppt/slides/slide"):
+                continue
+            root = ET.fromstring(zf.read(name))
+            present = set(_slide_shape_ids(deck, name))
+            for sp_tgt in root.iter(f"{P}spTgt"):
+                assert sp_tgt.get("spid") in present, f"{name} 的动画指向已删除的形状"
