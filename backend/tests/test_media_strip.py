@@ -5,8 +5,9 @@ import pytest
 from pptx import Presentation
 from pptx.util import Inches, Pt
 
+from app.services import media_strip
 from app.services.media_strip import MEDIA_REL_TYPES, strip_media
-from app.services.opc_rewrite import read_rels, rels_path
+from app.services.opc_rewrite import read_rels
 
 VIDEO_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/video"
 MEDIA_REL = "http://schemas.microsoft.com/office/2007/relationships/media"
@@ -133,3 +134,29 @@ def test_preserves_mc_ignorable(tmp_path):
 
     with zipfile.ZipFile(deck) as zf:
         assert zf.read("ppt/presentation.xml") == pres_before
+
+
+def test_write_failure_cleans_up_tmp_and_preserves_source(tmp_path, monkeypatch):
+    """写入过程中失败时，临时文件要被清理，源文件不能被破坏。
+
+    originals_dir 目前没有其它机制会兜底清理孤儿 tmp 文件——drop_original
+    只精确删 {task_id}.pptx，purge_expired_outputs/purge_expired_shards 都不
+    扫这里——所以 strip_media 的 except 分支必须自己证明语义正确：异常穿透
+    给调用方，tmp 文件不留下，源文件全程未被替换。
+    """
+    deck = _deck_with_fake_video(tmp_path / "v.pptx")
+    before_bytes = deck.read_bytes()
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(media_strip, "rewrite_content_types", _boom)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        strip_media(deck)
+
+    # 源文件全程未被 tmp.replace(src) 替换，字节不变
+    assert deck.read_bytes() == before_bytes
+    # 没有留下孤儿 tmp 文件
+    leftover = [p for p in tmp_path.iterdir() if p != deck and p.suffix == ".pptx"]
+    assert leftover == []

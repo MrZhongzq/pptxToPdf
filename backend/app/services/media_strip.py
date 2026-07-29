@@ -24,7 +24,7 @@ from app.services.opc_rewrite import (
 )
 from app.services.pptx_split import COPY_CHUNK
 
-MEDIA_REL_TYPES = frozenset(
+MEDIA_REL_TYPES: frozenset[str] = frozenset(
     {
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/video",
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/audio",
