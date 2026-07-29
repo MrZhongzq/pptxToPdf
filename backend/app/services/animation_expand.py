@@ -162,7 +162,25 @@ def _hide(slide_root: ET.Element, targets: list[Target]) -> None:
             sp_tree.remove(shape)
             continue
         if sid in para_targets:
-            _drop_paragraphs(shape, para_targets[sid])
+            if _would_empty_text_body(shape, para_targets[sid]):
+                # 段落全被删光会留下一个空的 <p:txBody>，而 ECMA-376 要求
+                # CT_TextBody 至少含一个 <a:p>。Office 在线服务据此拒绝整份
+                # 文档（HTTP 406），LibreOffice 照转不误。既然这个形状这一步
+                # 一个字都不该出现，直接整块删掉——既合法，语义也更准确。
+                sp_tree.remove(shape)
+            else:
+                _drop_paragraphs(shape, para_targets[sid])
+
+
+def _would_empty_text_body(shape: ET.Element, indices: set[int]) -> bool:
+    """删掉这些段落之后，txBody 会不会一个 <a:p> 都不剩。"""
+    tx_body = shape.find(f".//{P}txBody")
+    if tx_body is None:
+        return False
+    total = len(tx_body.findall(f"{A}p"))
+    if total == 0:
+        return False
+    return len([i for i in indices if 0 <= i < total]) >= total
 
 
 def _drop_paragraphs(shape: ET.Element, indices: set[int]) -> None:

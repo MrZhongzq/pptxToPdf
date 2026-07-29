@@ -441,3 +441,52 @@ def test_new_versions_drop_the_notes_slide_relationship(tmp_path):
         assert "notesSlide" not in new_rels, "新版本不该继承原页的备注页关系"
         # 原页仍然保留它自己的备注
         assert "notesSlide" in zf.read("ppt/slides/_rels/slide1.xml.rels").decode()
+
+
+def test_shape_is_removed_when_all_its_paragraphs_are_animated(tmp_path):
+    """段落全被删光会留下空的 <p:txBody>，而 ECMA-376 要求它至少含一个
+    <a:p>。Office 在线服务据此拒绝整份文档（406），LibreOffice 照转不误。
+
+    真机上这条是靠「展开后切片，片0 成功片1 失败」二分出来的——本文件
+    原本只测了「3 段删 2 段」，从没测过全删，于是这个分支一直没被覆盖。
+    """
+    base = _deck(tmp_path / "base.pptx", pages=1)
+    deck = _inject(
+        base, tmp_path / "a.pptx", 1,
+        _timing(
+            _STEP_TEMPLATE.format(behaviors=_behavior("77", para=0)),
+            _STEP_TEMPLATE.format(behaviors=_behavior("77", para=1)),
+        ),
+        shapes_xml=_shape("77", "全是动画的框", paragraphs=2),
+    )
+
+    expand_animations(deck)
+
+    # 第一版：两段都还没出现 -> 整个形状不该存在
+    assert "77" not in _slide_shape_ids(deck, "ppt/slides/slide2.xml")
+    # 第二版：第一段出现了 -> 形状在，只剩一段
+    assert "77" in _slide_shape_ids(deck, "ppt/slides/slide3.xml")
+
+
+def test_no_empty_text_body_in_any_version(tmp_path):
+    """更强的表述：任何一版里都不该有一个 <a:p> 都没有的 txBody。"""
+    base = _deck(tmp_path / "base.pptx", pages=1)
+    deck = _inject(
+        base, tmp_path / "a.pptx", 1,
+        _timing(
+            _STEP_TEMPLATE.format(behaviors=_behavior("77", para=0)),
+            _STEP_TEMPLATE.format(behaviors=_behavior("77", para=1)),
+        ),
+        shapes_xml=_shape("77", "框", paragraphs=2),
+    )
+
+    expand_animations(deck)
+
+    A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+    with zipfile.ZipFile(deck) as zf:
+        for name in zf.namelist():
+            if not name.startswith("ppt/slides/slide"):
+                continue
+            root = ET.fromstring(zf.read(name))
+            for body in root.iter(f"{P}txBody"):
+                assert body.findall(f"{A_NS}p"), f"{name} 有空的 txBody"
