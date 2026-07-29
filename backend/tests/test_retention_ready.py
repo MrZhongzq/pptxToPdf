@@ -180,3 +180,63 @@ def test_non_ready_tasks_are_not_touched(session, use_retention_session):
     for status in ("converting", "done", "failed"):
         task = session.get(Task, f"T-{status}")
         assert task.status == status
+
+
+# ---------------------------------------------------- 接线守护（终审 I-6）
+
+
+def test_purge_expired_ready_is_called_from_run_task_finally(session, storage, monkeypatch):
+    """线索：把它接进 run_task 的 finally，不能只是定义了没人调用。
+
+    终审同时删掉 pipeline.py 与 main.py 里的调用点做过变异实验，318 条测试
+    全绿——spec 自己列的"接线守护"清单漏了这一条。做法照抄
+    test_retention_shards.py::test_purge_expired_shards_is_called_from_run_task_finally
+    的既有模式：刻意用一个连源文件都不存在的任务（probe 会炸成
+    INTERNAL_ERROR），证明这条接线跟转换本身成败无关，纯粹是"函数被调用
+    过"的断言。
+    """
+    import app.services.pipeline as pipeline_module
+    from app.models import Task
+
+    monkeypatch.setattr(pipeline_module, "SessionLocal", lambda: session)
+
+    calls: list[None] = []
+    monkeypatch.setattr(
+        pipeline_module, "purge_expired_ready", lambda: calls.append(None) or 0
+    )
+
+    task_id = "task-no-src-file"
+    session.add(
+        Task(
+            task_id=task_id,
+            upload_id="upload-does-not-matter",
+            original_filename="deck.pptx",
+            size_bytes=1,
+            status="pending",
+            engine="placeholder",
+        )
+    )
+    session.commit()
+
+    pipeline_module.run_task(task_id)
+
+    assert calls == [None]
+
+
+def test_startup_hook_also_purges_expired_ready(storage, monkeypatch):
+    """只挂 run_task 的 finally 不够——长期没有新任务进来时磁盘也没在涨，
+    但那正是 ready TTL 存在的理由（用户只传不点开始，恰恰不会有任何
+    转换跑完，run_task 的 finally 永远不会触发）。main.py 的启动钩子是
+    另一半兜底，照抄 test_retention_shards.py::
+    test_startup_hook_also_purges_expired_shards 的既有模式。
+    """
+    import app.main as main_module
+
+    calls: list[None] = []
+    monkeypatch.setattr(
+        main_module, "purge_expired_ready", lambda: calls.append(None) or 0
+    )
+
+    main_module.startup()
+
+    assert calls == [None]
