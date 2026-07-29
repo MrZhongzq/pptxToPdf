@@ -163,3 +163,47 @@ def probe(path: Path) -> PptxMeta:
         slide_height_emu=height,
         fonts=fonts,
     )
+
+
+def extract_titles(path: Path) -> list[str]:
+    """按页顺序取出每页的标题文本，供 pdf_outline 生成书签。
+
+    取的是标题占位符（`<p:ph type="title"/>` 或 `ctrTitle`）所在形状里的
+    全部 `<a:t>` 文本。取不到就回退成「第 N 页」而不是跳过——书签大纲的
+    用处是在 GoodNotes 里快速跳转，缺页会让大纲和实际页码对不上，比标题
+    不好看糟糕得多。
+
+    与 probe 分开：probe 的四个字段是转换前的路由依据（页数、尺寸、字体），
+    每次转换都要；标题只有勾了 pdf_outline 才用得上，没必要让每次转换都
+    多解析一遍全部 slide 正文。
+    """
+    titles: list[str] = []
+    try:
+        with zipfile.ZipFile(path) as zf:
+            names = sorted(
+                (n for n in zf.namelist() if SLIDE_RE.match(n)),
+                key=lambda n: int(re.search(r"(\d+)", n).group(1)),
+            )
+            for idx, name in enumerate(names, start=1):
+                titles.append(_slide_title(zf.read(name)) or f"第 {idx} 页")
+    except (zipfile.BadZipFile, KeyError, ET.ParseError):
+        # 走到这里说明包坏了，但 probe 已经在更早的地方校验过一遍；
+        # 标题提取失败不该让整次转换失败——大不了没有书签。
+        return []
+    return titles
+
+
+def _slide_title(raw: bytes) -> str | None:
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError:
+        return None
+    for shape in root.iter(f"{P_NS}sp"):
+        ph = shape.find(f".//{P_NS}nvSpPr/{P_NS}nvPr/{P_NS}ph")
+        if ph is None or ph.get("type") not in ("title", "ctrTitle"):
+            continue
+        text = "".join(t.text or "" for t in shape.iter(f"{A_NS}t")).strip()
+        if text:
+            # PDF 书签是单行的，换行与制表符会被渲染成乱码或直接截断
+            return " ".join(text.split())
+    return None

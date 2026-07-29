@@ -92,6 +92,10 @@ class Task(Base):
     # 告警并停止轮询。动画展开跳过了几页仍然是一次成功的转换，用户拿得到
     # PDF，但必须明确知道哪几页没能展开，不能静默。
     warnings_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 每页标题，JSON 数组，供 pdf_outline 后处理生成书签。
+    # 必须在转换**前**提取并落库：分片路径下 run_task 的 finally 会
+    # drop_original，等 merge_shards 跑到时原 pptx 已经不在了。
+    outline_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     output_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
