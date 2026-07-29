@@ -2,7 +2,7 @@
 
 把课程 pptx 转成能直接导入 GoodNotes / OneNote 的 PDF。
 
-**当前进度：四期（管理入口 + Azure 凭证配置）开发完成，本机可验证；按计划暂不部署，待审核通过。** 一期的占位 PDF 已被二期真实转换取代；三期的 Graph 引擎需在管理入口完成凭证配置后才可达，见下方「管理入口」一节。
+**当前进度：五期（内嵌媒体统一剥离 + 上传后手动触发转换）开发完成，本机可验证；按计划暂不部署，待审核通过。** 一期的占位 PDF 已被二期真实转换取代；三期的 Graph 引擎需在管理入口完成凭证配置后才可达，见下方「管理入口」一节；四期新增了管理入口（口令登录 + Azure 凭证配置）。
 
 ## 保真度边界
 
@@ -17,6 +17,35 @@ pptx 只存字体名不存字形，字体缺失时渲染端会替换，替换字
 
 要消除中文偏差，把你自己 Windows 的 `C:\Windows\Fonts` 里的等线、微软雅黑
 拷进宿主机的 `fonts-extra/` 目录，容器启动时会自动加载并优先使用。
+
+## 两段式上传（五期）
+
+上传完成不会自动开始转换。文件传完后停在一张「就绪」卡片上（状态
+`ready`），展示文件名与体积；引擎与转换选项可以在卡片上随时改，改好点
+「开始转换」（`POST /api/tasks/{task_id}/start`）任务才真正入队，状态转
+`pending`。用户原话：「有时候手没那么快，想先上传再选转换引擎和选项。」
+
+上传时仍然可以选引擎和选项（`POST /api/uploads` 的 `engine` / `options`
+字段没有废弃）——这份选择会作为就绪卡片的初始值；点「开始转换」时不传
+新的引擎/选项就沿用上传时选的，传了就覆盖，两者互不冲突。
+
+**就绪任务不会无限期占盘。** 单份原始 pptx 可能有 80–500MB，一直不点
+「开始转换」会一直占着磁盘（机器只有 35G 可用）。超过
+`PPTX2PDF_READY_TTL_HOURS`（默认 1 小时）未开始转换的任务会被回收：原
+文件删除，任务标记为 `failed`，`error_code` 为 `READY_EXPIRED`，需要重新
+上传。**这不是一个精确到点的定时任务**——回收只在服务启动时、以及任意
+其它任务转换流程跑完时顺带触发一次，服务闲着没有新任务在跑的话，实际
+回收时间可能比一小时晚不少，不代表「一小时整就被删」。
+
+回收后再点已过期的就绪卡片，后端返回 410 `READY_EXPIRED`；如果任务已经
+真的被启动过一次（比如另一个标签页抢先点了按钮，任务仍在正常转换中），
+返回的是 409 `TASK_ALREADY_STARTED`——两者语义不同，客户端要分开处理：
+前者退回可重新上传的界面，后者接上轮询。
+
+`PPTX2PDF_READY_TTL_HOURS` 与 `PPTX2PDF_UPLOAD_TTL_HOURS`（默认 24 小时）
+管的不是一回事：后者管**未完成的分块上传会话**，支持断点续传，调短了会
+让大文件传到一半、暂停超时后必须从头重传；`PPTX2PDF_READY_TTL_HOURS` 管
+的是**已经传完、只差点一下按钮**的任务，重传成本相对小，可以更快回收。
 
 ## Graph 通道（三期）
 
@@ -193,6 +222,7 @@ sudo netfilter-persistent save    # 没有这个命令就 apt install iptables-p
 | `PPTX2PDF_CONVERT_TIMEOUT_PER_SLIDE_S` | 4 | 每页超时系数。ARM 机器偏慢，转换总超时 = `min(max(180, 页数×4 + 体积MB×2), 1800)` 秒 |
 | `PPTX2PDF_CONVERT_TIMEOUT_PER_MB_S` | 2 | 每 MB 超时系数，覆盖「页数少但内嵌大量图片/视频」的重课件 |
 | `PPTX2PDF_OUTPUT_TTL_HOURS` | 24 | 输出 PDF 保留时长，过期自动清理；也是三期分片目录残骸清理的安全边界，见下方 Graph 通道一节 |
+| `PPTX2PDF_READY_TTL_HOURS` | 1 | `ready` 状态任务（已传完、未点「开始转换」）的原文件保留时长，超时未开始转换会被回收为 `failed` / `READY_EXPIRED`；与管未完成上传会话的 `PPTX2PDF_UPLOAD_TTL_HOURS`（默认 24）不是一回事，两者互不影响，见上方「两段式上传（五期）」一节 |
 | `PPTX2PDF_STALE_TASK_MINUTES` | 45 | 孤儿任务回收阈值，必须大于最大转换超时 |
 | `PPTX2PDF_MAX_FILE_SIZE` | 629145600（600MiB） | 单次上传允许的最大原文件体积。LibreOffice 路径不受此限约束；Graph 路径的实际可用上界更低，见下一行 |
 | `PPTX2PDF_SECRET_KEY` | 空 | Graph 凭证的 Fernet 主密钥。未配置则 Graph 引擎不可用 |
@@ -228,7 +258,7 @@ worker 单容器内存上限硬编码在 `docker-compose.yml`（三期从 3G 提
 cd backend
 python -m venv .venv
 .venv/Scripts/pip install -r requirements-dev.txt   # Linux 用 .venv/bin/
-.venv/Scripts/python -m pytest -q                   # 期望 286 passed
+.venv/Scripts/python -m pytest -q                   # 期望 318 passed
 ```
 
 前端：
@@ -236,7 +266,7 @@ python -m venv .venv
 ```bash
 cd frontend
 npm install
-npm test          # 期望 71 passed
+npm test          # 期望 84 passed
 npm run dev       # 开发服务器在 5173，/api 已代理到 8000
 ```
 
@@ -255,6 +285,11 @@ npm run dev       # 开发服务器在 5173，/api 已代理到 8000
 - 转换结果只保留 24 小时（`PPTX2PDF_OUTPUT_TTL_HOURS`），过期自动清理，请
   及时下载；过期后再请求下载会返回 `RESULT_EXPIRED`，需要重新上传。原始
   pptx 在转换结束后立即删除，不论成败
+- 内嵌视频/音频会在转换前被剥离，且不可逆（五期）：无论选哪个引擎，转换
+  前都会统一剥掉 pptx 里的内嵌视频/音频。PDF 本来就放不了视频，所以这一
+  步不会造成信息损失；但服务器上不再保留剥离前的原始文件（剥离是就地
+  覆盖，不是另存一份），转换结果如有问题需要跟原件比对，请自己留一份或
+  重新上传
 - Graph 通道（三期）已实现且测试覆盖，但需先在 `/admin` 完成 Azure 凭证
   配置并通过五步自检才可用；未配置时选 Graph 引擎的任务会稳定收到
   `GRAPH_NOT_CONFIGURED`，详见上方「Graph 通道（三期）」与「管理入口
@@ -271,5 +306,6 @@ npm run dev       # 开发服务器在 5173，/api 已代理到 8000
 | 二 | LibreOffice 引擎 + 容器化 + 队列 + 资源治理 | 完成 |
 | 三 | Microsoft Graph 引擎（小文件高保真）+ 转换切片合并 | 开发完成，未部署 |
 | 四 | 管理入口（口令登录、会话）+ Azure 凭证配置与五步自检 | 开发完成，未部署（审核通过后合并） |
+| 五 | 内嵌媒体（视频/音频）转换前统一剥离 + 上传后手动触发转换（`ready` 状态 + `start` 端点） | 开发完成，未部署（审核通过后合并） |
 
 设计文档见 `docs/superpowers/specs/`，实施计划见 `docs/superpowers/plans/`。
