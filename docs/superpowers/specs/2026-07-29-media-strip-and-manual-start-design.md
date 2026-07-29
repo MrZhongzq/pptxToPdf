@@ -93,13 +93,22 @@ ready → pending → parsing → queued → converting → merging → done / f
 |---|---|
 | `uploads.py::complete_upload` | 拼装、校验、建 Task 全部保留；**不再调 `enqueue_conversion`**；Task 落 `ready` |
 | 新增 `POST /api/tasks/{id}/start` | 接收引擎与选项 → 写进 Task → `enqueue_conversion` → 转 `pending` |
-| `retention.py` | `ready` **不进** `NON_TERMINAL`；由 upload TTL（`PPTX2PDF_UPLOAD_TTL_HOURS`，默认 24 小时）回收 |
+| `retention.py` | `ready` **不进** `NON_TERMINAL`；由新增的 `PPTX2PDF_READY_TTL_HOURS`（默认 **1** 小时）回收 |
 
 ### ready 不进孤儿回收的理由
 
-孤儿回收器（`stale_task_minutes`，45 分钟）的语义是「转换卡住了」。`ready` 任务可能合法地停留任意久——用户传完出去吃个饭再回来点按钮。若把它算进非终态，45 分钟后会被标成 `failed`「任务在服务重启前未完成」，而它其实只是在等人。
+孤儿回收器（`stale_task_minutes`，45 分钟）的语义是「转换卡住了」，它会把任务标成 `failed`「任务在服务重启前未完成」。`ready` 任务没有卡住，它只是在等人点按钮——被标 failed 是错的诊断。
 
-改用 upload TTL 语义也更准：它本质上还是一份传完但没用的上传。
+### 为什么不复用 upload TTL
+
+两者管的东西不同：
+
+- `PPTX2PDF_UPLOAD_TTL_HOURS`（24 小时）管的是**未完成的上传会话**——分块还在传，支持断点续传。把它调短会误伤续传：大文件传到一半、暂停超过阈值再回来，会话就没了。
+- `ready` 管的是**已传完、只差点按钮**的任务。重传成本相对小，可以更快回收。
+
+所以新增独立配置项 `PPTX2PDF_READY_TTL_HOURS`，默认 **1 小时**。用户裁决：重传成本小，更快回收存储是可以接受的——机器只有 35G 可用盘，而单份原件可能 80–500MB。
+
+回收动作：删原文件（`drop_original`）+ 把 Task 标为 `failed`，`error_code` 用新增的 `READY_EXPIRED`，消息说明「上传后一小时内未开始转换，已回收，请重新上传」。标 failed 而不是直接删 Task 行，是为了让用户在任务列表里看到发生了什么，而不是文件凭空消失。
 
 ### 一处必须挪动的兜底
 
@@ -149,7 +158,10 @@ ready → pending → parsing → queued → converting → merging → done / f
 |---|---|---|
 | 任务不存在 | 404 | `TASK_NOT_FOUND`（复用现有） |
 | 任务不在 `ready` 状态（重复点、或已在转） | 409 | **`TASK_ALREADY_STARTED`（新增）** |
+| 任务已被 ready TTL 回收 | 409 | `TASK_ALREADY_STARTED`（同上——此时 status 已是 `failed`，不在 `ready`） |
 | Redis 不可达 | 503 | `ENGINE_UNAVAILABLE`（复用现有） |
+
+被 TTL 回收后原文件已删，即使强行入队也只会在 `run_task` 里因找不到源文件而失败。409 加上 Task 行里已有的 `READY_EXPIRED` 错误信息，足以让用户明白发生了什么。
 
 **不能复用 `TASK_NOT_READY`。** 它已经存在（`app/api/tasks.py:33`）且已有既定含义——`download` 端点用它表示「任务状态还不是 `done`，尚无可下载结果」。若拿它表示「任务已经离开 `ready` 状态」，同一个码会指向两个几乎相反的意思：一个是「还没到终点」，一个是「已经离开起点」。客户端无法区分。
 
@@ -168,7 +180,9 @@ ready → pending → parsing → queued → converting → merging → done / f
 | 剥离**真的取代原件** | 把 `strip_media` 改成空操作，切片判定应跟着变——证明 `size_bytes` / `needs_sharding` 吃的是剥离后的值 |
 | 空操作不重写 | 不含媒体的 deck 剥离后文件 mtime 或字节不变 |
 | `ready` 全链路 | `complete` 后 Task 是 `ready` 且**没入队**；`start` 后才 `pending` 且入队 |
-| `ready` 不被孤儿回收 | 造 46 分钟没动的 `ready` 任务，`reap_stale_tasks` 后断言**不回收** |
+| `ready` 不被孤儿回收 | 造 46 分钟没动的 `ready` 任务，`reap_stale_tasks` 后断言**不回收**（它归 ready TTL 管，不归 45 分钟的 reaper 管） |
+| ready TTL 到点才回收 | 59 分钟的 `ready` 任务不回收；61 分钟的回收，且断言原文件已删、Task 落 `failed` + `READY_EXPIRED` |
+| ready TTL 不误伤未完成的上传会话 | 造一个 2 小时没动的**未完成** upload 会话，跑 ready TTL 清理，断言该会话仍在（它归 upload TTL 管，24 小时） |
 | Redis 兜底已挪到 start | 让 `enqueue` 抛错，断言 `drop_original` 被调用、Task 落 failed |
 | 重复点 start | 第二次调应 409 且不重复入队 |
 | 前端两段式 | 传完停在就绪卡片、不自动转；点按钮才发 start 请求 |
@@ -209,4 +223,5 @@ docker compose config -q
 
 - **剥离是有损且不可逆的**（覆盖原件）。视频在 PDF 里本就无法保留，所以信息损失是零；但若某个 deck 剥完转出来不对，服务器上没有原件可对照，需用户重传。
 - 悬空的 `r:id`（指向已删媒体）会留在 slide 正文里。同三期的既有裁决。
-- `ready` 任务占的原文件磁盘空间由 upload TTL 回收，最长 24 小时。用户上传后不点按钮就走人时，这些文件会占着盘直到过期。
+- `ready` 任务占的原文件磁盘空间最长 **1 小时**（`PPTX2PDF_READY_TTL_HOURS`）。上传后不点「开始转换」就走人的话，一小时后文件被回收、任务标 `failed`（`READY_EXPIRED`），需要重新上传。这是刻意的取舍：重传成本小于长期占盘，而机器只有 35G 可用。
+- 新增的 `READY_EXPIRED` 与既有的 `TASK_ABANDONED`（孤儿回收器用的）是两个不同的失败原因，不要混用：前者是「你没点开始」，后者是「转换过程中卡死了」。
