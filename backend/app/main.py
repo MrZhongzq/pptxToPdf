@@ -6,11 +6,12 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import admin, config, tasks, uploads
+from app.api import admin, admin_users, auth, config, tasks, uploads
 from app.config import settings
 from app.db import init_db
 from app.errors import AppError, ValidationError
 from app.services.retention import purge_expired_ready, purge_expired_shards, reap_stale_tasks
+from app.services.users import bootstrap_admin
 
 logging.basicConfig(
     level=logging.INFO,
@@ -68,10 +69,20 @@ def handle_validation_error(_: Request, exc: RequestValidationError) -> JSONResp
     )
 
 
+def bootstrap_admin_account() -> None:
+    """启动时确保 admin 账号存在。没配 PPTX2PDF_ADMIN_PASSWORD_HASH 就
+    什么都不做——延续四期铁律，绝不生成默认密码兜底。"""
+    from app.db import SessionLocal
+
+    with SessionLocal() as session:
+        bootstrap_admin(session)
+
+
 @app.on_event("startup")
 def startup() -> None:
     settings.ensure_dirs()
     init_db()
+    bootstrap_admin_account()
     reap_stale_tasks()
     # 与上面 reap_stale_tasks 同一理由的双触发：OOM 之后最典型的运维动作
     # 就是重启，如果只挂 pipeline.run_task 那一半惰性清理，服务重启后长期
@@ -84,7 +95,9 @@ def startup() -> None:
     purge_expired_ready()
 
 
+app.include_router(auth.router)
 app.include_router(uploads.router)
 app.include_router(tasks.router)
 app.include_router(config.router)
 app.include_router(admin.router)
+app.include_router(admin_users.router)

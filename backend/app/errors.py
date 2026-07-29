@@ -167,3 +167,45 @@ class ReadyExpired(AppError):
 
     code = "READY_EXPIRED"
     http_status = 410
+
+
+class AuthRequired(AppError):
+    """需要登录。与 ADMIN_UNAUTHORIZED 分开：那个是「管理入口的会话无效」，
+    这个是「这个动作需要一个已登录用户」，前端对两者的反应不同——前者跳
+    管理登录页，后者弹右上角的登录框。"""
+
+    code = "AUTH_REQUIRED"
+    http_status = 401
+
+
+class Forbidden(AppError):
+    """已登录但权限不够。不与 AUTH_REQUIRED 合并：401 让前端弹登录框，
+    而这里再弹一次登录框只会让人反复输入正确的密码却仍被拒。"""
+
+    code = "FORBIDDEN"
+    http_status = 403
+
+
+class UserNotFound(AppError):
+    code = "USER_NOT_FOUND"
+    http_status = 404
+
+
+class UsernameTaken(AppError):
+    code = "USERNAME_TAKEN"
+    http_status = 409
+
+
+class BadCredentials(AppError):
+    """用户名或密码错误。刻意不区分是哪一个——区分等于把用户名枚举
+    送给攻击者。"""
+
+    code = "BAD_CREDENTIALS"
+    http_status = 401
+
+
+class CrossOriginBlocked(AppError):
+    """来源不在白名单。六期先建骨架，默认不启用。"""
+
+    code = "CROSS_ORIGIN_BLOCKED"
+    http_status = 403

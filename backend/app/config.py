@@ -52,6 +52,13 @@ class Settings(BaseSettings):
     # 切到 HTTPS 后必须改成 true。
     admin_cookie_secure: bool = False
     admin_session_days: int = 3
+    # 六期：admin 引导账号的邮箱。只在数据库里还没有 admin 时用一次，
+    # 之后以库里那一行为准。
+    admin_email: str = "admin@localhost"
+    # 六期：防跨站白名单开关。默认关闭，且白名单为空时即使开启也放行——
+    # 双保险。这个功能现在没有实际用途，配错却能把自己关在门外（当前
+    # 部署是 IP 直连），所以「先做着」不能变成「先炸着」。
+    origin_guard_enabled: bool = False
     graph_max_pages_per_shard: int = 80
     graph_max_shard_bytes: int = 40 * MIB
     graph_request_timeout_s: int = 50

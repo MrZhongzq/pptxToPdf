@@ -1,77 +1,38 @@
-"""管理入口的四个端点。
+"""Azure 凭证的读写端点。
 
-把 admin_auth（鉴权）与 graph_selftest（凭证验证）接起来，
-并持有「先测后存」这条规则。
+持有「先测后存」这条规则：凭证必须先通过五步自检才允许落库。
+
+六期把鉴权与账号管理搬走了——登录/登出在 api/auth.py，用户与白名单
+管理在 api/admin_users.py，鉴权依赖在 api/deps.py。这里只剩凭证本身。
 """
 
-from fastapi import APIRouter, Cookie, Depends, Response
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.config import settings
+from app.api.deps import require_admin
 from app.db import get_session
 from app.errors import (
-    AdminNotConfigured,
     GraphNotConfigured,
     GraphSelftestFailed,
     ValidationError,
 )
+from app.models import User
 from app.schemas import (
-    AdminLoginRequest,
     GraphCredentialsDto,
     GraphCredentialsUpdate,
     SelftestResultDto,
     SelftestStepDto,
 )
-from app.services import admin_auth, graph_credentials
+from app.services import graph_credentials
 from app.services.graph_credentials import GraphCredentialData
 from app.services.graph_selftest import STEPS, run_selftest
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
-def _set_session_cookie(response: Response, token: str) -> None:
-    """HttpOnly 与 SameSite 无条件正确；Secure 必须跟配置走——
-    HTTP 部署下写死 Secure 会让浏览器不回传 cookie。"""
-    response.set_cookie(
-        key=admin_auth.SESSION_COOKIE_NAME,
-        value=token,
-        max_age=settings.admin_session_days * 86400,
-        httponly=True,
-        samesite="Strict",
-        secure=settings.admin_cookie_secure,
-        path="/",
-    )
-
-
-def require_admin(
-    response: Response,
-    session: str | None = Cookie(default=None, alias=admin_auth.SESSION_COOKIE_NAME),
-) -> None:
-    """鉴权依赖。通过后立刻重新签发 cookie——滑动刷新，活跃使用不掉线。
-
-    先查口令是否已配置，再验 session：verify_session 只依赖 secret_key，
-    完全不看口令有没有配，于是「未配置口令则整体 503」在没有这道检查时
-    只对 /login 成立——已发出的 cookie 在口令被清空（README 记录的唯一
-    「关门」手段）之后仍然继续有效，直到自然过期。这条检查让「口令未
-    配置」对所有受保护端点都生效，不只挡新登录，也挡旧会话。
-    """
-    if not settings.admin_password_hash:
-        raise AdminNotConfigured("未配置 PPTX2PDF_ADMIN_PASSWORD_HASH，管理入口不可用")
-    admin_auth.verify_session(session)
-    _set_session_cookie(response, admin_auth.issue_session())
-
-
-@router.post("/login", status_code=204)
-def login(payload: AdminLoginRequest, response: Response) -> Response:
-    admin_auth.verify_password(payload.password)
-    _set_session_cookie(response, admin_auth.issue_session())
-    response.status_code = 204
-    return response
-
-
 @router.get("/graph-credentials", response_model=GraphCredentialsDto)
 def get_graph_credentials(
-    _: None = Depends(require_admin), db: Session = Depends(get_session)
+    _: User = Depends(require_admin), db: Session = Depends(get_session)
 ) -> GraphCredentialsDto:
     try:
         data = graph_credentials.load_credentials(db)
@@ -95,7 +56,7 @@ def get_graph_credentials(
 @router.put("/graph-credentials", response_model=SelftestResultDto)
 def put_graph_credentials(
     payload: GraphCredentialsUpdate,
-    _: None = Depends(require_admin),
+    _: User = Depends(require_admin),
     db: Session = Depends(get_session),
 ) -> SelftestResultDto:
     """先测后存：五步自检全绿才写库。
@@ -151,18 +112,3 @@ def put_graph_credentials(
         drive_path=creds.drive_path,
     )
     return SelftestResultDto(ok=True, steps=steps)
-
-
-@router.post("/logout", status_code=204)
-def logout(response: Response) -> Response:
-    """不要求鉴权：语义是清掉浏览器上的 cookie，cookie 已过期时同样应该成功。
-    若要求鉴权，过期后点登出会得到 401，而用户想做的恰恰是清理这个失效状态。"""
-    response.delete_cookie(
-        key=admin_auth.SESSION_COOKIE_NAME,
-        path="/",
-        httponly=True,
-        samesite="Strict",
-        secure=settings.admin_cookie_secure,
-    )
-    response.status_code = 204
-    return response

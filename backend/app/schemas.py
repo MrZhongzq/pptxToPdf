@@ -141,3 +141,65 @@ class SelftestStepDto(BaseModel):
 class SelftestResultDto(BaseModel):
     ok: bool
     steps: list[SelftestStepDto]
+
+
+# ---- 六期：账号 ----
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=256)
+
+
+class UserDto(BaseModel):
+    """对外的用户视图。**永远不含 password_hash**——哈希不是秘密，但把它
+    发到浏览器等于把离线爆破的入场券送出去，而它没有任何前端用途。"""
+
+    user_id: str
+    username: str
+    email: str
+    role: str
+    status: str
+    created_at: datetime
+
+
+class CreateUserRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=32)
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=8, max_length=256)
+    role: str = Field(default="user", pattern="^(admin|user)$")
+
+
+class SetUserStatusRequest(BaseModel):
+    status: str = Field(pattern="^(active|suspended)$")
+
+
+class SetUserPasswordRequest(BaseModel):
+    password: str = Field(min_length=8, max_length=256)
+
+
+# ---- 六期：防跨站白名单 ----
+
+
+class AllowedOriginDto(BaseModel):
+    origin_id: str
+    origin: str
+    note: str | None
+    created_at: datetime
+
+
+class CreateAllowedOriginRequest(BaseModel):
+    origin: str = Field(min_length=1, max_length=256)
+    note: str | None = Field(default=None, max_length=256)
+
+
+# ---- 六期：系统状态 ----
+
+
+class SystemStatsDto(BaseModel):
+    tasks_total: int
+    tasks_by_status: dict[str, int]
+    users_total: int
+    storage_originals_bytes: int
+    storage_outputs_bytes: int
+    storage_shards_bytes: int

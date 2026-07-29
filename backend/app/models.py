@@ -10,6 +10,39 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class User(Base):
+    __tablename__ = "users"
+
+    user_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    """登录标识，唯一。邮箱刻意不唯一——它只是联系方式，不参与鉴权，
+    强制唯一会挡住「admin 给同一个人开测试号」这种正常用法。"""
+    email: Mapped[str] = mapped_column(String(254))
+    password_hash: Mapped[str] = mapped_column(String(256))
+    """复用四期的 scrypt:<salt_hex>:<hash_hex>，见 services/auth.hash_password。"""
+    role: Mapped[str] = mapped_column(String(16), default="user")
+    """"admin" | "user"。只有两级，不做权限组。"""
+    status: Mapped[str] = mapped_column(String(16), default="active")
+    """"active" | "suspended"。删除是真删行，不做软删——否则「用户名唯一」
+    会变得别扭：删掉的用户名到底还能不能再用。"""
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class AllowedOrigin(Base):
+    """防跨站白名单。六期先建骨架，默认不启用（见 settings.origin_guard_enabled）。"""
+
+    __tablename__ = "allowed_origins"
+
+    origin_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    origin: Mapped[str] = mapped_column(String(256), unique=True, index=True)
+    """域名或 IP，可带端口。比对时只看 host:port，不看协议。"""
+    note: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class Upload(Base):
     __tablename__ = "uploads"
 
@@ -54,6 +87,11 @@ class Task(Base):
     engine: Mapped[str] = mapped_column(String(32), default="unassigned")
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 「成功了，但有保留」——后处理只做到一半时的说明，JSON 数组。
+    # 不能塞进 error_message：那个字段的存在即代表失败，前端据此渲染红色
+    # 告警并停止轮询。动画展开跳过了几页仍然是一次成功的转换，用户拿得到
+    # PDF，但必须明确知道哪几页没能展开，不能静默。
+    warnings_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     output_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
