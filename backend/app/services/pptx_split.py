@@ -1,10 +1,20 @@
 import logging
-import posixpath
 import re
 import shutil
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
+
+from app.services.opc_rewrite import (
+    CT_NS,
+    REL_NS,
+    owner_part,
+    read_rels,
+    rels_path,
+    resolve,
+    rewrite_content_types,
+    rewrite_rels,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -13,10 +23,6 @@ PKG_RELS = "_rels/.rels"
 
 P_NS = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
 R_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
-REL_NS_URI = "http://schemas.openxmlformats.org/package/2006/relationships"
-CT_NS_URI = "http://schemas.openxmlformats.org/package/2006/content-types"
-REL_NS = "{" + REL_NS_URI + "}"
-CT_NS = "{" + CT_NS_URI + "}"
 
 SLIDE_REL_TYPE = (
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide"
@@ -31,53 +37,6 @@ DROP_REL_TYPES = {
 COPY_CHUNK = 1024 * 1024
 
 
-def _rels_path(part: str) -> str:
-    """ppt/slides/slide1.xml -> ppt/slides/_rels/slide1.xml.rels"""
-    d, name = posixpath.split(part)
-    return posixpath.join(d, "_rels", name + ".rels") if d else f"_rels/{name}.rels"
-
-
-def _owner_part(rels_name: str) -> str:
-    """_rels_path 的反函数：
-    ppt/slides/_rels/slide1.xml.rels -> ppt/slides/slide1.xml
-    _rels/.rels -> ""（包级）。
-
-    Relationship 的 Target 是相对于它的 owner part 所在目录解析的
-    （见 _resolve），_rewrite_rels 需要知道 owner 才能正确判断某条
-    Relationship 该不该被删——不能只有 presentation.xml.rels 用对了
-    base_part，其余 .rels（slide 自己的、包级的）也一样需要。
-    """
-    d = posixpath.dirname(rels_name)
-    base = posixpath.basename(rels_name)
-    name = base[: -len(".rels")]
-    parent_dir = posixpath.dirname(d)
-    return posixpath.join(parent_dir, name) if name else parent_dir
-
-
-def _resolve(base_part: str, target: str) -> str:
-    """把 rels 里相对于 base_part 所在目录的 Target 解析成包内绝对路径。"""
-    if target.startswith("/"):
-        return target.lstrip("/")
-    return posixpath.normpath(posixpath.join(posixpath.dirname(base_part), target))
-
-
-def _read_rels(zf: zipfile.ZipFile, part: str) -> list[tuple[str, str, str]]:
-    """返回 [(rId, type, resolved_target)]，跳过外部链接。"""
-    rels_name = _rels_path(part)
-    try:
-        raw = zf.read(rels_name)
-    except KeyError:
-        return []
-    out = []
-    for rel in ET.fromstring(raw):
-        if rel.get("TargetMode") == "External":
-            continue
-        out.append(
-            (rel.get("Id"), rel.get("Type"), _resolve(part, rel.get("Target")))
-        )
-    return out
-
-
 def _collect(zf: zipfile.ZipFile, part: str, keep: set[str]) -> None:
     """从 part 出发递归收集依赖的所有 part（含它自己的 .rels）。
 
@@ -90,7 +49,7 @@ def _collect(zf: zipfile.ZipFile, part: str, keep: set[str]) -> None:
     决定，不能被 deck 内部的超链接改写。
 
     取舍：跳过之后，若跳转目标恰好不在这次分片的 keep_parts 里，
-    _rewrite_rels 会把发起跳转的 slide 自己的 .rels 里那条
+    rewrite_rels 会把发起跳转的 slide 自己的 .rels 里那条
     Relationship 删掉，而它的正文里 r:id="rIdN" 还留着，变成悬空
     引用。接受这个代价——悬空 rId 只是让这一条超链接失效（PDF 转换
     环境会当成失效内容忽略），而不过滤的后果是分片的物理 slide part
@@ -100,10 +59,10 @@ def _collect(zf: zipfile.ZipFile, part: str, keep: set[str]) -> None:
     if part in keep:
         return
     keep.add(part)
-    rels_name = _rels_path(part)
+    rels_name = rels_path(part)
     if rels_name in zf.namelist():
         keep.add(rels_name)
-    for _rid, rel_type, target in _read_rels(zf, part):
+    for _rid, rel_type, target in read_rels(zf, part):
         if rel_type in DROP_REL_TYPES:
             continue
         if rel_type == SLIDE_REL_TYPE:
@@ -119,7 +78,7 @@ def _slide_order(zf: zipfile.ZipFile) -> list[tuple[str, str]]:
     if lst is None:
         raise ValueError("presentation.xml 缺少 sldIdLst")
     rid_to_target = {
-        rid: target for rid, _t, target in _read_rels(zf, PRESENTATION)
+        rid: target for rid, _t, target in read_rels(zf, PRESENTATION)
     }
     order = []
     for sld in lst.findall(f"{P_NS}sldId"):
@@ -201,43 +160,6 @@ def _rewrite_presentation(raw: bytes, keep_rids: set[str]) -> bytes:
     return result
 
 
-def _rewrite_rels(raw: bytes, keep_parts: set[str], base_part: str) -> bytes:
-    """删掉指向未保留 part 的 Relationship。
-
-    rId 一律不重编号：保留的 slide XML 内部有 r:embed="rId3" 这类引用，
-    重编号就要同步改写每个 slide 的正文，那是引入 bug 的捷径。
-
-    .rels 文档结构扁平、不带 MCE 标记，可以放心用 ET 往返，但要在
-    tostring 之前重新登记默认命名空间的前缀，否则 ET 会把
-    `xmlns="...relationships"` 序列化成 `xmlns:ns0="...relationships"`
-    这种合法但不是原始写法的形式。
-    """
-    ET.register_namespace("", REL_NS_URI)
-    root = ET.fromstring(raw)
-    for rel in list(root):
-        if rel.get("TargetMode") == "External":
-            continue
-        target = _resolve(base_part, rel.get("Target"))
-        if target not in keep_parts:
-            root.remove(rel)
-    return ET.tostring(root, xml_declaration=True, encoding="UTF-8")
-
-
-def _rewrite_content_types(raw: bytes, keep_parts: set[str]) -> bytes:
-    """删掉未保留 part 的 Override。Default（按扩展名）全部保留。
-
-    同 _rewrite_rels，序列化前重新登记默认命名空间前缀，理由同上。
-    """
-    ET.register_namespace("", CT_NS_URI)
-    root = ET.fromstring(raw)
-    for node in list(root):
-        if node.tag == f"{CT_NS}Override":
-            part = node.get("PartName", "").lstrip("/")
-            if part not in keep_parts:
-                root.remove(node)
-    return ET.tostring(root, xml_declaration=True, encoding="UTF-8")
-
-
 def split_pptx(
     src: Path, ranges: list[tuple[int, int]], out_dir: Path
 ) -> list[Path]:
@@ -260,7 +182,7 @@ def split_pptx(
                 )
 
         names = set(zin.namelist())
-        pres_rels_name = _rels_path(PRESENTATION)
+        pres_rels_name = rels_path(PRESENTATION)
 
         for idx, (start, end) in enumerate(ranges):
             kept = order[start - 1 : end]
@@ -272,7 +194,7 @@ def split_pptx(
                 _collect(zin, part, keep_parts)
             # presentation 级依赖里除 slide 之外的部分（master / theme /
             # presProps / viewProps / tableStyles），它们不被 slide 直接引用
-            for _rid, rel_type, target in _read_rels(zin, PRESENTATION):
+            for _rid, rel_type, target in read_rels(zin, PRESENTATION):
                 if rel_type == SLIDE_REL_TYPE or rel_type in DROP_REL_TYPES:
                     continue
                 _collect(zin, target, keep_parts)
@@ -283,7 +205,7 @@ def split_pptx(
             # part（它的 .rels 已经在下面 keep_parts.update 里单独加了）。
             keep_parts.add(PRESENTATION)
             # 包级：docProps 等
-            for _rid, rel_type, target in _read_rels(zin, ""):
+            for _rid, rel_type, target in read_rels(zin, ""):
                 if rel_type in DROP_REL_TYPES:
                     continue
                 _collect(zin, target, keep_parts)
@@ -312,13 +234,13 @@ def split_pptx(
                         # 变成 OPC 不允许的悬空引用。
                         zout.writestr(
                             name,
-                            _rewrite_rels(
-                                zin.read(name), keep_parts, _owner_part(name)
+                            rewrite_rels(
+                                zin.read(name), keep_parts, owner_part(name)
                             ),
                         )
                     elif name == "[Content_Types].xml":
                         zout.writestr(
-                            name, _rewrite_content_types(zin.read(name), keep_parts)
+                            name, rewrite_content_types(zin.read(name), keep_parts)
                         )
                     else:
                         # 流式搬运，不把 part 整个读进内存
