@@ -319,3 +319,60 @@ describe('App 两段式上传：ReadyCard 与「开始转换」', () => {
     )
   })
 })
+
+describe('App 覆盖已有 ready 任务前的确认（复审 Important：UploadDropzone 传完一直可点可拖，用户中途拖入第二个文件是正常操作路径，不是边角场景）', () => {
+  beforeEach(() => {
+    mocks.getCapacityConfig.mockReset().mockResolvedValue(CAPACITY)
+    mocks.uploadFile.mockReset().mockResolvedValue({ taskId: 'T1' })
+    mocks.startTask.mockReset()
+  })
+
+  async function uploadASmallFile() {
+    render(<App />)
+    await waitFor(() => expect(mocks.getCapacityConfig).toHaveBeenCalled())
+    chooseFile(fileOfSize(2 * MIB))
+    await screen.findByText('deck.pptx')
+  }
+
+  it('已有 ready 任务时选第二个文件：先出确认，不发上传请求', async () => {
+    await uploadASmallFile()
+    mocks.uploadFile.mockClear()
+
+    chooseFile(fileOfSize(3 * MIB, 'deck2.pptx'))
+
+    expect(await screen.findByText(/继续上传会放弃它/)).toBeInTheDocument()
+    expect(mocks.uploadFile).not.toHaveBeenCalled()
+    // 旧任务的卡片原样还在——不能因为选了新文件就先把它挤没了。
+    expect(screen.getByText('deck.pptx')).toBeInTheDocument()
+  })
+
+  it('确认「继续上传」：旧的 ready 任务被放弃，新文件正常走原有的上传流程', async () => {
+    await uploadASmallFile()
+    mocks.uploadFile.mockReset().mockResolvedValue({ taskId: 'T2' })
+
+    chooseFile(fileOfSize(3 * MIB, 'deck2.pptx'))
+    await screen.findByRole('button', { name: '继续上传' })
+
+    fireEvent.click(screen.getByRole('button', { name: '继续上传' }))
+
+    await screen.findByText('deck2.pptx')
+    expect(mocks.uploadFile).toHaveBeenCalledTimes(1)
+    expect(mocks.uploadFile.mock.calls[0][0].name).toBe('deck2.pptx')
+    // 旧的被换掉了，不是并存。
+    expect(screen.queryByText('deck.pptx')).toBeNull()
+  })
+
+  it('点「取消」：旧的 ready 任务原样保留，不发任何上传请求', async () => {
+    await uploadASmallFile()
+    mocks.uploadFile.mockClear()
+
+    chooseFile(fileOfSize(3 * MIB, 'deck2.pptx'))
+    await screen.findByRole('button', { name: '取消' })
+
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+
+    expect(screen.queryByText(/继续上传会放弃它/)).toBeNull()
+    expect(screen.getByText('deck.pptx')).toBeInTheDocument()
+    expect(mocks.uploadFile).not.toHaveBeenCalled()
+  })
+})

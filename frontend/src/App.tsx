@@ -67,6 +67,14 @@ function UploadPage() {
   const [capacity, setCapacity] = useState<CapacityConfig | null>(null)
   // 五期两段式上传：传完先停在这里，等用户点「开始转换」，不直接入队。
   const [readyTask, setReadyTask] = useState<ReadyTask | null>(null)
+  // 复审 Important：UploadDropzone 在有 readyTask 时依旧照常可点可拖，
+  // 用户传完 A 去泡咖啡、回来传 B 是完全正常的操作路径，不是多标签页
+  // 才会撞见的边角情形。直接用 B 覆盖 A 会让 A 的卡片无声消失、任务
+  // 列表里也找不到（A 从没进过 taskIds），1 小时后被 TTL 静默回收——
+  // 跟"选了 Graph 却背着用户转 LibreOffice"是同一类"操作结果没告知就
+  // 被清除"，一样属于"绝不静默"要挡住的范围。这里存一下待确认的新文件，
+  // 等用户明确选"继续上传"才真的丢弃旧的 ready 任务。
+  const [pendingReplacementFile, setPendingReplacementFile] = useState<File | null>(null)
   // 只用来给风险确认横幅上的两个按钮做防抖——ReadyCard 自己的按钮已经
   // 用组件内部的 starting 挡过一次快速点击，但确认横幅是 App 直接渲染的，
   // 不经过 ReadyCard，没有那层保护，得单独补上。
@@ -173,8 +181,9 @@ function UploadPage() {
   // 命中风险（graph_max_shard_bytes / merge 预算 / 分片总容量任一档）时
   // 停下来等用户从两个按钮里选一个；没有风险（或者引擎不是 graph、或者
   // capacity 还没取到）时直接上传，不给正常路径加多余的一次点击。
-  const handleFileSelected = (file: File) => {
-    setError(null)
+  // Graph 风险判定 + 上传，两个入口共用（正常选文件、确认覆盖旧 ready
+  // 任务之后），保证两条路径的判定逻辑不会各写一份、慢慢跑偏。
+  const proceedWithFileSelection = (file: File) => {
     const risk =
       engine === 'graph' && capacity !== null ? assessGraphRisk(file.size, capacity) : 'none'
     if (risk !== 'none') {
@@ -187,6 +196,30 @@ function UploadPage() {
     // ConversionOptionsPanel 锁死到再也切不了引擎。
     setPendingFile(null)
     void startUpload(file, engine)
+  }
+
+  const handleFileSelected = (file: File) => {
+    setError(null)
+    if (readyTask !== null) {
+      // 有一个待开始的任务——先问，问之前不发任何上传请求。跟四期的
+      // 容量确认同一条原则：不可逆的丢弃发生前必须停下来问。
+      setPendingReplacementFile(file)
+      return
+    }
+    proceedWithFileSelection(file)
+  }
+
+  const confirmReplaceReadyTask = () => {
+    if (!pendingReplacementFile) return
+    const file = pendingReplacementFile
+    setPendingReplacementFile(null)
+    setError(null)
+    setReadyTask(null)
+    proceedWithFileSelection(file)
+  }
+
+  const cancelReplaceReadyTask = () => {
+    setPendingReplacementFile(null)
   }
 
   const confirmProceedWithGraph = () => {
@@ -227,6 +260,40 @@ function UploadPage() {
           onFileSelected={handleFileSelected}
           maxBytes={capacity?.max_file_size ?? MAX_BYTES}
         />
+
+        {pendingReplacementFile !== null && readyTask !== null && (
+          <div
+            className="card"
+            style={{
+              padding: 'var(--space-3)',
+              borderLeft: '4px solid var(--c-notable)',
+              fontSize: 13,
+              lineHeight: 1.6,
+            }}
+          >
+            <p>
+              当前有一个待开始的任务《{readyTask.filename}》，继续上传会放弃它。
+            </p>
+            <div
+              style={{
+                display: 'flex',
+                gap: 'var(--space-2)',
+                marginTop: 'var(--space-3)',
+              }}
+            >
+              <button type="button" className="btn btn-ghost" onClick={cancelReplaceReadyTask}>
+                取消
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={confirmReplaceReadyTask}
+              >
+                继续上传
+              </button>
+            </div>
+          </div>
+        )}
 
         {pendingFile !== null && graphRisk !== 'none' && (
           <div
@@ -278,7 +345,7 @@ function UploadPage() {
               options={options}
               onOptionsChange={setOptions}
               onStart={handleStart}
-              disabled={readyGraphRisk !== 'none'}
+              disabled={readyGraphRisk !== 'none' || pendingReplacementFile !== null}
             />
 
             {readyGraphRisk !== 'none' && (
