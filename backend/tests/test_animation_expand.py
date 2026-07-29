@@ -399,3 +399,45 @@ def test_no_animation_target_dangles(tmp_path):
             present = set(_slide_shape_ids(deck, name))
             for sp_tgt in root.iter(f"{P}spTgt"):
                 assert sp_tgt.get("spid") in present, f"{name} 的动画指向已删除的形状"
+
+
+def test_new_versions_drop_the_notes_slide_relationship(tmp_path):
+    """真机二分实验抓到的 406 根因：备注页与幻灯片是双向引用，把原页的
+    rels 原样复制给新版本，就出现「两个 slide 指向同一个备注页，而备注页
+    只认其中一个」的不一致。Office 在线服务据此拒绝整份文档，LibreOffice
+    照转不误——所以只跑 LibreOffice 会假绿。
+    """
+    base = _deck(tmp_path / "base.pptx", pages=1)
+    deck = _inject(
+        base, tmp_path / "a.pptx", 1,
+        _timing(_STEP_TEMPLATE.format(behaviors=_behavior("99"))),
+        shapes_xml=_shape("99", "框"),
+    )
+    # 给原页挂一个 notesSlide 关系与对应的 part
+    notes_rel = (
+        '<Relationship Id="rIdNotes" Type="http://schemas.openxmlformats.org/'
+        'officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide1.xml"/>'
+    )
+    tmp2 = tmp_path / "b.pptx"
+    with zipfile.ZipFile(deck) as zin, zipfile.ZipFile(tmp2, "w") as zout:
+        for item in zin.infolist():
+            raw = zin.read(item.filename)
+            if item.filename == "ppt/slides/_rels/slide1.xml.rels":
+                raw = raw.replace(b"</Relationships>", notes_rel.encode() + b"</Relationships>")
+            zout.writestr(item, raw)
+        zout.writestr("ppt/notesSlides/notesSlide1.xml", b"<p:notes/>")
+        zout.writestr(
+            "ppt/notesSlides/_rels/notesSlide1.xml.rels",
+            b'<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/'
+            b'package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.'
+            b'openxmlformats.org/officeDocument/2006/relationships/slide" '
+            b'Target="../slides/slide1.xml"/></Relationships>',
+        )
+
+    expand_animations(tmp2)
+
+    with zipfile.ZipFile(tmp2) as zf:
+        new_rels = zf.read("ppt/slides/_rels/slide2.xml.rels").decode()
+        assert "notesSlide" not in new_rels, "新版本不该继承原页的备注页关系"
+        # 原页仍然保留它自己的备注
+        assert "notesSlide" in zf.read("ppt/slides/_rels/slide1.xml.rels").decode()

@@ -199,6 +199,35 @@ def _drop_timing(slide_root: ET.Element) -> None:
         slide_root.remove(timing)
 
 
+REL_NS_URI = "http://schemas.openxmlformats.org/package/2006/relationships"
+NOTES_SLIDE_REL = R_URI + "/notesSlide"
+
+
+def _strip_notes_rel(rels_blob: bytes) -> bytes:
+    """从复制给新版本的 rels 里去掉 notesSlide 关系。
+
+    这是真机二分实验抓到的 406 根因：备注页与幻灯片是**双向**引用——
+    slide 的 rels 指向 notesSlideN，而 notesSlideN 的 rels 又指回它所属的
+    那一个 slide。把原页的 rels 原样复制给新版本，就出现了「两个 slide
+    指向同一个备注页，而备注页只认其中一个」的不一致，Office 在线服务
+    据此拒绝整份文档（HTTP 406），LibreOffice 则照转不误。
+
+    实验证据（真实课件 slide29，59 页）：
+      A 未展开                    -> Graph 成功
+      B 加一份完整副本（含 notes） -> Graph 406
+      C 同 B 但去掉 notesSlide     -> Graph 成功
+
+    展开出的中间版本本来也不需要备注页——备注内容归原页，那一版仍然
+    完整保留着它。
+    """
+    ET.register_namespace("", REL_NS_URI)
+    root = ET.fromstring(rels_blob)
+    for rel in list(root):
+        if rel.get("Type") == NOTES_SLIDE_REL:
+            root.remove(rel)
+    return ET.tostring(root, xml_declaration=True, encoding="UTF-8")
+
+
 def _has_alternate_content(raw: bytes) -> bool:
     return b"AlternateContent" in raw
 
@@ -348,7 +377,7 @@ def _build(
             new_name = f"ppt/slides/slide{next_slide_no}.xml"
             new_parts[new_name] = ET.tostring(root, xml_declaration=True, encoding="UTF-8")
             if rels_blob is not None:
-                new_rels[rels_path(new_name)] = rels_blob
+                new_rels[rels_path(new_name)] = _strip_notes_rel(rels_blob)
 
             inserts.setdefault(part, []).append(
                 (new_name, f"rId{next_rid_no}", next_sld_id)
