@@ -90,4 +90,20 @@ describe('GRAPH_RISK_MESSAGE（终审 I-2）', () => {
       expect(GRAPH_RISK_MESSAGE[risk]).toMatch(/实际.*体积|体积.*实际/)
     },
   )
+
+  it.each(['budget', 'reject'] as const)(
+    '"%s" 档：硬性的"建议改用 LibreOffice"必须在"剥离/体积可能更低"这句缓和表述之前，不能紧跟在后面自相矛盾（复审 Minor）',
+    (risk) => {
+      // 复审指出：「…实际体积可能明显更低，请结合内容自行判断。建议改用
+      // LibreOffice 引擎。」——缓和表述与硬推荐紧挨着，语气自相矛盾。
+      // 正确顺序是先给结论（建议改用），再补充"不过实际体积可能更低，
+      // 可自行判断"这条缓和的但书，而不是反过来。
+      const msg = GRAPH_RISK_MESSAGE[risk]
+      const adviceIdx = msg.indexOf('建议改用 LibreOffice 引擎')
+      const stripIdx = msg.indexOf('剥离')
+      expect(adviceIdx).toBeGreaterThan(-1)
+      expect(stripIdx).toBeGreaterThan(-1)
+      expect(adviceIdx).toBeLessThan(stripIdx)
+    },
+  )
 })

@@ -56,6 +56,14 @@ export function assessGraphRisk(fileBytes: number, capacity: CapacityConfig): Gr
 const STRIP_HINT =
   '转换前会先统一剥离内嵌视频/音频等媒体，若这部分占比较大，实际参与转换的体积可能明显低于当前文件体积，请结合内容自行判断。'
 
+// 复审 Minor：budget/reject 两档如果把 STRIP_HINT 这句缓和表述放在硬性
+// 的"建议改用 LibreOffice 引擎"之前，会读成"实际体积可能明显更低，请
+// 自行判断——（紧接着）建议改用引擎"，语气自相矛盾。这两档改成先给结论
+// （建议改用），再用"不过"转折补一句体积可能更低的但书——但书是"你可以
+// 自行判断要不要坚持 Graph"，不是推翻前面的建议。
+const STRIP_CAVEAT =
+  '不过转换前会先统一剥离内嵌视频/音频等媒体，若这部分占比较大，实际参与转换的体积可能明显低于当前文件体积，可结合内容自行判断是否仍要坚持 Graph。'
+
 export const GRAPH_RISK_MESSAGE: Record<Exclude<GraphRisk, 'none'>, string> = {
   shard:
     '此文件较大，Graph 通道会将其切分后分批转换，比不切片更慢。' +
@@ -64,10 +72,10 @@ export const GRAPH_RISK_MESSAGE: Record<Exclude<GraphRisk, 'none'>, string> = {
   budget:
     '此文件体积较大，即使 Graph 通道顺利切片、逐片转换成功，仍可能在最终合并阶段因总体积超限而失败——' +
     '这种失败发生在转换即将完成时，最费时间。PDF 实际体积与 pptx 不成固定比例，无法精确预测，但体积越大风险越高。' +
-    STRIP_HINT +
-    '建议改用 LibreOffice 引擎。',
+    '建议改用 LibreOffice 引擎。' +
+    STRIP_CAVEAT,
   reject:
     '此文件已超过 Graph 通道能处理的分片总容量，大概率会在切片规划阶段就被直接拒绝，不会先切片再浪费转换时间。' +
-    STRIP_HINT +
-    '建议改用 LibreOffice 引擎。',
+    '建议改用 LibreOffice 引擎。' +
+    STRIP_CAVEAT,
 }

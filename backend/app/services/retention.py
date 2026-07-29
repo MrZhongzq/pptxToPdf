@@ -119,11 +119,12 @@ def purge_expired_ready() -> int:
     两条清理路径必须用各自的表和各自的字段来判断，不能共用一次扫描。
 
     整体包一层 try/except，与同文件 reap_stale_tasks 同一理由：本函数的
-    两个调用点（main.py 启动钩子、pipeline.run_task 的 finally）都是
-    「顺便清理一下」的性质，不是这次请求的主体。尤其是 run_task 的
-    finally 里，这行之后还有 session.close() 收尾调用方自己的会话——
-    这里若抛出未捕获异常会直接跳过那一句，造成会话/连接泄漏，比"这次没
-    清成"严重得多。
+    三个调用点（main.py 启动钩子、pipeline.run_task 的 finally、
+    uploads.py::complete_upload——M-1 补的第三个，堵住"只传不点开始"这个
+    原本谁都够不到自己的场景）都是「顺便清理一下」的性质，不是这次请求
+    的主体。尤其是 run_task 的 finally 里，这行之后还有 session.close()
+    收尾调用方自己的会话——这里若抛出未捕获异常会直接跳过那一句，造成
+    会话/连接泄漏，比"这次没清成"严重得多。
     """
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
         hours=settings.ready_ttl_hours
