@@ -18,13 +18,6 @@ from app.errors import (
     UploadSizeExceeded,
 )
 from app.models import Task, Upload
-# 五期起 complete_upload 不再调用它——入队点整体挪到了 tasks.py 的
-# /start（含 Redis 不可达时的兜底）。这里仍然保留这个 import，只是为了
-# 让 test_task_start.py::test_complete_leaves_task_ready_and_does_not_enqueue
-# 能够 monkeypatch "app.api.uploads.enqueue_conversion" 并断言它「从未被
-# 调用」——那条断言需要这个名字在本模块里可寻址。若以后连这个名字也删掉，
-# 记得同步改掉那条测试改成别的验证方式（例如直接 grep 调用点）。
-from app.queue import enqueue_conversion  # noqa: F401
 from app.schemas import (
     ChunkAck,
     CompleteResponse,
@@ -230,10 +223,11 @@ def complete_upload(
         requested_engine=upload.requested_engine,
         status="ready",
     )
-    # engine 仍留 "unassigned"：用户指定的引擎名带在 upload 上，仅作为
-    # start 端点的默认值来源；真正决定引擎与选项的时机挪到了 start——
-    # 用户传的过程中还能慢慢想清楚用哪个引擎，不必上传前就定死。
-    # select_engine 仍是在 run_task 里 probe 之后才定夺。
+    # engine 仍留 "unassigned"：这里转写的 upload.requested_engine 是真正的
+    # 默认值——start 端点只在 payload.engine 非 None 时才覆盖它（见
+    # tasks.py::start_task），不传就沿用上传时选的这份。用户传的过程中
+    # 仍然能改主意换引擎，只是不改就不会被静默清空。
+    # select_engine 仍是在 run_task 里 probe 之后才定夺实际使用的引擎。
     session.add(task)
     session.commit()
 

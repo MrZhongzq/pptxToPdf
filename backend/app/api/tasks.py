@@ -130,7 +130,14 @@ def start_task(
     if task.status != "ready":
         raise TaskAlreadyStarted(f"任务状态为 {task.status}，无法重复启动")
 
-    task.requested_engine = payload.engine
+    # 用户裁决：沿用上传时选的。upload.requested_engine 已经在 complete_upload
+    # 里转写进了 task.requested_engine；start 不传 engine 时不该覆盖它——
+    # 无条件赋值会把上传时选好的引擎静默改成 None，而 pipeline.py 只在
+    # 入队之后（也就是只有 start 之后）才读这个字段，complete 写的值原本
+    # 在任何路径下都到不了 select_engine。options 走的是同款
+    # `is not None` 才写的模式，这里补齐保持两个字段行为对称。
+    if payload.engine is not None:
+        task.requested_engine = payload.engine
     if payload.options is not None:
         task.options_json = payload.options.model_dump_json()
     task.status = "pending"

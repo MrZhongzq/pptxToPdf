@@ -38,12 +38,17 @@ def _sample_deck_bytes() -> bytes:
     return buf.getvalue()
 
 
-def _upload_a_deck(client) -> str:
-    """走完整的分块上传协议，落地一个 ready 状态的任务，返回 task_id。"""
+def _upload_a_deck(client, engine: str | None = None) -> str:
+    """走完整的分块上传协议，落地一个 ready 状态的任务，返回 task_id。
+
+    engine：透传给 POST /api/uploads 的 `engine` 字段（用户上传时选的引擎，
+    未废弃，参见 CreateUploadRequest）。默认 None，即不指定。
+    """
     payload = _sample_deck_bytes()
-    created = client.post(
-        "/api/uploads", json={"filename": "deck.pptx", "size": len(payload)}
-    ).json()
+    body = {"filename": "deck.pptx", "size": len(payload)}
+    if engine is not None:
+        body["engine"] = engine
+    created = client.post("/api/uploads", json=body).json()
     uid, size = created["upload_id"], created["chunk_size"]
     for idx in range(created["total_chunks"]):
         client.put(
@@ -81,9 +86,22 @@ def _load_task_row(task_id: str):
 
 
 def test_complete_leaves_task_ready_and_does_not_enqueue(client, monkeypatch):
-    """complete 只拼装落库，不入队。"""
+    """complete 只拼装落库，不入队。
+
+    fix round：uploads.py 已经不再 import enqueue_conversion（谁在
+    complete_upload 里写 enqueue_conversion(task_id) 现在会直接 NameError，
+    比一条测试更硬）。monkeypatch.setattr 默认要求属性已存在，这里用
+    raising=False 让它在 app.api.uploads 的模块 globals 上新建这个名字——
+    如果生产代码真被改回去调用它，运行时依然会解析到这个假替身并被
+    enqueued 断言抓住；不加 raising=False 则会在 setattr 这一步就
+    AttributeError，反而测不到「加回调用」这个变异。
+    """
     enqueued = []
-    monkeypatch.setattr("app.api.uploads.enqueue_conversion", lambda t: enqueued.append(t))
+    monkeypatch.setattr(
+        "app.api.uploads.enqueue_conversion",
+        lambda t: enqueued.append(t),
+        raising=False,
+    )
     task_id = _upload_a_deck(client)
     task = _get_task(task_id)
     assert task["status"] == "ready"
@@ -111,6 +129,21 @@ def test_start_records_engine_and_options(client, monkeypatch):
     task = _load_task_row(task_id)
     assert task.requested_engine == "graph"
     assert "expand_animations" in (task.options_json or "")
+
+
+def test_start_without_engine_keeps_the_one_chosen_at_upload(client, monkeypatch):
+    """fix round I1：上传时选了引擎、start 不带 engine 时不该被静默清空。
+
+    complete_upload 把 upload.requested_engine 转写进 task.requested_engine；
+    start 之前它是无条件覆盖成 payload.engine（默认 None），上传时选的引擎
+    会在没人碰它的情况下消失。用户裁决沿用上传时选的——start 只在
+    payload.engine 非 None 时才覆盖。
+    """
+    monkeypatch.setattr("app.api.tasks.enqueue_conversion", lambda t: None)
+    task_id = _upload_a_deck(client, engine="graph")
+    client.post(f"/api/tasks/{task_id}/start", json={})
+    task = _load_task_row(task_id)
+    assert task.requested_engine == "graph"
 
 
 def test_start_twice_is_409(client, monkeypatch):
