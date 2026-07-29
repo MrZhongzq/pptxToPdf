@@ -13,6 +13,10 @@ import { useTaskPolling } from '../hooks/useTaskPolling'
 // 而仓库里没有 ErrorBoundary，React 未捕获的渲染异常会卸载整棵树。
 // Record<联合类型, …> 让漏键在 tsc 阶段就报错，TaskCard.test.tsx 再守一层运行时。
 const STATUS: Record<TaskDto['status'], { label: string; badge: string }> = {
+  // 五期两段式上传：complete 之后落在这个状态，等用户点「开始转换」。
+  // taskIds 里正常不会出现 ready（App.tsx 把它单独存进 readyTask、渲染
+  // ReadyCard，start 成功才塞进 taskIds），这里补一条纯粹是为了不漏键。
+  ready: { label: '待开始', badge: 'badge-neutral' },
   pending: { label: '排队中', badge: 'badge-neutral' },
   parsing: { label: '解析中', badge: 'badge-accent' },
   queued: { label: '等待转换', badge: 'badge-neutral' },

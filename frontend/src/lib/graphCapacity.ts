@@ -33,3 +33,27 @@ export function assessGraphRisk(fileBytes: number, capacity: CapacityConfig): Gr
   if (fileBytes > capacity.graph_max_shard_bytes) return 'shard'
   return 'none'
 }
+
+// 三档措辞对应三种不同的失败/延迟形态，审查后特别注意两点：
+// 1. 不写绝对时长/百分比——LibreOffice 通道的真实耗时由
+//    convert_timeout_base_s / per_slide_s / per_mb_s 决定，仓库里没有
+//    支撑"一分钟内"这类承诺的实测数据；写死的数字一旦不成立，是在
+//    透支这个功能本身的可信度。
+// 2. "合并阶段"与"规划阶段"是两码事，不能混用——budget 档失败在合并，
+//    reject 档失败在规划，用户看到哪种措辞决定了他对失败时机的预期。
+//
+// 与 assessGraphRisk 同一份文件：两处上传前/开始转换前的确认横幅
+// （App.tsx 里的 pendingFile 与 readyTask 两套独立判定）都要用同一份
+// 措辞，不能各写各的、慢慢跑偏。
+export const GRAPH_RISK_MESSAGE: Record<Exclude<GraphRisk, 'none'>, string> = {
+  shard:
+    '此文件较大，Graph 通道会将其切分后分批转换，比不切片更慢。' +
+    'LibreOffice 通道不切片，通常明显更快。',
+  budget:
+    '此文件体积较大，即使 Graph 通道顺利切片、逐片转换成功，仍可能在最终合并阶段因总体积超限而失败——' +
+    '这种失败发生在转换即将完成时，最费时间。PDF 实际体积与 pptx 不成固定比例，无法精确预测，但体积越大风险越高。' +
+    '建议改用 LibreOffice 引擎。',
+  reject:
+    '此文件已超过 Graph 通道能处理的分片总容量，大概率会在切片规划阶段就被直接拒绝，不会先切片再浪费转换时间。' +
+    '建议改用 LibreOffice 引擎。',
+}

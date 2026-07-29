@@ -1,16 +1,19 @@
 import { useEffect, useState } from 'react'
 import { ConversionOptionsPanel } from './components/ConversionOptions'
+import { ReadyCard } from './components/ReadyCard'
 import { TaskList } from './components/TaskList'
 import { UploadDropzone } from './components/UploadDropzone'
 import { UploadProgress } from './components/UploadProgress'
 import {
+  ApiError,
   DEFAULT_OPTIONS,
   getCapacityConfig,
+  startTask,
   type CapacityConfig,
   type ConversionOptions,
   type EngineName,
 } from './lib/api'
-import { assessGraphRisk, type GraphRisk } from './lib/graphCapacity'
+import { assessGraphRisk, GRAPH_RISK_MESSAGE, type GraphRisk } from './lib/graphCapacity'
 import {
   uploadFile,
   type UploadPhase,
@@ -22,27 +25,6 @@ import './styles/global.css'
 // 取不到 /api/config/capacity（网络失败、还没返回）时的兜底——只用于
 // UploadDropzone 的前端早退拦截，真正的硬上限判定始终在后端。
 const MAX_BYTES = 600 * 1024 * 1024
-
-// 三档措辞对应三种不同的失败/延迟形态（见 lib/graphCapacity.ts 的文档
-// 注释），审查后特别注意两点：
-// 1. 不写绝对时长/百分比——LibreOffice 通道的真实耗时由
-//    convert_timeout_base_s / per_slide_s / per_mb_s 决定，仓库里没有
-//    支撑"一分钟内"这类承诺的实测数据；写死的数字一旦不成立，是在
-//    透支这个功能本身的可信度。
-// 2. "合并阶段"与"规划阶段"是两码事，不能混用——budget 档失败在合并，
-//    reject 档失败在规划，用户看到哪种措辞决定了他对失败时机的预期。
-const GRAPH_RISK_MESSAGE: Record<Exclude<GraphRisk, 'none'>, string> = {
-  shard:
-    '此文件较大，Graph 通道会将其切分后分批转换，比不切片更慢。' +
-    'LibreOffice 通道不切片，通常明显更快。',
-  budget:
-    '此文件体积较大，即使 Graph 通道顺利切片、逐片转换成功，仍可能在最终合并阶段因总体积超限而失败——' +
-    '这种失败发生在转换即将完成时，最费时间。PDF 实际体积与 pptx 不成固定比例，无法精确预测，但体积越大风险越高。' +
-    '建议改用 LibreOffice 引擎。',
-  reject:
-    '此文件已超过 Graph 通道能处理的分片总容量，大概率会在切片规划阶段就被直接拒绝，不会先切片再浪费转换时间。' +
-    '建议改用 LibreOffice 引擎。',
-}
 
 export default function App() {
   // 只有两个页面，一个 pathname 判断足够——不引入 react-router 这个依赖。
@@ -60,6 +42,15 @@ export default function App() {
   return <UploadPage />
 }
 
+/** complete 之后落在 ready 状态的任务——只留展示 ReadyCard 需要的三样，
+ *  不取整份 TaskDto：文件名/体积上传当下就知道，不用多打一次
+ *  GET /api/tasks/{id} 换一份此刻还没有其它字段可填的快照。 */
+interface ReadyTask {
+  taskId: string
+  filename: string
+  sizeBytes: number
+}
+
 function UploadPage() {
   const [taskIds, setTaskIds] = useState<string[]>([])
   const [progress, setProgress] = useState<P | null>(null)
@@ -74,6 +65,12 @@ function UploadPage() {
   // 硬编码一份可能漂移的副本；取到之前不渲染任何容量相关的提示，也不
   // 拿它做上传前拦截。
   const [capacity, setCapacity] = useState<CapacityConfig | null>(null)
+  // 五期两段式上传：传完先停在这里，等用户点「开始转换」，不直接入队。
+  const [readyTask, setReadyTask] = useState<ReadyTask | null>(null)
+  // 只用来给风险确认横幅上的两个按钮做防抖——ReadyCard 自己的按钮已经
+  // 用组件内部的 starting 挡过一次快速点击，但确认横幅是 App 直接渲染的，
+  // 不经过 ReadyCard，没有那层保护，得单独补上。
+  const [startingReadyTask, setStartingReadyTask] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -98,6 +95,15 @@ function UploadPage() {
       ? assessGraphRisk(pendingFile.size, capacity)
       : 'none'
 
+  // 上传前的风险预判决策点在"选文件时"（engine 那时已经定了）；这一份是
+  // 它的镜像，决策点后移到"点开始转换时"——引擎现在可以在 ReadyCard 上
+  // 换，只有真要发 start 请求的这一刻才需要重新评估。两套判定各自独立，
+  // 互不影响：改这一份不会碰到上面 pendingFile 那份的任何一行。
+  const readyGraphRisk: GraphRisk =
+    engine === 'graph' && readyTask !== null && capacity !== null
+      ? assessGraphRisk(readyTask.sizeBytes, capacity)
+      : 'none'
+
   const startUpload = async (file: File, engineToUse: EngineName) => {
     setError(null)
     try {
@@ -107,11 +113,55 @@ function UploadPage() {
         onProgress: setProgress,
         onPhase: setPhase,
       })
-      setTaskIds((prev) => [taskId, ...prev])
+      // 不直接入队——用户原话「有时候手没那么快，想先上传再选转换引擎和
+      // 选项」。落在 ready 状态，等 ReadyCard 上点「开始转换」才真正入队。
+      setReadyTask({ taskId, filename: file.name, sizeBytes: file.size })
       setProgress(null)
     } catch (err) {
       setProgress(null)
       setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  // 真正把 ready 任务送入队列。engine/options 单独传参而不是闭包读
+  // App 的 engine/options state——"仍然继续"/"改用 LibreOffice"这两个
+  // confirm 分支里，setEngine 还没来得及触发重渲染，闭包里的 engine 仍是
+  // 旧值，必须显式传当前要用的那个，跟四期 startUpload(file, engineToUse)
+  // 同一个理由。
+  const handleStart = async (engineToUse: EngineName, optionsToUse: ConversionOptions) => {
+    if (!readyTask) return
+    const taskId = readyTask.taskId
+    setStartingReadyTask(true)
+    setError(null)
+    try {
+      await startTask(taskId, engineToUse, optionsToUse)
+      setTaskIds((prev) => [taskId, ...prev])
+      setReadyTask(null)
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'TASK_ALREADY_STARTED') {
+        // 任务已经真的被启动过一次（比如另一个标签页抢先点了「开始转换」）
+        // ——它在正常转换，接上轮询才是对用户有用的恢复，不是当错误处理。
+        setTaskIds((prev) => [taskId, ...prev])
+        setReadyTask(null)
+      } else if (err instanceof ApiError && err.code === 'READY_EXPIRED') {
+        // ready 任务有 1 小时 TTL，原文件已经被回收——ReadyCard 停在原地
+        // 再点也没用，退回可以重新上传的状态。message 用后端已经写好的
+        // 原话（含具体 TTL 小时数），这里不重复拼一遍。
+        setReadyTask(null)
+        setError(err.message)
+      } else {
+        // 其它错误（网络故障、后端 500 等）：ReadyCard 原样留着，用户能
+        // 直接重试，不该因为一次瞬时错误就强迫已经传好的文件作废重传。
+        setError(
+          err instanceof ApiError
+            ? `${err.code}：${err.message}`
+            : err instanceof Error
+              ? err.message
+              : '启动转换失败',
+        )
+      }
+    } finally {
+      setStartingReadyTask(false)
     }
   }
 
@@ -152,6 +202,15 @@ function UploadPage() {
     setPendingFile(null)
     setEngine('libreoffice')
     void startUpload(file, 'libreoffice')
+  }
+
+  const confirmReadyProceedWithGraph = () => {
+    void handleStart('graph', options)
+  }
+
+  const confirmReadySwitchToLibreOffice = () => {
+    setEngine('libreoffice')
+    void handleStart('libreoffice', options)
   }
 
   return (
@@ -209,13 +268,66 @@ function UploadPage() {
           </p>
         )}
 
-        <ConversionOptionsPanel
-          engine={engine}
-          onEngineChange={setEngine}
-          options={options}
-          onOptionsChange={setOptions}
-          disabled={uploading || awaitingRiskDecision}
-        />
+        {readyTask ? (
+          <>
+            <ReadyCard
+              filename={readyTask.filename}
+              sizeBytes={readyTask.sizeBytes}
+              engine={engine}
+              onEngineChange={setEngine}
+              options={options}
+              onOptionsChange={setOptions}
+              onStart={handleStart}
+              disabled={readyGraphRisk !== 'none'}
+            />
+
+            {readyGraphRisk !== 'none' && (
+              <div
+                className="card"
+                style={{
+                  padding: 'var(--space-3)',
+                  borderLeft: '4px solid var(--c-notable)',
+                  fontSize: 13,
+                  lineHeight: 1.6,
+                }}
+              >
+                <p>{GRAPH_RISK_MESSAGE[readyGraphRisk]}</p>
+                <div
+                  style={{
+                    display: 'flex',
+                    gap: 'var(--space-2)',
+                    marginTop: 'var(--space-3)',
+                  }}
+                >
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    disabled={startingReadyTask}
+                    onClick={confirmReadyProceedWithGraph}
+                  >
+                    仍然继续
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    disabled={startingReadyTask}
+                    onClick={confirmReadySwitchToLibreOffice}
+                  >
+                    改用 LibreOffice 并继续
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
+        ) : (
+          <ConversionOptionsPanel
+            engine={engine}
+            onEngineChange={setEngine}
+            options={options}
+            onOptionsChange={setOptions}
+            disabled={uploading || awaitingRiskDecision}
+          />
+        )}
       </div>
 
       <div className="col">

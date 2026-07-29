@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
-import type { CapacityConfig } from './lib/api'
+import { ApiError, type CapacityConfig } from './lib/api'
 
 const MIB = 1024 * 1024
 
@@ -15,11 +15,12 @@ const CAPACITY: CapacityConfig = {
 const mocks = vi.hoisted(() => ({
   getCapacityConfig: vi.fn(),
   uploadFile: vi.fn(),
+  startTask: vi.fn(),
 }))
 
 vi.mock('./lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./lib/api')>()
-  return { ...actual, getCapacityConfig: mocks.getCapacityConfig }
+  return { ...actual, getCapacityConfig: mocks.getCapacityConfig, startTask: mocks.startTask }
 })
 
 vi.mock('./lib/uploadClient', async (importOriginal) => {
@@ -28,9 +29,13 @@ vi.mock('./lib/uploadClient', async (importOriginal) => {
 })
 
 // TaskList/TaskCard 会自己发起轮询请求；App 层的这些测试只关心上传前的
-// 预判提示与时机，不需要真的渲染任务卡片。
+// 预判提示与时机，不需要真的渲染任务卡片。渲染 taskIds 本身（而不是
+// null）是为了让「start 成功/TASK_ALREADY_STARTED 后接入轮询」这类断言
+// 有地方可查——不这样做就只能通过是否出现 TaskCard 的副作用去猜，猜不准。
 vi.mock('./components/TaskList', () => ({
-  TaskList: () => null,
+  TaskList: ({ taskIds }: { taskIds: string[] }) => (
+    <div data-testid="task-ids">{taskIds.join(',')}</div>
+  ),
 }))
 
 function fileOfSize(size: number, name = 'deck.pptx'): File {
@@ -53,6 +58,7 @@ describe('App 上传前的容量启发式预判与确认时机', () => {
     // uploadFile 挂起不 resolve，模拟"上传正在进行"的窗口，方便断言
     // 「是否已经发起过」而不受上传完成时序干扰。
     mocks.uploadFile.mockReset().mockReturnValue(new Promise(() => {}))
+    mocks.startTask.mockReset()
   })
 
   it('未选择 Graph 引擎时，即使文件很大也直接上传、不出现确认提示', async () => {
@@ -225,5 +231,91 @@ describe('App 上传前的容量启发式预判与确认时机', () => {
     render(<App />)
     expect(await screen.findByLabelText('管理口令')).toBeTruthy()
     Object.defineProperty(window, 'location', { value: original, writable: true })
+  })
+})
+
+describe('App 两段式上传：ReadyCard 与「开始转换」', () => {
+  beforeEach(() => {
+    mocks.getCapacityConfig.mockReset().mockResolvedValue(CAPACITY)
+    mocks.uploadFile.mockReset().mockResolvedValue({ taskId: 'T1' })
+    mocks.startTask.mockReset()
+  })
+
+  async function uploadASmallFile() {
+    render(<App />)
+    await waitFor(() => expect(mocks.getCapacityConfig).toHaveBeenCalled())
+    chooseFile(fileOfSize(2 * MIB))
+    await screen.findByText('deck.pptx')
+  }
+
+  it('上传完成后停在 ReadyCard，不直接开始轮询（变异检查 1：跳过 ReadyCard 直接轮询会让这里变红）', async () => {
+    await uploadASmallFile()
+
+    expect(screen.getByRole('button', { name: '开始转换' })).toBeInTheDocument()
+    expect(screen.getByTestId('task-ids')).toHaveTextContent('')
+  })
+
+  it('点「开始转换」调用 startTask 并带上当前选的引擎（变异检查 3：不传 engine 会让这里变红）', async () => {
+    mocks.startTask.mockResolvedValue({})
+    await uploadASmallFile()
+
+    fireEvent.click(screen.getByRole('button', { name: '开始转换' }))
+
+    await waitFor(() =>
+      expect(mocks.startTask).toHaveBeenCalledWith('T1', 'libreoffice', expect.anything()),
+    )
+    expect(screen.getByTestId('task-ids')).toHaveTextContent('T1')
+  })
+
+  it('READY_EXPIRED：展示后端给的原话，退回可以重新上传的状态', async () => {
+    mocks.startTask.mockRejectedValue(
+      new ApiError(
+        'READY_EXPIRED',
+        '上传后 1 小时内未开始转换，原文件已回收，请重新上传',
+        410,
+      ),
+    )
+    await uploadASmallFile()
+
+    fireEvent.click(screen.getByRole('button', { name: '开始转换' }))
+
+    expect(
+      await screen.findByText('上传后 1 小时内未开始转换，原文件已回收，请重新上传'),
+    ).toBeInTheDocument()
+    // ReadyCard 不能停在原地——原文件已经没了，再点多少次都没用。
+    expect(screen.queryByRole('button', { name: '开始转换' })).toBeNull()
+    expect(screen.getByTestId('file-input')).toBeInTheDocument()
+    expect(screen.getByTestId('task-ids')).toHaveTextContent('')
+  })
+
+  it('TASK_ALREADY_STARTED：任务是真的已经在跑（比如另一个标签页抢先点了），直接接入轮询而不是报错', async () => {
+    mocks.startTask.mockRejectedValue(
+      new ApiError('TASK_ALREADY_STARTED', '任务状态为 pending，无法重复启动', 409),
+    )
+    await uploadASmallFile()
+
+    fireEvent.click(screen.getByRole('button', { name: '开始转换' }))
+
+    await waitFor(() => expect(screen.getByTestId('task-ids')).toHaveTextContent('T1'))
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('容量预判的决策点后移：在 ReadyCard 上把引擎换成 Graph 且命中风险时，点击确认前不发送任何 start 请求', async () => {
+    render(<App />)
+    await waitFor(() => expect(mocks.getCapacityConfig).toHaveBeenCalled())
+    chooseFile(fileOfSize(300 * MIB))
+    await screen.findByText('deck.pptx')
+
+    fireEvent.click(screen.getByRole('button', { name: /Microsoft Graph/ }))
+
+    await screen.findByRole('button', { name: '仍然继续' })
+    expect(mocks.startTask).not.toHaveBeenCalled()
+
+    mocks.startTask.mockResolvedValue({})
+    fireEvent.click(screen.getByRole('button', { name: '仍然继续' }))
+
+    await waitFor(() =>
+      expect(mocks.startTask).toHaveBeenCalledWith('T1', 'graph', expect.anything()),
+    )
   })
 })
