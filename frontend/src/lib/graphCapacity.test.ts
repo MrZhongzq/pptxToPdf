@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { assessGraphRisk } from './graphCapacity'
+import { assessGraphRisk, GRAPH_RISK_MESSAGE } from './graphCapacity'
 import type { CapacityConfig } from './api'
 
 const MIB = 1024 * 1024
@@ -74,4 +74,20 @@ describe('assessGraphRisk', () => {
     expect(assessGraphRisk(60, cfg)).toBe('budget') // > 50 merge cliff, <= 300 shard capacity
     expect(assessGraphRisk(400, cfg)).toBe('reject') // > 300 shard capacity
   })
+})
+
+describe('GRAPH_RISK_MESSAGE（终审 I-2）', () => {
+  // 前端算风险档位用的是剥离前的原始文件体积（选文件/传完那一刻只知道
+  // 这个数），但五期起转换前会先统一剥离内嵌视频/音频——真机那份
+  // 83.7MB 课件剥离后只剩约 28MB，前端却仍按 83.7MB 判成 'shard' 档、
+  // 弹出「比不切片更慢」的提示，用错误的信息劝用户离开 Graph。用户裁决
+  // 保留禁用与确认、只改措辞：三档提示都要提一句"实际体积可能明显更低"，
+  // 让用户能用准确信息做决定，而不是假装能精确预测。
+  it.each(['shard', 'budget', 'reject'] as const)(
+    '"%s" 档提到内嵌媒体会被剥离、实际体积可能更低',
+    (risk) => {
+      expect(GRAPH_RISK_MESSAGE[risk]).toMatch(/剥离/)
+      expect(GRAPH_RISK_MESSAGE[risk]).toMatch(/实际.*体积|体积.*实际/)
+    },
+  )
 })
