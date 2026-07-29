@@ -8,10 +8,17 @@ from fastapi.responses import FileResponse
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
+from app.api.deps import current_user_optional
 from app.config import settings
 from app.db import get_session
-from app.errors import AppError, EngineUnavailable, ReadyExpired, ResultExpired
-from app.models import Task, TaskShard
+from app.errors import (
+    AppError,
+    AuthRequired,
+    EngineUnavailable,
+    ReadyExpired,
+    ResultExpired,
+)
+from app.models import Task, TaskShard, User
 from app.queue import enqueue_conversion
 from app.schemas import ConversionOptions, ErrorResponse, StartTaskRequest, TaskDto
 from app.services.retention import drop_original
@@ -30,6 +37,7 @@ GET_TASK_ERRORS = {
     404: {**_ERR, "description": "TASK_NOT_FOUND"},
 }
 START_ERRORS = {
+    401: {**_ERR, "description": "AUTH_REQUIRED（Graph 通道需要登录）"},
     404: {**_ERR, "description": "TASK_NOT_FOUND"},
     409: {**_ERR, "description": "TASK_ALREADY_STARTED"},
     410: {**_ERR, "description": "READY_EXPIRED"},
@@ -140,8 +148,19 @@ def start_task(
     task_id: str,
     payload: StartTaskRequest,
     session: Session = Depends(get_session),
+    user: User | None = Depends(current_user_optional),
 ) -> TaskDto:
     task = _load(session, task_id)
+
+    # Graph 通道要求登录。前端把这个选项置灰只是体验，**这里才是边界**——
+    # 绕过前端直接打 API 是最基本的渗透手法。
+    #
+    # 明确报错而不是悄悄改用 LibreOffice：这是项目铁律「绝不静默回退」。
+    # 两个引擎的保真度不同，用户显式选了 Graph 却拿到 LibreOffice 的产出，
+    # 会以为是 Graph 转成这样的。
+    effective_engine = payload.engine or task.requested_engine
+    if effective_engine == "graph" and user is None:
+        raise AuthRequired("Microsoft Graph 通道需要登录后使用")
 
     # 条件 UPDATE 取代原来"读 status、判断、单独 commit 写 pending"的三步走。
     # 那三步之间有窗口：FastAPI 把这个同步端点丢进线程池，两个并发 /start

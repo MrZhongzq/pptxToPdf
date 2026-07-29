@@ -9,7 +9,8 @@ from fastapi.responses import JSONResponse
 from app.api import admin, admin_users, auth, config, tasks, uploads
 from app.config import settings
 from app.db import init_db
-from app.errors import AppError, ValidationError
+from app.errors import AppError, CrossOriginBlocked, ValidationError
+from app.services import origin_guard
 from app.services.retention import purge_expired_ready, purge_expired_shards, reap_stale_tasks
 from app.services.users import bootstrap_admin
 
@@ -29,6 +30,36 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def origin_guard_middleware(request: Request, call_next):
+    """防跨站。默认关闭，见 services/origin_guard 的模块 docstring。
+
+    两道保险都在这里体现：关闭时直接放行；开启但白名单为空时也放行——
+    否则第一次打开开关就会把所有写请求（包括管理员自己添加白名单的那次
+    请求）全部拒绝，变成一个无法自救的死锁。
+    """
+    if not settings.origin_guard_enabled or not origin_guard.should_check(request.method):
+        return await call_next(request)
+
+    from app.db import SessionLocal
+
+    with SessionLocal() as session:
+        allowed = origin_guard.load_allowed(session)
+    if not allowed:
+        return await call_next(request)
+
+    host = origin_guard.extract_host(
+        request.headers.get("origin") or request.headers.get("referer")
+    )
+    if not origin_guard.is_allowed(host, allowed):
+        logger.warning("跨站请求被拒 host=%s path=%s", host, request.url.path)
+        err = CrossOriginBlocked(f"来源 {host} 不在白名单中")
+        return JSONResponse(
+            status_code=err.http_status, content={"code": err.code, "message": err.message}
+        )
+    return await call_next(request)
 
 
 @app.exception_handler(AppError)

@@ -572,6 +572,22 @@
               "type": "string",
               "title": "Task Id"
             }
+          },
+          {
+            "name": "pptx2pdf_admin",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pptx2Pdf Admin"
+            }
           }
         ],
         "requestBody": {
@@ -591,6 +607,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TaskDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "AUTH_REQUIRED（Graph 通道需要登录）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
