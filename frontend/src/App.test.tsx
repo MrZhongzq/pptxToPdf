@@ -375,4 +375,74 @@ describe('App 覆盖已有 ready 任务前的确认（复审 Important：UploadD
     expect(screen.getByText('deck.pptx')).toBeInTheDocument()
     expect(mocks.uploadFile).not.toHaveBeenCalled()
   })
+
+  it('两个横幅同屏（终审 I-5 第一条路径）：ready 卡片的容量风险横幅命中时，若又选了第二个文件，风险横幅的两个按钮必须被待处理的替换决定一并锁住', async () => {
+    // 命中 readyGraphRisk 需要一个大文件——上传时用默认引擎（libreoffice）
+    // 直接上传（不触发上传前的 pendingFile 风险横幅），落地后再在
+    // ReadyCard 上把引擎切到 Graph，才会触发"开始转换前"的那份风险判定。
+    render(<App />)
+    await waitFor(() => expect(mocks.getCapacityConfig).toHaveBeenCalled())
+    chooseFile(fileOfSize(100 * MIB))
+    await screen.findByText('deck.pptx')
+
+    fireEvent.click(screen.getByRole('button', { name: /Microsoft Graph/ }))
+    await screen.findByRole('button', { name: '仍然继续' })
+
+    // 风险横幅还没处理完，用户又拖入第二个文件——覆盖确认横幅也上屏。
+    chooseFile(fileOfSize(3 * MIB, 'deck2.pptx'))
+    await screen.findByText(/继续上传会放弃它/)
+
+    // 修复前：这两个按钮只被 startingReadyTask 禁用，没被
+    // pendingReplacementFile 禁用——与 ReadyCard 自身的禁用逻辑不一致。
+    expect(screen.getByRole('button', { name: '仍然继续' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /改用 LibreOffice/ })).toBeDisabled()
+
+    // 禁用按钮点击不会触发处理函数——原生 disabled 属性下 jsdom 不会派发
+    // click 事件，这里验证的是"点了也没用"，不是"点了会报错"。
+    mocks.startTask.mockResolvedValue({})
+    fireEvent.click(screen.getByRole('button', { name: '仍然继续' }))
+    expect(mocks.startTask).not.toHaveBeenCalled()
+    // 两个横幅仍然原样在屏——没有静默吞掉任何一个。
+    expect(screen.getByText(/继续上传会放弃它/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '仍然继续' })).toBeInTheDocument()
+  })
+
+  it('两个横幅同屏后正确解决（终审 I-5 第二条路径）：不会让后续任务被之前放弃的文件污染', async () => {
+    render(<App />)
+    await waitFor(() => expect(mocks.getCapacityConfig).toHaveBeenCalled())
+    chooseFile(fileOfSize(100 * MIB))
+    await screen.findByText('deck.pptx')
+
+    fireEvent.click(screen.getByRole('button', { name: /Microsoft Graph/ }))
+    await screen.findByRole('button', { name: '仍然继续' })
+
+    chooseFile(fileOfSize(3 * MIB, 'deck2.pptx'))
+    await screen.findByRole('button', { name: '取消' })
+
+    // 先按正确顺序解决：取消替换（放弃 deck2.pptx），风险横幅恢复可操作。
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    expect(screen.queryByText(/继续上传会放弃它/)).toBeNull()
+
+    mocks.startTask.mockResolvedValue({})
+    const switchBtn = await screen.findByRole('button', { name: /改用 LibreOffice/ })
+    expect(switchBtn).not.toBeDisabled()
+    fireEvent.click(switchBtn)
+    await waitFor(() =>
+      expect(mocks.startTask).toHaveBeenCalledWith('T1', 'libreoffice', expect.anything()),
+    )
+    await waitFor(() => expect(screen.getByTestId('task-ids')).toHaveTextContent('T1'))
+
+    // deck.pptx 已经启动、readyTask 清空。现在正常传一个新文件 C——
+    // 修复前的残留 bug：放弃掉的 deck2.pptx（从未真正上传）如果作为
+    // pendingReplacementFile 残留，C 落地 ready 后会凭空冒出一条"继续
+    // 上传会放弃它"的横幅，而点"继续上传"实际传的是残留的 deck2.pptx、
+    // 丢弃的是真正刚上传的 C。
+    mocks.uploadFile.mockReset().mockResolvedValue({ taskId: 'T3' })
+    chooseFile(fileOfSize(2 * MIB, 'deck3.pptx'))
+    await screen.findByText('deck3.pptx')
+
+    expect(screen.queryByText(/继续上传会放弃它/)).toBeNull()
+    expect(mocks.uploadFile).toHaveBeenCalledTimes(1)
+    expect(mocks.uploadFile.mock.calls[0][0].name).toBe('deck3.pptx')
+  })
 })

@@ -158,8 +158,14 @@ function UploadPage() {
         setReadyTask(null)
         setError(err.message)
       } else {
-        // 其它错误（网络故障、后端 500 等）：ReadyCard 原样留着，用户能
-        // 直接重试，不该因为一次瞬时错误就强迫已经传好的文件作废重传。
+        // 终审 M-4：这句"重试"对多数瞬时错误（网络故障等）成立——原文件
+        // 还在，ReadyCard 原样留着确实能直接重试。但对 503
+        // ENGINE_UNAVAILABLE 不成立：start_task 那条路径已经
+        // drop_original 并把任务标 failed（app/api/tasks.py），原文件
+        // 已经没了。用户看着 ReadyCard 再点一次「开始转换」，实际拿到的
+        // 是 409 TASK_ALREADY_STARTED——但任务真实状态是 failed，不是
+        // "已经在正常跑"，上面那个分支"接上轮询"的假设在这条路径下并
+        // 不成立。
         setError(
           err instanceof ApiError
             ? `${err.code}：${err.message}`
@@ -369,7 +375,16 @@ function UploadPage() {
                   <button
                     type="button"
                     className="btn btn-ghost"
-                    disabled={startingReadyTask}
+                    // 终审 I-5：必须跟 ReadyCard 自己的 disabled（:348）同一个
+                    // 条件——覆盖确认横幅同屏时，这两个按钮此前只被
+                    // startingReadyTask 挡，没被 pendingReplacementFile 挡。
+                    // 用户能点"仍然继续"启动 A，setReadyTask(null) 让覆盖
+                    // 横幅因 readyTask===null 而消失，但 pendingReplacementFile
+                    // 里的 B 从未上传也从未告知，构成静默丢弃；那份残留还会在
+                    // 后续任务落 ready 时冒出一条张冠李戴的横幅（把 B 当成
+                    // 要传的文件）。锁住这两个按钮直到用户先对覆盖确认横幅
+                    // 表态，从源头掐断这整条链路。
+                    disabled={startingReadyTask || pendingReplacementFile !== null}
                     onClick={confirmReadyProceedWithGraph}
                   >
                     仍然继续
@@ -377,7 +392,7 @@ function UploadPage() {
                   <button
                     type="button"
                     className="btn btn-primary"
-                    disabled={startingReadyTask}
+                    disabled={startingReadyTask || pendingReplacementFile !== null}
                     onClick={confirmReadySwitchToLibreOffice}
                   >
                     改用 LibreOffice 并继续
