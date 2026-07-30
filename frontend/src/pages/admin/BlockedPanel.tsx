@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 
+import { useI18n } from '../../i18n'
 import {
   createBlocked,
   deleteBlocked,
@@ -15,6 +16,7 @@ import {
  * 的话，管理员会以为它和白名单是同一层东西。
  */
 export function BlockedPanel() {
+  const { t } = useI18n()
   const [rows, setRows] = useState<AllowedOrigin[]>([])
   const [origin, setOrigin] = useState('')
   const [note, setNote] = useState('')
@@ -54,35 +56,30 @@ export function BlockedPanel() {
           lineHeight: 1.7,
         }}
       >
-        <p>
-          黑名单<strong>网页与 v1 一起拦</strong>，命中直接返回 403。
-        </p>
-        <p style={{ marginTop: 'var(--space-2)' }}>
-          优先级<strong>高于白名单</strong>：先查黑名单，命中就直接返回，不再进入
-          任何后续判断。只有不在黑名单里的请求才会继续走网页或去匹配白名单。
-        </p>
+        <p>{t('admin.blocked.scope')}</p>
+        <p style={{ marginTop: 'var(--space-2)' }}>{t('admin.blocked.priority')}</p>
         <p style={{ marginTop: 'var(--space-2)', color: 'var(--c-warn)' }}>
-          语法与白名单相同。别把自己的地址加进来——这里没有第二道保险。
+          {t('admin.blocked.warning')}
         </p>
       </div>
 
       <form className="card glass" style={{ padding: 'var(--space-4)' }} onSubmit={handleAdd}>
-        <span className="section-title">加入黑名单</span>
+        <span className="section-title">{t('admin.blocked.add')}</span>
         <div style={{ display: 'grid', gap: 'var(--space-2)' }}>
           <input
             className="input"
-            placeholder="域名或 IP，支持通配与修饰符"
+            placeholder={t('admin.blocked.placeholder')}
             value={origin}
             onChange={(e) => setOrigin(e.target.value)}
           />
           <input
             className="input"
-            placeholder="备注（可选）"
+            placeholder={t('common.note')}
             value={note}
             onChange={(e) => setNote(e.target.value)}
           />
           <button type="submit" className="btn btn-primary" disabled={busy || !origin.trim()}>
-            {busy ? '添加中…' : '加入黑名单'}
+            {busy ? t('common.adding') : t('admin.blocked.add')}
           </button>
         </div>
       </form>
@@ -94,7 +91,7 @@ export function BlockedPanel() {
       )}
 
       <div className="card glass" style={{ padding: 'var(--space-4)' }}>
-        <span className="section-title">已封禁（{rows.length}）</span>
+        <span className="section-title">{t('admin.blocked.list', { count: rows.length })}</span>
         <div style={{ display: 'grid', gap: 'var(--space-2)' }}>
           {rows.map((r) => (
             <div
@@ -115,12 +112,12 @@ export function BlockedPanel() {
                     .catch((e: Error) => setError(e.message))
                 }
               >
-                解封
+                {t('admin.blocked.unblock')}
               </button>
             </div>
           ))}
           {rows.length === 0 && (
-            <p style={{ color: 'var(--c-text-dim)', margin: 0 }}>黑名单为空</p>
+            <p style={{ color: 'var(--c-text-dim)', margin: 0 }}>{t('admin.blocked.empty')}</p>
           )}
         </div>
       </div>

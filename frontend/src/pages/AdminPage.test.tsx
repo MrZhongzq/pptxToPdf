@@ -147,4 +147,24 @@ describe('AdminPage 的侧边栏', () => {
     expect(await screen.findByText(/网页与 v1 一起拦/)).toBeInTheDocument()
     expect(screen.getByText(/高于白名单/)).toBeInTheDocument()
   })
+
+  it('切到英文时 admin 界面显示英文，不残留中文硬编码', async () => {
+    // admin 只做中英两门（其余语言运行时回退英文，见 translate_locales.py
+    // 的 CHINESE_ENGLISH_ONLY）。这条守的是「接线漏了某个文案」——漏掉的
+    // 那条会以中文形式留在英文界面上，而那正是最不容易被自己发现的：
+    // 开发时界面本来就是中文，看不出区别。
+    localStorage.setItem('pptx2pdf_locale', 'en')
+    mocks.getMe.mockResolvedValue(ADMIN)
+
+    render(<AdminPage />)
+    await screen.findByRole('heading', { name: 'Admin panel' })
+
+    const nav = screen.getByRole('navigation', { name: 'Panel sections' })
+    for (const label of ['Users', 'Azure credentials', 'Allowlist', 'Blocklist', 'System status']) {
+      expect(nav).toHaveTextContent(label)
+    }
+    expect(nav.textContent ?? '').not.toMatch(/[一-龥]/)
+
+    localStorage.setItem('pptx2pdf_locale', 'zh-CN')
+  })
 })

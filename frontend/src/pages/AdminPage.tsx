@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 
+import { useI18n } from '../i18n'
 import { getMe, type UserDto } from '../lib/api'
 import { GraphCredentialsPanel } from './admin/GraphCredentialsPanel'
 import { BlockedPanel } from './admin/BlockedPanel'
@@ -9,12 +10,12 @@ import { UsersPanel } from './admin/UsersPanel'
 
 type Section = 'users' | 'graph' | 'origins' | 'blocked' | 'stats'
 
-const SECTIONS: { key: Section; label: string; hint: string }[] = [
-  { key: 'users', label: '用户管理', hint: '添加 / 暂停 / 删除账号' },
-  { key: 'graph', label: 'Azure 凭证', hint: 'Graph 通道与连通性自检' },
-  { key: 'origins', label: '访问白名单', hint: '只管 v1 接口' },
-  { key: 'blocked', label: '网站黑名单', hint: '网页 + v1，优先级最高' },
-  { key: 'stats', label: '系统状态', hint: '任务与存储占用' },
+const SECTIONS: { key: Section; labelKey: string; hintKey: string }[] = [
+  { key: 'users', labelKey: 'admin.section.users', hintKey: 'admin.section.users.hint' },
+  { key: 'graph', labelKey: 'admin.section.graph', hintKey: 'admin.section.graph.hint' },
+  { key: 'origins', labelKey: 'admin.section.origins', hintKey: 'admin.section.origins.hint' },
+  { key: 'blocked', labelKey: 'admin.section.blocked', hintKey: 'admin.section.blocked.hint' },
+  { key: 'stats', labelKey: 'admin.section.stats', hintKey: 'admin.section.stats.hint' },
 ]
 
 /**
@@ -25,6 +26,7 @@ const SECTIONS: { key: Section; label: string; hint: string }[] = [
  * 基本的渗透手法，只做前端等于没做。
  */
 export function AdminPage() {
+  const { t } = useI18n()
   const [checking, setChecking] = useState(true)
   const [user, setUser] = useState<UserDto | null>(null)
   const [section, setSection] = useState<Section>('users')
@@ -52,7 +54,7 @@ export function AdminPage() {
   if (checking || !user) {
     return (
       <div className="layout-wide">
-        <p style={{ color: 'var(--c-text-muted)' }}>正在核验身份…</p>
+        <p style={{ color: 'var(--c-text-dim)' }}>{t('admin.checking')}</p>
       </div>
     )
   }
@@ -61,18 +63,18 @@ export function AdminPage() {
     <div className="layout-wide">
       <header className="page-head" style={{ position: 'relative' }}>
         <div>
-          <h1 className="page-title">管理面板</h1>
+          <h1 className="page-title">{t('admin.title')}</h1>
           <span className="page-sub">{user.username}</span>
         </div>
         <div style={{ position: 'absolute', top: 0, right: 0 }}>
           <a className="btn btn-ghost" href="/">
-            返回上传页
+            {t('nav.backToUpload')}
           </a>
         </div>
       </header>
 
       <div className="admin-shell">
-        <nav aria-label="面板分区" className="admin-nav">
+        <nav aria-label={t('admin.nav.label')} className="admin-nav">
           {SECTIONS.map((s) => (
             <button
               key={s.key}
@@ -81,8 +83,8 @@ export function AdminPage() {
               aria-current={s.key === section ? 'page' : undefined}
               onClick={() => setSection(s.key)}
             >
-              <span className="admin-nav-label">{s.label}</span>
-              <span className="admin-nav-hint">{s.hint}</span>
+              <span className="admin-nav-label">{t(s.labelKey)}</span>
+              <span className="admin-nav-hint">{t(s.hintKey)}</span>
             </button>
           ))}
         </nav>

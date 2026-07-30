@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 
+import { useI18n } from '../../i18n'
 import type { UserDto } from '../../lib/api'
 import {
   createUser,
@@ -11,6 +12,7 @@ import {
 
 /** 账号的三个要素：用户名、邮箱、密码。用户名唯一且不可重复。 */
 export function UsersPanel({ currentUserId }: { currentUserId: string }) {
+  const { t } = useI18n()
   const [users, setUsers] = useState<UserDto[]>([])
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
@@ -61,24 +63,24 @@ export function UsersPanel({ currentUserId }: { currentUserId: string }) {
   return (
     <>
       <form className="card glass" style={{ padding: 'var(--space-4)' }} onSubmit={handleCreate}>
-        <span className="section-title">添加账号</span>
+        <span className="section-title">{t('admin.users.add')}</span>
         <div style={{ display: 'grid', gap: 'var(--space-2)' }}>
           <input
             className="input"
-            placeholder="用户名（唯一，3-32 位字母数字与 _ -）"
+            placeholder={t('admin.users.username')}
             value={username}
             onChange={(e) => setUsername(e.target.value)}
           />
           <input
             className="input"
-            placeholder="邮箱"
+            placeholder={t('admin.users.email')}
             value={email}
             onChange={(e) => setEmail(e.target.value)}
           />
           <input
             className="input"
             type="password"
-            placeholder="密码（至少 8 位）"
+            placeholder={t('admin.users.password')}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
           />
@@ -86,17 +88,17 @@ export function UsersPanel({ currentUserId }: { currentUserId: string }) {
             className="input"
             value={role}
             onChange={(e) => setRole(e.target.value as 'admin' | 'user')}
-            aria-label="角色"
+            aria-label={t('admin.users.role')}
           >
-            <option value="user">普通用户</option>
-            <option value="admin">管理员</option>
+            <option value="user">{t('admin.users.role.user')}</option>
+            <option value="admin">{t('admin.users.role.admin')}</option>
           </select>
           <button
             type="submit"
             className="btn btn-primary"
             disabled={creating || !username || !email || !password}
           >
-            {creating ? '创建中…' : '创建'}
+            {creating ? t('admin.users.creating') : t('admin.users.create')}
           </button>
         </div>
       </form>
@@ -108,7 +110,7 @@ export function UsersPanel({ currentUserId }: { currentUserId: string }) {
       )}
 
       <div className="card glass" style={{ padding: 'var(--space-4)' }}>
-        <span className="section-title">账号列表（{users.length}）</span>
+        <span className="section-title">{t('admin.users.list', { count: users.length })}</span>
         <div style={{ display: 'grid', gap: 'var(--space-3)' }}>
           {users.map((u) => (
             <div
@@ -125,10 +127,10 @@ export function UsersPanel({ currentUserId }: { currentUserId: string }) {
               <strong>{u.username}</strong>
               <span style={{ fontSize: 12, color: 'var(--c-text-muted)' }}>{u.email}</span>
               <span className={u.role === 'admin' ? 'badge badge-notable' : 'badge badge-neutral'}>
-                {u.role === 'admin' ? '管理员' : '用户'}
+                {u.role === 'admin' ? t('admin.users.badge.admin') : t('admin.users.badge.user')}
               </span>
               <span className={u.status === 'active' ? 'badge badge-ok' : 'badge badge-warn'}>
-                {u.status === 'active' ? '正常' : '已暂停'}
+                {u.status === 'active' ? t('admin.users.status.active') : t('admin.users.status.suspended')}
               </span>
 
               <span style={{ marginLeft: 'auto', display: 'flex', gap: 'var(--space-2)' }}>
@@ -144,7 +146,7 @@ export function UsersPanel({ currentUserId }: { currentUserId: string }) {
                         )
                       }
                     >
-                      {u.status === 'active' ? '暂停' : '激活'}
+                      {u.status === 'active' ? t('admin.users.suspend') : t('admin.users.activate')}
                     </button>
                     <button
                       type="button"
@@ -152,11 +154,11 @@ export function UsersPanel({ currentUserId }: { currentUserId: string }) {
                       disabled={busy === u.user_id}
                       onClick={() => {
                         // 删除不可逆，且这个系统没有回收站
-                        if (!window.confirm(`确定删除账号「${u.username}」？此操作不可撤销。`)) return
+                        if (!window.confirm(t('admin.users.confirmDelete', { username: u.username }))) return
                         void act(u.user_id, () => deleteUser(u.user_id))
                       }}
                     >
-                      删除
+                      {t('common.delete')}
                     </button>
                   </>
                 )}
@@ -165,18 +167,18 @@ export function UsersPanel({ currentUserId }: { currentUserId: string }) {
                   className="btn btn-ghost"
                   disabled={busy === u.user_id}
                   onClick={() => {
-                    const pw = window.prompt(`给「${u.username}」设置新密码（至少 8 位）`)
+                    const pw = window.prompt(t('admin.users.promptPassword', { username: u.username }))
                     if (!pw) return
                     void act(u.user_id, () => setUserPassword(u.user_id, pw))
                   }}
                 >
-                  改密码
+                  {t('admin.users.changePassword')}
                 </button>
               </span>
             </div>
           ))}
           {users.length === 0 && (
-            <p style={{ color: 'var(--c-text-muted)', margin: 0 }}>还没有账号</p>
+            <p style={{ color: 'var(--c-text-dim)', margin: 0 }}>{t('admin.users.empty')}</p>
           )}
         </div>
       </div>

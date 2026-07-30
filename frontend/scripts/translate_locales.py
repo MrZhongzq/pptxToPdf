@@ -25,6 +25,17 @@ LOCALES = Path(__file__).resolve().parent.parent / "src" / "i18n" / "locales"
 # 人工维护，脚本不碰
 SOURCE = {"en", "zh-CN"}
 
+# 只需中英两门的 key 前缀。
+#
+# 管理面板只有站长自己会进，文案又密（表单标签、语法说明、错误提示），
+# 机翻在这种地方的收益远低于它的噪音——一条把「Login required」译成
+# 「姓名 *」的文案出现在主界面还能忍，出现在你要照着配 Azure 凭证的
+# 表单上就是在添乱。
+#
+# 这些 key 不进机翻语言文件，运行时由 i18n 的逐级回退落到英文（见
+# src/i18n/core.ts 的 translate）。不是漏翻，是刻意的。
+CHINESE_ENGLISH_ONLY = ("admin.",)
+
 # 机器翻译的目标。键是语言文件名（BCP 47），值是 Argos 的语言代码——
 # Argos 只有 pt，没有 pt-BR，文件名保留更精确的那个。
 TARGETS = {
@@ -65,12 +76,17 @@ def save(name: str, data: dict[str, str]) -> None:
     )
 
 
+def needs_translation(key: str) -> bool:
+    return not key.startswith(CHINESE_ENGLISH_ONLY)
+
+
 def check(en: dict[str, str]) -> int:
     """只比对 key 是否对齐。CI 的前端 job 跑这个——它不需要模型。"""
     failed = 0
+    wanted = [k for k in en if needs_translation(k)]
     for name in TARGETS:
         current = load(name)
-        missing = [k for k in en if k not in current]
+        missing = [k for k in wanted if k not in current]
         stale = [k for k in current if k not in en]
         if missing or stale:
             print(f"{name}: 缺 {len(missing)} 条，多余 {len(stale)} 条 —— 跑一次 translate_locales.py")
@@ -130,11 +146,12 @@ def main() -> int:
 
     for name, argos_code in TARGETS.items():
         current = load(name)
-        missing = [k for k in en if k not in current]
+        wanted = [k for k in en if needs_translation(k)]
+        missing = [k for k in wanted if k not in current]
         merged: dict[str, str] = {}
         kept_english = 0
 
-        for key in en:  # 按 en.json 的顺序重排，顺带丢掉已删除的 key
+        for key in wanted:  # 按 en.json 的顺序重排，顺带丢掉已删除的 key
             if key in current and key not in missing:
                 merged[key] = current[key]
                 continue
