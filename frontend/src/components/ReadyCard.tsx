@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { ConversionOptions, EngineName } from '../lib/api'
 import { formatBytes } from '../lib/chunking'
+import { useI18n } from '../i18n'
 import { ConversionOptionsPanel } from './ConversionOptions'
 
 interface Props {
@@ -41,6 +42,7 @@ export function ReadyCard({
   onProceedWithGraph,
   onSwitchToLibreOffice,
 }: Props) {
+  const { t } = useI18n()
   // 用户原话「有时候手没那么快」——开始转换前留出改引擎/选项的窗口，这个
   // 组件存在的全部理由。starting 只锁按钮本身，不锁上面的选择面板之外的
   // 东西，好让「请求进行中禁用」这条对四期自检按钮同理的规则单独可测。
@@ -66,7 +68,7 @@ export function ReadyCard({
         }}
       >
         <strong style={{ wordBreak: 'break-word', lineHeight: 1.4 }}>{filename}</strong>
-        <span className="badge badge-neutral">待开始</span>
+        <span className="badge badge-neutral">{t('ready.badge')}</span>
       </div>
 
       <p
@@ -114,7 +116,7 @@ export function ReadyCard({
               disabled={riskActionsDisabled}
               onClick={onProceedWithGraph}
             >
-              仍然继续
+              {t('risk.proceedAnyway')}
             </button>
             <button
               type="button"
@@ -122,7 +124,7 @@ export function ReadyCard({
               disabled={riskActionsDisabled}
               onClick={onSwitchToLibreOffice}
             >
-              改用 LibreOffice 并继续
+              {t('risk.switchToLibreOffice')}
             </button>
           </div>
         </div>
@@ -134,7 +136,7 @@ export function ReadyCard({
           disabled={disabled || starting}
           style={{ marginTop: 'var(--space-4)' }}
         >
-          {starting ? '启动中…' : '开始转换'}
+          {starting ? t('ready.starting') : t('ready.start')}
         </button>
       )}
     </div>

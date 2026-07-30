@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen } from '../testUtils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TaskDto } from '../lib/api'
 import { TaskCard } from './TaskCard'

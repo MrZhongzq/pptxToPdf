@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '../testUtils'
 import { describe, expect, it, vi } from 'vitest'
 import { DEFAULT_OPTIONS, type ConversionOptions, type EngineName } from '../lib/api'
 import { formatBytes } from '../lib/chunking'

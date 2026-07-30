@@ -10,6 +10,7 @@ import {
   type TaskDto,
 } from '../lib/api'
 import { formatBytes } from '../lib/chunking'
+import { useI18n } from '../i18n'
 import { useTaskPolling } from '../hooks/useTaskPolling'
 
 // 必须覆盖 TaskDto['status'] 的每一个取值：后端的 status 是裸 str、API 原样
@@ -47,6 +48,7 @@ const OPTION_LABEL: Record<string, string> = {
 }
 
 export function TaskCard({ taskId }: { taskId: string }) {
+  const { t } = useI18n()
   const { task, pollingTimedOut } = useTaskPolling(taskId)
   const [downloadError, setDownloadError] = useState<string | null>(null)
   const [checking, setChecking] = useState(false)
@@ -265,10 +267,10 @@ export function TaskCard({ taskId }: { taskId: string }) {
           style={{ marginTop: 'var(--space-3)' }}
         >
           {downloadPct !== null
-            ? `下载中 ${downloadPct}%`
+            ? t('task.downloading', { percent: downloadPct })
             : checking
-              ? '准备中…'
-              : '下载 PDF'}
+              ? t('task.preparing')
+              : t('task.download')}
         </button>
       )}
 

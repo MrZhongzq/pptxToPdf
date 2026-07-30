@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { ConversionOptionsPanel } from './components/ConversionOptions'
+import { useI18n } from './i18n'
 import { UserMenu } from './components/UserMenu'
 import { ReadyCard } from './components/ReadyCard'
 import { TaskList } from './components/TaskList'
@@ -54,6 +55,7 @@ interface ReadyTask {
 }
 
 function UploadPage() {
+  const { t } = useI18n()
   const [taskIds, setTaskIds] = useState<string[]>([])
   const [progress, setProgress] = useState<P | null>(null)
   const [phase, setPhase] = useState<UploadPhase>('done')
@@ -328,10 +330,8 @@ function UploadPage() {
     <div className="layout">
       <header className="page-head" style={{ position: 'relative' }}>
         <div>
-          <h1 className="page-title">pptx → PDF</h1>
-          <span className="page-sub">
-            转成能直接导入 GoodNotes / OneNote 的 PDF
-          </span>
+          <h1 className="page-title">{t('app.title')}</h1>
+          <span className="page-sub">{t('app.subtitle')}</span>
         </div>
         <div style={{ position: 'absolute', top: 0, right: 0 }}>
           <UserMenu onUserChange={setCurrentUser} />
@@ -474,7 +474,7 @@ function UploadPage() {
       </div>
 
       <div className="col">
-        <span className="section-title">任务</span>
+        <span className="section-title">{t('task.section')}</span>
         <TaskList taskIds={taskIds} />
       </div>
     </div>

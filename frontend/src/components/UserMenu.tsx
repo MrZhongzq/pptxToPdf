@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 
+import { useI18n } from '../i18n'
 import { ApiError, getMe, login, logout, type UserDto } from '../lib/api'
 
 /**
@@ -10,6 +11,7 @@ import { ApiError, getMe, login, logout, type UserDto } from '../lib/api'
  * 刻意没有注册端点（留一个关着的端点只是凭空多一个攻击面）。
  */
 export function UserMenu({ onUserChange }: { onUserChange?: (u: UserDto | null) => void }) {
+  const { t } = useI18n()
   const [user, setUser] = useState<UserDto | null>(null)
   const [open, setOpen] = useState(false)
   const [username, setUsername] = useState('')
@@ -77,7 +79,7 @@ export function UserMenu({ onUserChange }: { onUserChange?: (u: UserDto | null) 
       setUsername('')
       setPassword('')
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : '登录失败，请稍后重试')
+      setError(err instanceof ApiError ? err.message : t('auth.failed'))
     } finally {
       setBusy(false)
     }
@@ -93,7 +95,7 @@ export function UserMenu({ onUserChange }: { onUserChange?: (u: UserDto | null) 
     <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
       {user?.role === 'admin' && (
         <a className="btn btn-ghost" href="/admin">
-          admin 面板
+          {t('nav.adminPanel')}
         </a>
       )}
 
@@ -101,7 +103,7 @@ export function UserMenu({ onUserChange }: { onUserChange?: (u: UserDto | null) 
         <>
           <span style={{ fontSize: 13, color: 'var(--c-text-muted)' }}>{user.username}</span>
           <button type="button" className="btn btn-ghost" onClick={handleLogout}>
-            退出
+            {t('nav.logout')}
           </button>
         </>
       ) : (
@@ -116,7 +118,7 @@ export function UserMenu({ onUserChange }: { onUserChange?: (u: UserDto | null) 
           {/* 与弹窗里的提交按钮区分开：两个可访问名相同会让屏幕阅读器
               用户分不清「打开面板」和「提交表单」。文案也更贴合需求
               原文的「登录/注册」。 */}
-          登录 / 注册
+          {t('nav.login')}
         </button>
       )}
 
@@ -133,14 +135,14 @@ export function UserMenu({ onUserChange }: { onUserChange?: (u: UserDto | null) 
           className="glass-strong glass-modal"
           role="dialog"
           aria-modal="true"
-          aria-label="登录"
+          aria-label={t('auth.dialogTitle')}
         >
           <form onSubmit={handleLogin} style={{ display: 'grid', gap: 'var(--space-3)' }}>
-            <span className="section-title">登录</span>
+            <span className="section-title">{t('auth.dialogTitle')}</span>
             <input
               ref={firstFieldRef}
               className="input"
-              placeholder="用户名"
+              placeholder={t('auth.username')}
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               autoComplete="username"
@@ -149,7 +151,7 @@ export function UserMenu({ onUserChange }: { onUserChange?: (u: UserDto | null) 
             <input
               className="input"
               type="password"
-              placeholder="密码"
+              placeholder={t('auth.password')}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               autoComplete="current-password"
@@ -167,16 +169,16 @@ export function UserMenu({ onUserChange }: { onUserChange?: (u: UserDto | null) 
             )}
             <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
               <button type="submit" className="btn btn-primary" disabled={busy || !username || !password}>
-                {busy ? '登录中…' : '登录'}
+                {busy ? t('auth.submitting') : t('auth.submit')}
               </button>
               <button
                 type="button"
                 className="btn btn-ghost"
                 onClick={() =>
-                  setNotice('当前网站未开放注册，如需账号请直接联系网站管理员。')
+                  setNotice(t('auth.registerClosed'))
                 }
               >
-                注册
+                {t('auth.register')}
               </button>
             </div>
           </form>
