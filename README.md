@@ -75,17 +75,27 @@ docker compose up -d --build
 
 ### 用预构建镜像（跳过本地构建）
 
-镜像发布在 ghcr，支持 **linux/amd64** 与 **linux/arm64**（树莓派、Oracle Ampere
-之类的 ARM 机器可以直接用）：
+镜像发布在 ghcr，同时提供 **linux/amd64** 与 **linux/arm64**——树莓派、
+Oracle Ampere 之类的 ARM 机器直接可用。省掉本地装 LibreOffice 那一层
+（3–5 分钟，小机器上更久）。
+
+一键安装脚本加个环境变量即可：
 
 ```bash
-docker pull ghcr.io/mrzhongzq/pptxtopdf-api:latest
-docker pull ghcr.io/mrzhongzq/pptxtopdf-worker:latest
-docker pull ghcr.io/mrzhongzq/pptxtopdf-frontend:latest
+curl -fsSL https://raw.githubusercontent.com/MrZhongzq/pptxToPdf/master/install.sh   | PPTX2PDF_PREBUILT=1 bash
 ```
 
-省掉本地装 LibreOffice 那一层（3–5 分钟）。版本标签有 `1.0.0` / `1.0` /
-`v1.0.0` / `latest` 几种写法，指向同一份镜像。
+已经克隆了仓库的话，用 override 文件：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.ghcr.yml pull
+docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d
+```
+
+锁版本用 `PPTX2PDF_TAG`（默认 `latest`）。标签 `1.0.0` / `1.0` / `v1.0.0`
+指向同一份镜像——发布流程两种写法都推，照着 git tag 名写也能拉到。
+
+改过代码就别用预构建镜像：它是从 master 构建的，不含本地改动。
 
 ### 常用命令
 
