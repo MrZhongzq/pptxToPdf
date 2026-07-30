@@ -25,8 +25,9 @@ services:
       dockerfile: deploy/api.Dockerfile
     restart: unless-stopped
     ports:
-      # 只绑到回环，供宿主机上 curl 排查用；对外走 frontend 的反向代理
-      - "127.0.0.1:8000:8000"
+      # 只绑到回环，供宿主机上 curl 排查用；对外走 frontend 的反向代理。
+      # 端口可覆盖——同一台机器上再起一份（比如验证新版本）时 8000 会撞。
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     volumes:
       - storage:/app/storage
     env_file:
