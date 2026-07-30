@@ -490,3 +490,81 @@ def test_no_empty_text_body_in_any_version(tmp_path):
             root = ET.fromstring(zf.read(name))
             for body in root.iter(f"{P}txBody"):
                 assert body.findall(f"{A_NS}p"), f"{name} 有空的 txBody"
+
+
+# ---- 无效步骤剔除 ----
+
+
+def test_step_targeting_a_missing_shape_is_dropped(tmp_path):
+    """目标形状不在 spTree 里，「隐藏它」与「不隐藏」产出逐像素相同的页——
+    白白多一页，用户看到两张一模一样的纸只会以为转换出错了。
+
+    来源真实存在：形状在 PowerPoint 里被删掉但 p:timing 的条目没跟着清。
+    """
+    base = _deck(tmp_path / "base.pptx", pages=1)
+    deck = _inject(
+        base, tmp_path / "a.pptx", 1,
+        # 动画指向 id=999，但只放了 id=101 这个形状
+        _timing(
+            _STEP_TEMPLATE.format(behaviors=_behavior("999")),
+            _STEP_TEMPLATE.format(behaviors=_behavior("101")),
+        ),
+        shapes_xml=_shape("101", "真实存在的框"),
+    )
+
+    result = expand_animations(deck)
+
+    # 只有 1 步有效 -> 2 页，而不是 3 页
+    assert result.pages_after == 2
+
+
+def test_step_with_out_of_range_paragraph_is_dropped(tmp_path):
+    """段落索引越界同理——删不到任何东西。"""
+    base = _deck(tmp_path / "base.pptx", pages=1)
+    deck = _inject(
+        base, tmp_path / "a.pptx", 1,
+        _timing(
+            _STEP_TEMPLATE.format(behaviors=_behavior("77", para=0)),
+            _STEP_TEMPLATE.format(behaviors=_behavior("77", para=9)),  # 只有 3 段
+        ),
+        shapes_xml=_shape("77", "框", paragraphs=3),
+    )
+
+    result = expand_animations(deck)
+
+    assert result.pages_after == 2
+
+
+def test_partially_dead_step_keeps_its_live_targets(tmp_path):
+    """一步里有的目标在、有的不在：保留这一步，只剔掉不存在的那些。
+    整步丢掉会让本该出现的内容永远不出现。"""
+    base = _deck(tmp_path / "base.pptx", pages=1)
+    deck = _inject(
+        base, tmp_path / "a.pptx", 1,
+        _timing(_STEP_TEMPLATE.format(behaviors=_behavior("999") + _behavior("101"))),
+        shapes_xml=_shape("101", "真实存在的框"),
+    )
+
+    result = expand_animations(deck)
+
+    assert result.pages_after == 2
+    # 第一版里 101 必须被隐藏——那一步没有因为混进了不存在的目标而失效
+    assert "101" not in _slide_shape_ids(deck, "ppt/slides/slide2.xml")
+
+
+def test_all_steps_dead_means_no_expansion(tmp_path):
+    """全部步骤都无效时整页不展开，而不是产出一堆相同的页。"""
+    base = _deck(tmp_path / "base.pptx", pages=1)
+    deck = _inject(
+        base, tmp_path / "a.pptx", 1,
+        _timing(
+            _STEP_TEMPLATE.format(behaviors=_behavior("998")),
+            _STEP_TEMPLATE.format(behaviors=_behavior("999")),
+        ),
+        shapes_xml=_shape("101", "没有动画的框"),
+    )
+
+    result = expand_animations(deck)
+
+    assert result.expanded is False
+    assert result.pages_after == 1

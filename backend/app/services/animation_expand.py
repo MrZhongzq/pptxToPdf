@@ -133,6 +133,49 @@ def parse_steps(slide_root: ET.Element) -> list[list[Target]]:
     return steps
 
 
+def prune_dead_steps(slide_root: ET.Element, steps: list[list[Target]]) -> list[list[Target]]:
+    """剔除目标已经不存在的动画步骤。
+
+    一个步骤如果它的目标形状不在 spTree 里、或段落索引全部越界，那么
+    「隐藏它」与「不隐藏它」产出的页面**逐像素相同**——白白多一页，用户
+    看到的是若干张一模一样的纸，只会以为转换出错了。
+
+    这种情况真实存在的来源：形状在 PowerPoint 里被删掉但 p:timing 里的
+    条目没跟着清（PowerPoint 自己不总是清理），以及我们在剥离媒体时删掉
+    了空 txBody 的形状（见 media_strip 与 _hide 里那段说明）。
+
+    用户那份 59 页课件实测 93 步、0 步无效——这次没踩到只是运气，防护
+    不能建立在「样本恰好干净」上。
+    """
+    tree = slide_root.find(f"{P}cSld/{P}spTree")
+    if tree is None:
+        return steps
+
+    present: dict[str, int] = {}
+    for shape in tree:
+        sid = _shape_id(shape)
+        if sid is None:
+            continue
+        body = shape.find(f".//{P}txBody")
+        present[sid] = len(body.findall(f"{A}p")) if body is not None else 0
+
+    pruned: list[list[Target]] = []
+    for step in steps:
+        alive = [t for t in step if _target_exists(t, present)]
+        if alive:
+            pruned.append(alive)
+    return pruned
+
+
+def _target_exists(target: Target, present: dict[str, int]) -> bool:
+    if target.spid not in present:
+        return False
+    if not target.is_paragraph:
+        return True
+    count = present[target.spid]
+    return any(0 <= i < count for i in range(target.para_from, target.para_to + 1))
+
+
 def _shape_id(shape: ET.Element) -> str | None:
     c_nv_pr = shape.find(f".//{P}cNvPr")
     return c_nv_pr.get("id") if c_nv_pr is not None else None
@@ -307,7 +350,8 @@ def expand_animations(src: Path) -> ExpandResult:
                     "未展开动画"
                 )
                 continue
-            steps = parse_steps(ET.fromstring(raw))
+            root = ET.fromstring(raw)
+            steps = prune_dead_steps(root, parse_steps(root))
             if not steps:
                 continue
             if len(steps) > MAX_STEPS_PER_SLIDE:

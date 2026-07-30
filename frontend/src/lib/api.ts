@@ -280,7 +280,15 @@ const CONCURRENT_MIN_BYTES = 512 * 1024
  * 也不能让标签页 OOM。
  */
 const CONCURRENT_MAX_BYTES = 200 * 1024 * 1024
-const CONCURRENCY = 4
+/**
+ * 并发连接数。
+ *
+ * 跨境实测（服务器在日本）：单线程 28 KB/s，4 路 50 KB/s。瓶颈是单条
+ * TCP 连接的带宽延迟积，多开连接能绕过去。8 路是在「继续摊薄 RTT 影响」
+ * 与「别把单机 uvicorn 的连接数吃光」之间取的值——自用场景同时只有一个
+ * 人在下载，8 条连接对服务端毫无压力。
+ */
+export const CONCURRENCY = 8
 
 export interface DownloadProgress {
   loaded: number

@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { downloadConcurrently, getDownloadSize, shouldDownloadConcurrently } from './api'
+import {
+  CONCURRENCY,
+  downloadConcurrently,
+  getDownloadSize,
+  shouldDownloadConcurrently,
+} from './api'
 
 const MIB = 1024 * 1024
 
@@ -75,7 +80,7 @@ describe('downloadConcurrently', () => {
 
     const blob = await downloadConcurrently('t1', total)
 
-    expect(seen).toHaveLength(4)
+    expect(seen).toHaveLength(CONCURRENCY)
     // 覆盖必须完整且不重叠——少一个字节产出的就是一份坏 PDF
     const bytes = new Uint8Array(await blob.arrayBuffer())
     expect(bytes).toEqual(payload)
@@ -106,12 +111,12 @@ describe('downloadConcurrently', () => {
     const seen: number[] = []
     await downloadConcurrently('t1', total, (p) => seen.push(p.loaded))
 
-    expect(seen).toHaveLength(4)
+    expect(seen).toHaveLength(CONCURRENCY)
     expect(seen[seen.length - 1]).toBe(total)
   })
 
   it('末块不越界——总长不能被并发数整除时最后一块要短一些', async () => {
-    const total = 41 // 41 / 4 = 10.25，切出来的末块必须停在 40
+    const total = CONCURRENCY * 10 + 1 // 除不尽，末块必须停在 total-1
     const ranges: Array<[number, number]> = []
     vi.stubGlobal(
       'fetch',
