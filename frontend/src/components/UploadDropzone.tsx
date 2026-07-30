@@ -1,3 +1,4 @@
+import { useI18n } from '../i18n'
 import { useRef, useState } from 'react'
 import { formatBytes } from '../lib/chunking'
 
@@ -7,6 +8,7 @@ interface Props {
 }
 
 export function UploadDropzone({ onFileSelected, maxBytes }: Props) {
+  const { t } = useI18n()
   const [error, setError] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -28,7 +30,7 @@ export function UploadDropzone({ onFileSelected, maxBytes }: Props) {
   return (
     <div>
       <div
-        className="card"
+        className="card glass"
         style={{
           padding: 'var(--space-7) var(--space-5)',
           textAlign: 'center',
@@ -51,7 +53,7 @@ export function UploadDropzone({ onFileSelected, maxBytes }: Props) {
           accept(e.dataTransfer.files[0])
         }}
       >
-        <p style={{ fontSize: 16, fontWeight: 550 }}>拖入 pptx，或点击选择</p>
+        <p style={{ fontSize: 16, fontWeight: 550 }}>{t('upload.dropzone.title')}</p>
         <p
           style={{
             color: 'var(--c-text-dim)',

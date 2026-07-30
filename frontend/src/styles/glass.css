@@ -1,0 +1,205 @@
+/*
+  液态玻璃。
+
+  二期把玻璃拟态移除过一次，理由写在 surface.css 开头：玻璃依赖背后有
+  内容可透，在浅色纯色底上只会变成一层灰膜，反而降低对比度。那条判断
+  今天依然成立——所以这次先给页面铺一层可透的背景（下面的 body::before
+  光斑），玻璃浮在上面才有东西可折射，而不是直接往纯色底上糊 blur。
+
+  两条纪律：
+  1. 只有容器透，**内容层不透**。玻璃最常见的翻车就是把正文一起做淡，
+     对比度直接不达标。
+  2. 不支持 backdrop-filter 的浏览器退回二期的实心表面——那套样式是验证
+     过的，不是临时凑的。见文件末尾的 @supports。
+*/
+
+/* ---- 可透的背景：两团低饱和光斑 ---- */
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(60rem 40rem at 12% -10%, rgba(37, 99, 235, 0.13), transparent 60%),
+    radial-gradient(50rem 36rem at 105% 8%, rgba(124, 58, 237, 0.11), transparent 62%),
+    radial-gradient(44rem 34rem at 50% 108%, rgba(18, 128, 92, 0.08), transparent 60%);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) body::before {
+    background:
+      radial-gradient(60rem 40rem at 12% -10%, rgba(110, 168, 254, 0.16), transparent 60%),
+      radial-gradient(50rem 36rem at 105% 8%, rgba(167, 139, 250, 0.14), transparent 62%),
+      radial-gradient(44rem 34rem at 50% 108%, rgba(93, 218, 173, 0.09), transparent 60%);
+  }
+}
+
+:root[data-theme='dark'] body::before {
+  background:
+    radial-gradient(60rem 40rem at 12% -10%, rgba(110, 168, 254, 0.16), transparent 60%),
+    radial-gradient(50rem 36rem at 105% 8%, rgba(167, 139, 250, 0.14), transparent 62%),
+    radial-gradient(44rem 34rem at 50% 108%, rgba(93, 218, 173, 0.09), transparent 60%);
+}
+
+/* ---- 玻璃令牌 ---- */
+
+:root {
+  --glass-bg: rgba(255, 255, 255, 0.62);
+  --glass-bg-strong: rgba(255, 255, 255, 0.82);
+  --glass-border: rgba(255, 255, 255, 0.75);
+  --glass-edge: rgba(16, 24, 40, 0.08);
+  --glass-blur: 20px;
+  --glass-blur-strong: 32px;
+  --glass-shadow: 0 8px 32px rgba(16, 24, 40, 0.1), 0 1px 2px rgba(16, 24, 40, 0.05);
+  --glass-shadow-lg: 0 24px 64px rgba(16, 24, 40, 0.18);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --glass-bg: rgba(30, 35, 41, 0.58);
+    --glass-bg-strong: rgba(28, 32, 38, 0.86);
+    --glass-border: rgba(255, 255, 255, 0.1);
+    --glass-edge: rgba(0, 0, 0, 0.4);
+    --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+    --glass-shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.6);
+  }
+}
+
+:root[data-theme='dark'] {
+  --glass-bg: rgba(30, 35, 41, 0.58);
+  --glass-bg-strong: rgba(28, 32, 38, 0.86);
+  --glass-border: rgba(255, 255, 255, 0.1);
+  --glass-edge: rgba(0, 0, 0, 0.4);
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --glass-shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.6);
+}
+
+/* ---- 两档玻璃 ---- */
+
+.glass {
+  position: relative;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur)) saturate(1.6);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.6);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--glass-shadow), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+
+/* 顶边高光：真实玻璃的边缘会把光聚成一条亮线，这一条最能让它「立起来」 */
+.glass::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.28), transparent 38%);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .glass::after {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent 38%);
+  }
+}
+
+:root[data-theme='dark'] .glass::after {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent 38%);
+}
+
+/* 模态、悬浮层：盖住的内容更多，需要更强的分隔 */
+.glass-strong {
+  background: var(--glass-bg-strong);
+  backdrop-filter: blur(var(--glass-blur-strong)) saturate(1.8);
+  -webkit-backdrop-filter: blur(var(--glass-blur-strong)) saturate(1.8);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--glass-shadow-lg), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+/* 可交互的玻璃：hover 时微微浮起 */
+.glass-interactive {
+  transition:
+    transform 200ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 200ms ease,
+    background-color 200ms ease;
+}
+
+.glass-interactive:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--glass-shadow-lg), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+/* ---- 全屏遮罩（模态用）---- */
+
+.glass-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: var(--space-4);
+  background: rgba(16, 24, 40, 0.28);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: glass-fade-in 180ms ease both;
+}
+
+.glass-modal {
+  width: min(380px, 100%);
+  padding: var(--space-5);
+  animation: glass-rise 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes glass-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes glass-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+}
+
+/* 无障碍：关掉动效但保留玻璃本身。这是要求，不是可选项。 */
+@media (prefers-reduced-motion: reduce) {
+  .glass-overlay,
+  .glass-modal {
+    animation: none;
+  }
+
+  .glass-interactive {
+    transition: none;
+  }
+
+  .glass-interactive:hover {
+    transform: none;
+  }
+}
+
+/* ---- 回退：不支持 backdrop-filter 就退回二期的实心表面 ---- */
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  body::before {
+    display: none;
+  }
+
+  .glass,
+  .glass-strong {
+    background: var(--c-bg-elev);
+    border-color: var(--c-border);
+    box-shadow: var(--shadow-md);
+  }
+
+  .glass::after {
+    display: none;
+  }
+
+  .glass-overlay {
+    background: rgba(16, 24, 40, 0.55);
+  }
+}

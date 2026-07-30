@@ -38,6 +38,13 @@ def _isolate_app_db(tmp_path, monkeypatch):
     test_session_local = sessionmaker(
         bind=test_engine, autoflush=False, expire_on_commit=False
     )
+    # 建表。此前这里只建 engine 不建表，于是任何走 SessionLocal 而未被
+    # 局部 fixture 再次重定向的调用，查询都抛 `no such table`，再被清理
+    # 函数自带的 try/except 静默吞掉——那些函数在多数测试文件里从未真正
+    # 执行过 DB 逻辑，相关断言的检测力被高估了。五期终审记为 backlog D5。
+    from app import models  # noqa: F401  确保模型已注册到 Base.metadata
+
+    Base.metadata.create_all(test_engine)
 
     monkeypatch.setattr(db_module, "engine", test_engine)
     monkeypatch.setattr(db_module, "SessionLocal", test_session_local)

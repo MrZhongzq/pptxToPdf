@@ -33,6 +33,8 @@ from app.errors import (
 from app.models import Task, TaskShard
 from app.services.engines import get_engine
 from app.services.pdf_merge import merge_pdfs
+from app.services.postprocess import apply as apply_postprocess
+from app.services.task_options import options_of, titles_of
 from app.services.pipeline import compute_timeout_s
 from app.services.pptx_probe import probe
 from app.services.pptx_split import split_pptx
@@ -408,6 +410,10 @@ def merge_shards(task_id: str) -> None:
                 raise ConversionPageMismatch(
                     f"合并后页数不符：期望 {task.slide_count} 页，实际 {pages} 页"
                 )
+
+            # 后处理必须在**合并之后**：书签的页码基准是成品 PDF，每片
+            # 各自的页码对不上；页边距倒是哪一步做都行，一并放这里。
+            apply_postprocess(dest, options_of(task), titles_of(task))
 
             task.output_path = str(dest.resolve())
             task.status = "done"

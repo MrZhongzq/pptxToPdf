@@ -4,7 +4,7 @@ export function TaskList({ taskIds }: { taskIds: string[] }) {
   if (taskIds.length === 0) {
     return (
       <div
-        className="card"
+        className="card glass"
         style={{
           padding: 'var(--space-6) var(--space-4)',
           textAlign: 'center',

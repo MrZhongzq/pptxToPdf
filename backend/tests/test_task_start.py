@@ -38,6 +38,33 @@ def _sample_deck_bytes() -> bytes:
     return buf.getvalue()
 
 
+@pytest.fixture
+def logged_in(client, monkeypatch):
+    """六期起 Graph 通道要求登录。用 Graph 的用例都要先过这道门。"""
+    from cryptography.fernet import Fernet
+
+    import app.db as db_module
+    from app.services import auth, users
+
+    monkeypatch.setattr(auth.settings, "secret_key", Fernet.generate_key().decode())
+    monkeypatch.setattr(auth.settings, "admin_cookie_secure", False)
+    monkeypatch.setattr(auth, "_WRONG_PASSWORD_DELAY_S", 0.0)
+    with db_module.SessionLocal() as db:
+        users.create(db, username="alice", email="a@e.com", password="hunter2!")
+    resp = client.post("/api/auth/login", json={"username": "alice", "password": "hunter2!"})
+    assert resp.status_code == 200, resp.text
+    return client
+
+
+@pytest.fixture
+def db_session():
+    import app.db as db_module
+
+    s = db_module.SessionLocal()
+    yield s
+    s.close()
+
+
 def _upload_a_deck(client, engine: str | None = None) -> str:
     """走完整的分块上传协议，落地一个 ready 状态的任务，返回 task_id。
 
@@ -154,20 +181,21 @@ def test_start_enqueues_and_moves_to_pending(client, monkeypatch):
     assert enqueued == [task_id]
 
 
-def test_start_records_engine_and_options(client, monkeypatch):
+def test_start_records_engine_and_options(client, logged_in, monkeypatch):
     """引擎与选项在 start 时才定——这正是本期的目的。"""
     monkeypatch.setattr("app.api.tasks.enqueue_conversion", lambda t: None)
     task_id = _upload_a_deck(client)
-    client.post(
+    resp = client.post(
         f"/api/tasks/{task_id}/start",
         json={"engine": "graph", "options": {"expand_animations": True}},
     )
+    assert resp.status_code == 200, resp.text
     task = _load_task_row(task_id)
     assert task.requested_engine == "graph"
     assert "expand_animations" in (task.options_json or "")
 
 
-def test_start_without_engine_keeps_the_one_chosen_at_upload(client, monkeypatch):
+def test_start_without_engine_keeps_the_one_chosen_at_upload(client, logged_in, monkeypatch):
     """fix round I1：上传时选了引擎、start 不带 engine 时不该被静默清空。
 
     complete_upload 把 upload.requested_engine 转写进 task.requested_engine；
@@ -177,12 +205,17 @@ def test_start_without_engine_keeps_the_one_chosen_at_upload(client, monkeypatch
     """
     monkeypatch.setattr("app.api.tasks.enqueue_conversion", lambda t: None)
     task_id = _upload_a_deck(client, engine="graph")
-    client.post(f"/api/tasks/{task_id}/start", json={})
+    resp = client.post(f"/api/tasks/{task_id}/start", json={})
+    # 断言状态码，不只看 DB：六期加 Graph 登录门槛时发现这条测试原本
+    # 在 401 下也能"通过"——请求被拦、UPDATE 没执行，而 requested_engine
+    # 还是 complete 时写的 graph，断言碰巧成立。少一条状态码断言，一条
+    # 鉴权回归就能从它眼皮底下溜过去。
+    assert resp.status_code == 200, resp.text
     task = _load_task_row(task_id)
     assert task.requested_engine == "graph"
 
 
-def test_start_with_explicit_engine_overrides_the_one_chosen_at_upload(client, monkeypatch):
+def test_start_with_explicit_engine_overrides_the_one_chosen_at_upload(client, logged_in, monkeypatch):
     """终审 I-3：现有两条测试各只覆盖了一半——「上传没选/start 选了」
     （test_start_records_engine_and_options）和「上传选了/start 没选」
     （test_start_without_engine_keeps_the_one_chosen_at_upload）——恰好都
@@ -328,3 +361,77 @@ def test_start_drops_original_when_enqueue_fails(client, monkeypatch):
     assert resp.status_code == 503
     assert dropped == [task_id]
     assert _load_task_row(task_id).status == "failed"
+
+
+# ---- 六期：Graph 通道的登录门槛 ----
+
+
+def _login_as(client, db, username="alice", role="user"):
+    from app.services import users
+
+    users.create(db, username=username, email=f"{username}@e.com", password="hunter2!", role=role)
+    resp = client.post("/api/auth/login", json={"username": username, "password": "hunter2!"})
+    assert resp.status_code == 200, resp.text
+    return client
+
+
+def test_anonymous_cannot_start_graph_task(client, monkeypatch):
+    """前端把 Graph 选项置灰只是体验，这里才是边界——绕过前端直接打 API
+    是最基本的渗透手法。"""
+    from cryptography.fernet import Fernet
+
+    from app.services import auth
+
+    monkeypatch.setattr(auth.settings, "secret_key", Fernet.generate_key().decode())
+    task_id = _upload_a_deck(client, engine="graph")
+
+    resp = client.post(f"/api/tasks/{task_id}/start", json={})
+
+    assert resp.status_code == 401
+    assert resp.json()["code"] == "AUTH_REQUIRED"
+
+
+def test_anonymous_cannot_start_graph_via_payload_either(client, monkeypatch):
+    """上传时选 libreoffice、start 时改成 graph——同样要拦住。
+    只看 task.requested_engine 会漏掉这条路径。"""
+    from cryptography.fernet import Fernet
+
+    from app.services import auth
+
+    monkeypatch.setattr(auth.settings, "secret_key", Fernet.generate_key().decode())
+    task_id = _upload_a_deck(client)
+
+    resp = client.post(f"/api/tasks/{task_id}/start", json={"engine": "graph"})
+
+    assert resp.status_code == 401
+    assert resp.json()["code"] == "AUTH_REQUIRED"
+
+
+def test_anonymous_can_still_start_libreoffice_task(client, monkeypatch):
+    """需求只说 Graph 对未登录用户灰色，没说未登录不能用站点。
+    匿名访客仍可用 LibreOffice——这与「当前不开放注册」的设定一致。"""
+    from cryptography.fernet import Fernet
+
+    from app.services import auth
+
+    monkeypatch.setattr(auth.settings, "secret_key", Fernet.generate_key().decode())
+    task_id = _upload_a_deck(client, engine="libreoffice")
+
+    resp = client.post(f"/api/tasks/{task_id}/start", json={})
+
+    assert resp.status_code == 200
+
+
+def test_logged_in_user_can_start_graph_task(client, db_session, monkeypatch):
+    from cryptography.fernet import Fernet
+
+    from app.services import auth
+
+    monkeypatch.setattr(auth.settings, "secret_key", Fernet.generate_key().decode())
+    monkeypatch.setattr(auth, "_WRONG_PASSWORD_DELAY_S", 0.0)
+    _login_as(client, db_session)
+    task_id = _upload_a_deck(client, engine="graph")
+
+    resp = client.post(f"/api/tasks/{task_id}/start", json={})
+
+    assert resp.status_code == 200

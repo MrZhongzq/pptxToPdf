@@ -1,11 +1,16 @@
 import { useState } from 'react'
 import {
   ApiError,
+  downloadConcurrently,
+  getDownloadSize,
   preflightDownload,
+  saveBlob,
+  shouldDownloadConcurrently,
   triggerNativeDownload,
   type TaskDto,
 } from '../lib/api'
 import { formatBytes } from '../lib/chunking'
+import { useI18n } from '../i18n'
 import { useTaskPolling } from '../hooks/useTaskPolling'
 
 // 必须覆盖 TaskDto['status'] 的每一个取值：后端的 status 是裸 str、API 原样
@@ -43,16 +48,39 @@ const OPTION_LABEL: Record<string, string> = {
 }
 
 export function TaskCard({ taskId }: { taskId: string }) {
+  const { t } = useI18n()
   const { task, pollingTimedOut } = useTaskPolling(taskId)
   const [downloadError, setDownloadError] = useState<string | null>(null)
   const [checking, setChecking] = useState(false)
+  const [downloadPct, setDownloadPct] = useState<number | null>(null)
 
   async function handleDownload() {
     if (!task) return
     setDownloadError(null)
     setChecking(true)
+    setDownloadPct(null)
     try {
       await preflightDownload(task.task_id)
+
+      const total = await getDownloadSize(task.task_id)
+      if (shouldDownloadConcurrently(total)) {
+        try {
+          const blob = await downloadConcurrently(task.task_id, total as number, (p) =>
+            setDownloadPct(Math.round((p.loaded / p.total) * 100)),
+          )
+          const stem = task.original_filename.replace(/\.pptx$/i, '')
+          saveBlob(blob, `${stem}.pdf`)
+          return
+        } catch {
+          // 任一分块失败就整体退回原生下载，且不打扰用户。
+          //
+          // 这看似违反项目铁律「绝不静默回退」，但那条约束的是**转换引擎
+          // 的选择**——用户显式选了 Graph 就不能偷偷用 LibreOffice，因为
+          // 两者的产出保真度不同。下载是幂等的字节搬运，两条路径产出完全
+          // 相同的文件，回退对用户没有任何可感知的差异，报错反而是噪音。
+          setDownloadPct(null)
+        }
+      }
       triggerNativeDownload(task.task_id)
     } catch (err) {
       setDownloadError(
@@ -64,12 +92,13 @@ export function TaskCard({ taskId }: { taskId: string }) {
       )
     } finally {
       setChecking(false)
+      setDownloadPct(null)
     }
   }
 
   if (pollingTimedOut) {
     return (
-      <div className="card" style={{ padding: 'var(--space-4)' }}>
+      <div className="card glass" style={{ padding: 'var(--space-4)' }}>
         <p role="alert" className="alert alert-danger">
           任务状态长时间未更新，可能已中断。请重新上传。
         </p>
@@ -80,7 +109,7 @@ export function TaskCard({ taskId }: { taskId: string }) {
   if (!task) {
     return (
       <div
-        className="card"
+        className="card glass"
         style={{ padding: 'var(--space-4)', color: 'var(--c-text-dim)' }}
       >
         载入中…
@@ -108,7 +137,7 @@ export function TaskCard({ taskId }: { taskId: string }) {
 
   return (
     <div
-      className="card"
+      className="card glass"
       style={{
         padding: 'var(--space-4)',
         ...(sharded ? { borderLeft: '4px solid var(--c-notable)' } : null),
@@ -237,7 +266,11 @@ export function TaskCard({ taskId }: { taskId: string }) {
           disabled={checking}
           style={{ marginTop: 'var(--space-3)' }}
         >
-          {checking ? '准备中…' : '下载 PDF'}
+          {downloadPct !== null
+            ? t('task.downloading', { percent: downloadPct })
+            : checking
+              ? t('task.preparing')
+              : t('task.download')}
         </button>
       )}
 

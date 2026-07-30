@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ConversionOptionsPanel } from './components/ConversionOptions'
+import { useI18n } from './i18n'
+import { UserMenu } from './components/UserMenu'
 import { ReadyCard } from './components/ReadyCard'
 import { TaskList } from './components/TaskList'
 import { UploadDropzone } from './components/UploadDropzone'
@@ -12,6 +14,7 @@ import {
   type CapacityConfig,
   type ConversionOptions,
   type EngineName,
+  type UserDto,
 } from './lib/api'
 import { assessGraphRisk, GRAPH_RISK_MESSAGE, type GraphRisk } from './lib/graphCapacity'
 import {
@@ -52,6 +55,7 @@ interface ReadyTask {
 }
 
 function UploadPage() {
+  const { t } = useI18n()
   const [taskIds, setTaskIds] = useState<string[]>([])
   const [progress, setProgress] = useState<P | null>(null)
   const [phase, setPhase] = useState<UploadPhase>('done')
@@ -66,6 +70,7 @@ function UploadPage() {
   // 拿它做上传前拦截。
   const [capacity, setCapacity] = useState<CapacityConfig | null>(null)
   // 五期两段式上传：传完先停在这里，等用户点「开始转换」，不直接入队。
+  const [currentUser, setCurrentUser] = useState<UserDto | null>(null)
   const [readyTask, setReadyTask] = useState<ReadyTask | null>(null)
   // 复审 Important：UploadDropzone 在有 readyTask 时依旧照常可点可拖，
   // 用户传完 A 去泡咖啡、回来传 B 是完全正常的操作路径，不是多标签页
@@ -323,11 +328,14 @@ function UploadPage() {
 
   return (
     <div className="layout">
-      <header className="page-head">
-        <h1 className="page-title">pptx → PDF</h1>
-        <span className="page-sub">
-          转成能直接导入 GoodNotes / OneNote 的 PDF
-        </span>
+      <header className="page-head" style={{ position: 'relative' }}>
+        <div>
+          <h1 className="page-title">{t('app.title')}</h1>
+          <span className="page-sub">{t('app.subtitle')}</span>
+        </div>
+        <div style={{ position: 'absolute', top: 0, right: 0 }}>
+          <UserMenu onUserChange={setCurrentUser} />
+        </div>
       </header>
 
       <div className="col">
@@ -338,7 +346,7 @@ function UploadPage() {
 
         {pendingReplacementFile !== null && readyTask !== null && (
           <div
-            className="card"
+            className="card glass"
             style={{
               padding: 'var(--space-3)',
               borderLeft: '4px solid var(--c-notable)',
@@ -372,7 +380,7 @@ function UploadPage() {
 
         {pendingFile !== null && graphRisk !== 'none' && (
           <div
-            className="card"
+            className="card glass"
             style={{
               padding: 'var(--space-3)',
               borderLeft: '4px solid var(--c-notable)',
@@ -430,57 +438,28 @@ function UploadPage() {
               // ReadyCard 的「开始转换」在飞行期间完全可点，实测会让同一个
               // taskId 被 start 两次，第二次拿 409 又被当成「已经在跑」加
               // 进任务列表，同一个 taskId 进两次、TaskList 重复 key。
-              disabled={
-                readyGraphRisk !== 'none' || pendingReplacementFile !== null || startingReadyTask
+              // 刻意**不含** readyGraphRisk：风险横幅现在就地占据「开始转换」
+              // 的位置（七期），用户已经没有「绕过横幅直接开始」的路径，六期
+              // 那条整卡禁用因此失去了理由，只剩下把引擎与后处理选项一起锁死
+              // 的副作用。而横幅上就摆着「改用 LibreOffice 并继续」——允许改
+              // 引擎却不让点引擎按钮，前后矛盾。放开之后，用户点 LibreOffice
+              // 会让 readyGraphRisk 变回 'none'，横幅自动消失、按钮回来。
+              disabled={pendingReplacementFile !== null || startingReadyTask}
+              // 风险确认就地占据「开始转换」的位置，见 ReadyCard 里的注释。
+              riskMessage={
+                readyGraphRisk !== 'none' ? GRAPH_RISK_MESSAGE[readyGraphRisk] : null
               }
+              // 终审 I-5：必须跟 ReadyCard 自己的 disabled 同一个条件——覆盖
+              // 确认横幅同屏时，这两个按钮此前只被 startingReadyTask 挡，没被
+              // pendingReplacementFile 挡。用户能点"仍然继续"启动 A，
+              // setReadyTask(null) 让覆盖横幅因 readyTask===null 而消失，但
+              // pendingReplacementFile 里的 B 从未上传也从未告知，构成静默丢弃；
+              // 那份残留还会在后续任务落 ready 时冒出一条张冠李戴的横幅。
+              riskActionsDisabled={startingReadyTask || pendingReplacementFile !== null}
+              onProceedWithGraph={confirmReadyProceedWithGraph}
+              onSwitchToLibreOffice={confirmReadySwitchToLibreOffice}
             />
 
-            {readyGraphRisk !== 'none' && (
-              <div
-                className="card"
-                style={{
-                  padding: 'var(--space-3)',
-                  borderLeft: '4px solid var(--c-notable)',
-                  fontSize: 13,
-                  lineHeight: 1.6,
-                }}
-              >
-                <p>{GRAPH_RISK_MESSAGE[readyGraphRisk]}</p>
-                <div
-                  style={{
-                    display: 'flex',
-                    gap: 'var(--space-2)',
-                    marginTop: 'var(--space-3)',
-                  }}
-                >
-                  <button
-                    type="button"
-                    className="btn btn-ghost"
-                    // 终审 I-5：必须跟 ReadyCard 自己的 disabled（:348）同一个
-                    // 条件——覆盖确认横幅同屏时，这两个按钮此前只被
-                    // startingReadyTask 挡，没被 pendingReplacementFile 挡。
-                    // 用户能点"仍然继续"启动 A，setReadyTask(null) 让覆盖
-                    // 横幅因 readyTask===null 而消失，但 pendingReplacementFile
-                    // 里的 B 从未上传也从未告知，构成静默丢弃；那份残留还会在
-                    // 后续任务落 ready 时冒出一条张冠李戴的横幅（把 B 当成
-                    // 要传的文件）。锁住这两个按钮直到用户先对覆盖确认横幅
-                    // 表态，从源头掐断这整条链路。
-                    disabled={startingReadyTask || pendingReplacementFile !== null}
-                    onClick={confirmReadyProceedWithGraph}
-                  >
-                    仍然继续
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    disabled={startingReadyTask || pendingReplacementFile !== null}
-                    onClick={confirmReadySwitchToLibreOffice}
-                  >
-                    改用 LibreOffice 并继续
-                  </button>
-                </div>
-              </div>
-            )}
           </>
         ) : (
           <ConversionOptionsPanel
@@ -489,12 +468,13 @@ function UploadPage() {
             options={options}
             onOptionsChange={setOptions}
             disabled={uploading || awaitingRiskDecision}
+            loggedIn={currentUser !== null}
           />
         )}
       </div>
 
       <div className="col">
-        <span className="section-title">任务</span>
+        <span className="section-title">{t('task.section')}</span>
         <TaskList taskIds={taskIds} />
       </div>
     </div>

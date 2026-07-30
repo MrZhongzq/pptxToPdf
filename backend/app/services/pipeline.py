@@ -7,11 +7,14 @@ from app.db import SessionLocal
 from app.errors import AppError, GraphNotConfigured
 from app.models import Task
 from app.queue import enqueue_shards
+from app.services.animation_expand import expand_animations
 from app.services.engine_router import select_engine
 from app.services.engines import get_engine
 from app.services.graph_credentials import is_graph_configured
 from app.services.media_strip import strip_media
-from app.services.pptx_probe import probe
+from app.services.postprocess import apply as apply_postprocess
+from app.services.pptx_probe import extract_titles, probe
+from app.services.task_options import options_of, titles_of
 from app.services.retention import (
     drop_original,
     purge_expired_outputs,
@@ -108,6 +111,26 @@ def run_task(task_id: str) -> None:
                     "media stripped id=%s parts=%d %d -> %d bytes",
                     task_id, strip.removed_parts, strip.bytes_before, strip.bytes_after,
                 )
+            # 动画展开同样必须在 size_bytes 之前：它会改变页数，而页数与
+            # 体积正是切片规划的两个输入。展开放在剥离之后——剥离让包变小，
+            # 展开会按步数复制 slide 正文，先剥离再展开复制的是更小的东西。
+            options = options_of(task)
+            if options.expand_animations:
+                expanded = expand_animations(src)
+                if expanded.expanded:
+                    logger.info(
+                        "animations expanded id=%s %d -> %d pages",
+                        task_id, expanded.pages_before, expanded.pages_after,
+                    )
+                    meta = probe(src)  # 页数变了，重新探测
+                if expanded.warnings:
+                    task.warnings_json = json.dumps(expanded.warnings, ensure_ascii=False)
+
+            # 书签标题必须在这里提取并落库：分片路径下本函数的 finally 会
+            # drop_original，等 merge_shards 跑到时原 pptx 已经不在了。
+            if options.pdf_outline:
+                task.outline_json = json.dumps(extract_titles(src), ensure_ascii=False)
+
             size_bytes = src.stat().st_size
             # 剥离后的体积取代上传时记的原始体积——task.size_bytes 从这里
             # 起是"参与转换判断的那个值"，不再是用户上传时的原始大小。
@@ -183,6 +206,8 @@ def run_task(task_id: str) -> None:
             get_engine(task.engine, session=session).convert(
                 src, meta, dest, timeout_s=timeout_s
             )
+
+            apply_postprocess(dest, options, titles_of(task))
 
             task.output_path = str(dest.resolve())
             _set_status(session, task, "done")

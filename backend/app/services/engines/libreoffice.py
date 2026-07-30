@@ -105,6 +105,7 @@ class LibreOfficeEngine(ConversionEngine):
         )
 
         self._apply_output_fault_injection(dest)
+        self._settle_output(src, dest)
         self._verify_output(dest, meta, src)
 
     @staticmethod
@@ -137,6 +138,27 @@ class LibreOfficeEngine(ConversionEngine):
             with dest.open("wb") as fh:
                 writer.write(fh)
             logger.warning("故障注入 DEBUG_FORCE_PAGE_MISMATCH：输出已删掉最后一页")
+
+    @staticmethod
+    def _settle_output(src: Path, dest: Path) -> None:
+        """把 soffice 实际产出的文件挪到调用方要的位置。
+
+        `--outdir` 模式下 soffice 的输出文件名是**源文件名换扩展名**，不
+        接受指定。此前这里默认 dest 与 src 同 stem——生产路径上两者都是
+        `{task_id}`，所以一直成立，但那是个没写进签名也没有校验的隐含契约。
+
+        它咬过两次：六期排查媒体剥离时，一个诊断脚本用了不同的 stem，拿到
+        「soffice 未产出输出文件」，据此得出了「未剥离的原件 LibreOffice
+        转不了」这个错误结论（实际转出来了，只是叫别的名字）；七期的 v1
+        接口写成 input.pptx -> output.pdf，直接 500。
+
+        与其继续要求每个调用方记住这条，不如在这里把它抹平。
+        """
+        if dest.is_file():
+            return
+        produced = dest.parent / f"{src.stem}.pdf"
+        if produced.is_file():
+            produced.replace(dest)
 
     @staticmethod
     def _verify_output(dest: Path, meta: PptxMeta, src: Path) -> None:

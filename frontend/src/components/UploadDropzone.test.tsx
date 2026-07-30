@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '../testUtils'
 import { describe, expect, it, vi } from 'vitest'
 import { UploadDropzone } from './UploadDropzone'
 

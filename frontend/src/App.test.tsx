@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from './testUtils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import { ApiError, type CapacityConfig } from './lib/api'
@@ -14,13 +14,19 @@ const CAPACITY: CapacityConfig = {
 
 const mocks = vi.hoisted(() => ({
   getCapacityConfig: vi.fn(),
+  getMe: vi.fn(),
   uploadFile: vi.fn(),
   startTask: vi.fn(),
 }))
 
 vi.mock('./lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./lib/api')>()
-  return { ...actual, getCapacityConfig: mocks.getCapacityConfig, startTask: mocks.startTask }
+  return {
+    ...actual,
+    getCapacityConfig: mocks.getCapacityConfig,
+    startTask: mocks.startTask,
+    getMe: mocks.getMe,
+  }
 })
 
 vi.mock('./lib/uploadClient', async (importOriginal) => {
@@ -55,6 +61,16 @@ function chooseFile(file: File) {
 describe('App 上传前的容量启发式预判与确认时机', () => {
   beforeEach(() => {
     mocks.getCapacityConfig.mockReset().mockResolvedValue(CAPACITY)
+    // 六期起 Graph 通道要求登录，未登录时那个选项是灰的。本文件的用例
+    // 大量依赖「用户选了 Graph」这个前提，所以默认按已登录跑。
+    mocks.getMe.mockReset().mockResolvedValue({
+      user_id: 'u1',
+      username: 'tester',
+      email: 't@example.com',
+      role: 'user',
+      status: 'active',
+      created_at: '2026-07-29T00:00:00Z',
+    })
     // uploadFile 挂起不 resolve，模拟"上传正在进行"的窗口，方便断言
     // 「是否已经发起过」而不受上传完成时序干扰。
     mocks.uploadFile.mockReset().mockReturnValue(new Promise(() => {}))
@@ -213,23 +229,73 @@ describe('App 上传前的容量启发式预判与确认时机', () => {
     expect(screen.getByRole('button', { name: /Microsoft Graph/ })).not.toBeDisabled()
   })
 
-  it('/admin 路径渲染管理页而不是上传界面', async () => {
+  it('/admin 路径：admin 用户看到管理面板', async () => {
     const original = window.location
     Object.defineProperty(window, 'location', {
-      value: { ...original, pathname: '/admin' },
+      value: { ...original, pathname: '/admin', replace: vi.fn() },
       writable: true,
     })
+    mocks.getMe.mockResolvedValue({
+      user_id: 'a1',
+      username: 'admin',
+      email: 'a@example.com',
+      role: 'admin',
+      status: 'active',
+      created_at: '2026-07-29T00:00:00Z',
+    })
+    // 面板里的各分区会各自拉数据，给一个空响应就够——这条测的是路由分发
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
-        new Response(JSON.stringify({ code: 'ADMIN_UNAUTHORIZED' }), {
-          status: 401,
-          headers: { 'Content-Type': 'application/json' },
-        }),
+        new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } }),
       ),
     )
+
     render(<App />)
-    expect(await screen.findByLabelText('管理口令')).toBeTruthy()
+
+    expect(await screen.findByRole('heading', { name: '管理面板' })).toBeTruthy()
+    expect(window.location.replace).not.toHaveBeenCalled()
+
+    // 必须还原：不还原的话被 stub 的 fetch 会漏给后面每一个用例，
+    // 表现是它们莫名其妙地超时——本文件此前就一直带着这个污染。
+    vi.unstubAllGlobals()
+    Object.defineProperty(window, 'location', { value: original, writable: true })
+  })
+
+  it('/admin 路径：非 admin 被跳回主页', async () => {
+    const original = window.location
+    const replace = vi.fn()
+    Object.defineProperty(window, 'location', {
+      value: { ...original, pathname: '/admin', replace },
+      writable: true,
+    })
+    mocks.getMe.mockResolvedValue({
+      user_id: 'u1',
+      username: 'alice',
+      email: 'a@example.com',
+      role: 'user',
+      status: 'active',
+      created_at: '2026-07-29T00:00:00Z',
+    })
+
+    render(<App />)
+
+    await waitFor(() => expect(replace).toHaveBeenCalledWith('/'))
+    Object.defineProperty(window, 'location', { value: original, writable: true })
+  })
+
+  it('/admin 路径：未登录被跳回主页', async () => {
+    const original = window.location
+    const replace = vi.fn()
+    Object.defineProperty(window, 'location', {
+      value: { ...original, pathname: '/admin', replace },
+      writable: true,
+    })
+    mocks.getMe.mockResolvedValue(null)
+
+    render(<App />)
+
+    await waitFor(() => expect(replace).toHaveBeenCalledWith('/'))
     Object.defineProperty(window, 'location', { value: original, writable: true })
   })
 })
@@ -237,6 +303,16 @@ describe('App 上传前的容量启发式预判与确认时机', () => {
 describe('App 两段式上传：ReadyCard 与「开始转换」', () => {
   beforeEach(() => {
     mocks.getCapacityConfig.mockReset().mockResolvedValue(CAPACITY)
+    // 六期起 Graph 通道要求登录，未登录时那个选项是灰的。本文件的用例
+    // 大量依赖「用户选了 Graph」这个前提，所以默认按已登录跑。
+    mocks.getMe.mockReset().mockResolvedValue({
+      user_id: 'u1',
+      username: 'tester',
+      email: 't@example.com',
+      role: 'user',
+      status: 'active',
+      created_at: '2026-07-29T00:00:00Z',
+    })
     mocks.uploadFile.mockReset().mockResolvedValue({ taskId: 'T1' })
     mocks.startTask.mockReset()
   })
@@ -318,11 +394,80 @@ describe('App 两段式上传：ReadyCard 与「开始转换」', () => {
       expect(mocks.startTask).toHaveBeenCalledWith('T1', 'graph', expect.anything()),
     )
   })
+
+  it('风险横幅出现时，引擎与后处理选项仍然可用（用户报的 bug）', async () => {
+    // 六期风险横幅在 ReadyCard 外面，整卡禁用是为了防止用户绕过横幅直接
+    // 点「开始转换」。七期横幅就地替换了那个按钮，绕过的路径已经不存在，
+    // 那条禁用只剩副作用：把引擎和后处理选项一起锁死。而横幅上就摆着
+    // 「改用 LibreOffice 并继续」——允许改引擎却不让点引擎按钮，前后矛盾。
+    render(<App />)
+    await waitFor(() => expect(mocks.getCapacityConfig).toHaveBeenCalled())
+    chooseFile(fileOfSize(300 * MIB))
+    await screen.findByText('deck.pptx')
+    fireEvent.click(screen.getByRole('button', { name: /Microsoft Graph/ }))
+    await screen.findByRole('button', { name: '仍然继续' })
+
+    expect(screen.getByRole('button', { name: /^LibreOffice/ })).toBeEnabled()
+    expect(screen.getByRole('checkbox', { name: /动画分步展开/ })).toBeEnabled()
+    expect(screen.getByRole('checkbox', { name: /PDF 书签大纲/ })).toBeEnabled()
+  })
+
+  it('风险横幅期间点引擎按钮换成 LibreOffice：横幅消失，开始转换回来', async () => {
+    render(<App />)
+    await waitFor(() => expect(mocks.getCapacityConfig).toHaveBeenCalled())
+    chooseFile(fileOfSize(300 * MIB))
+    await screen.findByText('deck.pptx')
+    fireEvent.click(screen.getByRole('button', { name: /Microsoft Graph/ }))
+    await screen.findByRole('button', { name: '仍然继续' })
+
+    // 直接点引擎按钮，不走横幅上那个「改用 LibreOffice 并继续」
+    fireEvent.click(screen.getByRole('button', { name: /^LibreOffice/ }))
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: '仍然继续' })).toBeNull())
+    expect(screen.getByRole('button', { name: '开始转换' })).toBeEnabled()
+  })
+
+  it('风险横幅期间勾后处理选项：选项生效，横幅不受影响', async () => {
+    render(<App />)
+    await waitFor(() => expect(mocks.getCapacityConfig).toHaveBeenCalled())
+    chooseFile(fileOfSize(300 * MIB))
+    await screen.findByText('deck.pptx')
+    fireEvent.click(screen.getByRole('button', { name: /Microsoft Graph/ }))
+    await screen.findByRole('button', { name: '仍然继续' })
+
+    const outline = screen.getByRole('checkbox', { name: /PDF 书签大纲/ })
+    fireEvent.click(outline)
+
+    expect(outline).toBeChecked()
+    // 风险判定只看引擎与体积，勾选项不该让横幅消失
+    expect(screen.getByRole('button', { name: '仍然继续' })).toBeInTheDocument()
+
+    mocks.startTask.mockResolvedValue({})
+    fireEvent.click(screen.getByRole('button', { name: '仍然继续' }))
+
+    await waitFor(() =>
+      expect(mocks.startTask).toHaveBeenCalledWith(
+        'T1',
+        'graph',
+        expect.objectContaining({ pdf_outline: true }),
+      ),
+    )
+  })
 })
 
 describe('App 覆盖已有 ready 任务前的确认（复审 Important：UploadDropzone 传完一直可点可拖，用户中途拖入第二个文件是正常操作路径，不是边角场景）', () => {
   beforeEach(() => {
     mocks.getCapacityConfig.mockReset().mockResolvedValue(CAPACITY)
+    // 六期起 Graph 通道要求登录，未登录时那个选项是灰的。本文件的用例
+    // 大量依赖「用户选了 Graph」这个前提，所以默认按已登录跑。
+    mocks.getMe.mockReset().mockResolvedValue({
+      user_id: 'u1',
+      username: 'tester',
+      email: 't@example.com',
+      role: 'user',
+      status: 'active',
+      created_at: '2026-07-29T00:00:00Z',
+    })
     mocks.uploadFile.mockReset().mockResolvedValue({ taskId: 'T1' })
     mocks.startTask.mockReset()
   })
@@ -457,6 +602,16 @@ describe('App 覆盖已有 ready 任务前的确认——异步窗口（复审 I
   // disabled 从一开始就不适用。
   beforeEach(() => {
     mocks.getCapacityConfig.mockReset().mockResolvedValue(CAPACITY)
+    // 六期起 Graph 通道要求登录，未登录时那个选项是灰的。本文件的用例
+    // 大量依赖「用户选了 Graph」这个前提，所以默认按已登录跑。
+    mocks.getMe.mockReset().mockResolvedValue({
+      user_id: 'u1',
+      username: 'tester',
+      email: 't@example.com',
+      role: 'user',
+      status: 'active',
+      created_at: '2026-07-29T00:00:00Z',
+    })
     mocks.uploadFile.mockReset()
     mocks.startTask.mockReset()
   })

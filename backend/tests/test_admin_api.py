@@ -1,28 +1,29 @@
+"""Azure 凭证端点：读、写与「先测后存」。
+
+登录/会话相关的用例六期搬到了 test_auth_api.py——那些验的是账号体系，
+与凭证本身无关。
+"""
 import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
 from app.errors import GraphNotConfigured
 from app.main import app
-from app.services import admin_auth, graph_credentials, graph_selftest
+from app.services import auth, graph_credentials, graph_selftest, users
 from app.services.graph_selftest import StepResult
 
-PASSWORD = "hunter2"
+PASSWORD = "hunter2!"
 
 
 @pytest.fixture(autouse=True)
 def _configured(monkeypatch):
-    monkeypatch.setattr(
-        admin_auth.settings, "admin_password_hash", admin_auth.hash_password(PASSWORD)
-    )
-    monkeypatch.setattr(admin_auth.settings, "admin_cookie_secure", False)
+    monkeypatch.setattr(auth.settings, "admin_cookie_secure", False)
     # conftest.py 没有为 secret_key 提供全局测试值（各测试文件各自设置，
-    # 见 test_admin_auth.py 同名注释）。admin_auth 的会话签发/校验依赖
-    # settings.secret_key 才能构造 Fernet，这里补上，否则 login 会因
-    # AdminNotConfigured 返回 503 而不是 204。
-    monkeypatch.setattr(admin_auth.settings, "secret_key", Fernet.generate_key().decode())
+    # 见 test_auth.py 同名注释）。auth 的会话签发/校验依赖
+    # settings.secret_key 才能构造 Fernet，这里补上。
+    monkeypatch.setattr(auth.settings, "secret_key", Fernet.generate_key().decode())
     # 口令错误路径的 1 秒延迟在测试里没有意义，抹掉
-    monkeypatch.setattr(admin_auth, "_WRONG_PASSWORD_DELAY_S", 0.0)
+    monkeypatch.setattr(auth, "_WRONG_PASSWORD_DELAY_S", 0.0)
 
 
 @pytest.fixture
@@ -32,8 +33,21 @@ def client():
 
 
 @pytest.fixture
-def admin_session(client):
-    client.post("/api/admin/login", json={"password": PASSWORD})
+def admin_user(db_session):
+    """六期起管理员是 users 表里的一行，不再是环境变量里的一个口令。"""
+    return users.create(
+        db_session,
+        username="admin",
+        email="admin@example.com",
+        password=PASSWORD,
+        role="admin",
+    )
+
+
+@pytest.fixture
+def admin_session(client, admin_user):
+    resp = client.post("/api/auth/login", json={"username": "admin", "password": PASSWORD})
+    assert resp.status_code == 200, resp.text
     return client
 
 
@@ -51,76 +65,6 @@ def db_session():
     db = db_module.SessionLocal()
     yield db
     db.close()
-
-
-def test_login_sets_cookie(client):
-    resp = client.post("/api/admin/login", json={"password": PASSWORD})
-    assert resp.status_code == 204
-    assert admin_auth.SESSION_COOKIE_NAME in resp.cookies
-
-
-def test_login_rejects_wrong_password(client):
-    resp = client.post("/api/admin/login", json={"password": "wrong"})
-    assert resp.status_code == 401
-    assert resp.json()["code"] == "ADMIN_BAD_PASSWORD"
-
-
-def test_login_503_when_password_not_configured(client, monkeypatch):
-    monkeypatch.setattr(admin_auth.settings, "admin_password_hash", None)
-    resp = client.post("/api/admin/login", json={"password": PASSWORD})
-    assert resp.status_code == 503
-    assert resp.json()["code"] == "ADMIN_NOT_CONFIGURED"
-
-
-def test_protected_endpoint_503_when_password_cleared_after_login(client, monkeypatch):
-    # 模拟 README 记录的唯一「关门」手段：改环境变量后重启。登录时口令
-    # 还配着，拿到合法 cookie；随后口令被清空（比如怀疑已泄露，管理员
-    # 想立刻关门）。旧 cookie 不应该继续放行——如果只在 /login 挡，
-    # 「整体 503」的实际含义就退化成「新登录不了」，已发出的会话在
-    # admin_session_days（默认 3 天）内继续有效，关门形同虚设。
-    resp = client.post("/api/admin/login", json={"password": PASSWORD})
-    assert resp.status_code == 204
-    monkeypatch.setattr(admin_auth.settings, "admin_password_hash", None)
-    resp = client.get("/api/admin/graph-credentials")
-    assert resp.status_code == 503
-    assert resp.json()["code"] == "ADMIN_NOT_CONFIGURED"
-
-
-def test_cookie_flags(client):
-    resp = client.post("/api/admin/login", json={"password": PASSWORD})
-    raw = resp.headers["set-cookie"]
-    assert "HttpOnly" in raw
-    assert "SameSite=Strict" in raw
-    assert "Secure" not in raw
-
-
-def test_cookie_secure_follows_setting(client, monkeypatch):
-    monkeypatch.setattr(admin_auth.settings, "admin_cookie_secure", True)
-    resp = client.post("/api/admin/login", json={"password": PASSWORD})
-    assert "Secure" in resp.headers["set-cookie"]
-
-
-def test_logout_clears_cookie_without_auth(client):
-    resp = client.post("/api/admin/logout")
-    assert resp.status_code == 204
-    # 未登录也能登出——语义是「清掉浏览器上的 cookie」，
-    # cookie 已过期时同样应该成功
-    assert 'pptx2pdf_admin=""' in resp.headers["set-cookie"] or "Max-Age=0" in resp.headers["set-cookie"]
-
-
-def test_protected_endpoint_rejects_anonymous(client):
-    resp = client.get("/api/admin/graph-credentials")
-    assert resp.status_code == 401
-    assert resp.json()["code"] == "ADMIN_UNAUTHORIZED"
-
-
-def test_session_slides_on_each_request(client):
-    client.post("/api/admin/login", json={"password": PASSWORD})
-    first = client.cookies[admin_auth.SESSION_COOKIE_NAME]
-    resp = client.get("/api/admin/graph-credentials")
-    assert resp.status_code in (200, 404)
-    assert "set-cookie" in resp.headers, "每个通过鉴权的请求都应重新签发 cookie"
-    assert client.cookies[admin_auth.SESSION_COOKIE_NAME] != first
 
 
 def test_get_credentials_when_unset(client, admin_session):

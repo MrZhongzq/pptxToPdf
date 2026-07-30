@@ -1,3 +1,4 @@
+import type { UserDto } from './api'
 export interface GraphCredentials {
   tenant_id: string
   client_id: string
@@ -36,19 +37,6 @@ async function parseError(resp: Response): Promise<never> {
   throw err
 }
 
-export async function login(password: string): Promise<void> {
-  const resp = await fetch('/api/admin/login', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password }),
-  })
-  if (!resp.ok) await parseError(resp)
-}
-
-export async function logout(): Promise<void> {
-  await fetch('/api/admin/logout', { method: 'POST' })
-}
-
 export async function getCredentials(): Promise<GraphCredentials> {
   const resp = await fetch('/api/admin/graph-credentials')
   if (!resp.ok) await parseError(resp)
@@ -69,4 +57,128 @@ export async function putCredentials(payload: {
   })
   if (!resp.ok) await parseError(resp)
   return resp.json()
+}
+
+
+// ---- 六期：用户管理 ----
+
+
+export async function listUsers(): Promise<UserDto[]> {
+  const resp = await fetch('/api/admin/users')
+  if (!resp.ok) await parseError(resp)
+  return resp.json() as Promise<UserDto[]>
+}
+
+export async function createUser(payload: {
+  username: string
+  email: string
+  password: string
+  role: 'admin' | 'user'
+}): Promise<UserDto> {
+  const resp = await fetch('/api/admin/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+  if (!resp.ok) await parseError(resp)
+  return resp.json() as Promise<UserDto>
+}
+
+export async function setUserStatus(
+  userId: string,
+  status: 'active' | 'suspended',
+): Promise<UserDto> {
+  const resp = await fetch(`/api/admin/users/${userId}/status`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    })
+  if (!resp.ok) await parseError(resp)
+  return resp.json() as Promise<UserDto>
+}
+
+export async function setUserPassword(userId: string, password: string): Promise<UserDto> {
+  const resp = await fetch(`/api/admin/users/${userId}/password`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    })
+  if (!resp.ok) await parseError(resp)
+  return resp.json() as Promise<UserDto>
+}
+
+export async function deleteUser(userId: string): Promise<void> {
+  const resp = await fetch(`/api/admin/users/${userId}`, { method: 'DELETE' })
+  if (!resp.ok) await parseError(resp)
+}
+
+// ---- 六期：访问白名单 ----
+
+export interface AllowedOrigin {
+  origin_id: string
+  origin: string
+  note: string | null
+  created_at: string
+}
+
+export async function listOrigins(): Promise<AllowedOrigin[]> {
+  const resp = await fetch('/api/admin/origins')
+  if (!resp.ok) await parseError(resp)
+  return resp.json() as Promise<AllowedOrigin[]>
+}
+
+export async function createOrigin(origin: string, note?: string): Promise<AllowedOrigin> {
+  const resp = await fetch('/api/admin/origins', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ origin, note: note || null }),
+    })
+  if (!resp.ok) await parseError(resp)
+  return resp.json() as Promise<AllowedOrigin>
+}
+
+export async function deleteOrigin(originId: string): Promise<void> {
+  const resp = await fetch(`/api/admin/origins/${originId}`, { method: 'DELETE' })
+  if (!resp.ok) await parseError(resp)
+}
+
+// ---- 六期：系统状态 ----
+
+export interface SystemStats {
+  tasks_total: number
+  tasks_by_status: Record<string, number>
+  users_total: number
+  storage_originals_bytes: number
+  storage_outputs_bytes: number
+  storage_shards_bytes: number
+}
+
+export async function getStats(): Promise<SystemStats> {
+  const resp = await fetch('/api/admin/stats')
+  if (!resp.ok) await parseError(resp)
+  return resp.json() as Promise<SystemStats>
+}
+
+
+// ---- 七期：黑名单 ----
+
+export async function listBlocked(): Promise<AllowedOrigin[]> {
+  const resp = await fetch('/api/admin/blocked')
+  if (!resp.ok) await parseError(resp)
+  return resp.json() as Promise<AllowedOrigin[]>
+}
+
+export async function createBlocked(origin: string, note?: string): Promise<AllowedOrigin> {
+  const resp = await fetch('/api/admin/blocked', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ origin, note: note || null }),
+  })
+  if (!resp.ok) await parseError(resp)
+  return resp.json() as Promise<AllowedOrigin>
+}
+
+export async function deleteBlocked(originId: string): Promise<void> {
+  const resp = await fetch('/api/admin/blocked/' + originId, { method: 'DELETE' })
+  if (!resp.ok) await parseError(resp)
 }

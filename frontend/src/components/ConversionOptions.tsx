@@ -1,3 +1,4 @@
+import { useI18n } from '../i18n'
 import type { ConversionOptions, EngineName } from '../lib/api'
 
 interface Props {
@@ -6,44 +7,46 @@ interface Props {
   options: ConversionOptions
   onOptionsChange: (options: ConversionOptions) => void
   disabled?: boolean
+  /** 未登录时 Graph 通道不可选。前端置灰只是体验，后端 start_task 才是边界。 */
+  loggedIn?: boolean
 }
 
 const ENGINES: {
   value: EngineName
-  title: string
-  hint: string
+  titleKey: string
+  hintKey: string
 }[] = [
   {
     value: 'libreoffice',
-    title: 'LibreOffice',
-    hint: '无页数与超时限制，长 deck 的主力',
+    titleKey: 'engine.libreoffice.title',
+    hintKey: 'engine.libreoffice.hint',
   },
   {
     value: 'graph',
-    title: 'Microsoft Graph',
-    hint: '高保真，但受 100 页 / 45 秒限制 · 三期实现',
+    titleKey: 'engine.graph.title',
+    hintKey: 'engine.graph.hint',
   },
 ]
 
 const POST_OPTIONS: {
   key: keyof ConversionOptions
-  label: string
-  hint: string
+  labelKey: string
+  hintKey: string
 }[] = [
   {
     key: 'expand_animations',
-    label: '动画分步展开',
-    hint: '按 p:timing 把逐步出现的内容拆成多页，避免所有元素叠在一页上',
+    labelKey: 'postprocess.animations.label',
+    hintKey: 'postprocess.animations.hint',
   },
   {
     key: 'pdf_outline',
-    label: 'PDF 书签大纲',
-    hint: '用每页标题生成书签，方便在 GoodNotes 里跳转',
+    labelKey: 'postprocess.outline.label',
+    hintKey: 'postprocess.outline.hint',
   },
   {
     key: 'remap_margins',
-    label: '页边距重映射',
-    hint: '给 iPad 竖屏批注留出侧边空白',
+    labelKey: 'postprocess.margins.label',
+    hintKey: 'postprocess.margins.hint',
   },
 ]
 
@@ -53,25 +56,35 @@ export function ConversionOptionsPanel({
   options,
   onOptionsChange,
   disabled = false,
+  loggedIn = true,
 }: Props) {
+  const { t } = useI18n()
   return (
-    <div className="card" style={{ padding: 'var(--space-4)' }}>
+    <div className="card glass" style={{ padding: 'var(--space-4)' }}>
       <div style={{ display: 'grid', gap: 'var(--space-3)' }}>
-        <span className="section-title">转换引擎</span>
+        <span className="section-title">{t('engine.section')}</span>
         <div className="segmented">
-          {ENGINES.map((e) => (
-            <button
-              key={e.value}
-              type="button"
-              className="segment"
-              aria-pressed={engine === e.value}
-              disabled={disabled}
-              onClick={() => onEngineChange(e.value)}
-            >
-              <span className="segment-title">{e.title}</span>
-              <span className="segment-hint">{e.hint}</span>
-            </button>
-          ))}
+          {ENGINES.map((e) => {
+            const needsLogin = e.value === 'graph' && !loggedIn
+            return (
+              <button
+                key={e.value}
+                type="button"
+                className={needsLogin ? 'segment segment-locked' : 'segment'}
+                aria-pressed={engine === e.value}
+                disabled={disabled || needsLogin}
+                onClick={() => onEngineChange(e.value)}
+              >
+                <span className="segment-title">
+                  {t(e.titleKey)}
+                  {/* 直接写出来而不是只靠 title 属性——title 在触屏上根本
+                      出不来，用户只会看到一个点不动的按钮 */}
+                  {needsLogin && <span className="segment-lock">{t('engine.needsLogin')}</span>}
+                </span>
+                <span className="segment-hint">{t(e.hintKey)}</span>
+              </button>
+            )
+          })}
         </div>
       </div>
 
@@ -90,8 +103,7 @@ export function ConversionOptionsPanel({
             marginBottom: 'var(--space-1)',
           }}
         >
-          <span className="section-title">后处理</span>
-          <span className="badge badge-warn">后端实现中</span>
+          <span className="section-title">{t('postprocess.section')}</span>
         </div>
 
         {POST_OPTIONS.map((o) => (
@@ -105,9 +117,9 @@ export function ConversionOptionsPanel({
               }
             />
             <span>
-              <span className="check-label">{o.label}</span>
+              <span className="check-label">{t(o.labelKey)}</span>
               <span className="check-hint" style={{ display: 'block' }}>
-                {o.hint}
+                {t(o.hintKey)}
               </span>
             </span>
           </label>
