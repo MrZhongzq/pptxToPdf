@@ -438,9 +438,13 @@ function UploadPage() {
               // ReadyCard 的「开始转换」在飞行期间完全可点，实测会让同一个
               // taskId 被 start 两次，第二次拿 409 又被当成「已经在跑」加
               // 进任务列表，同一个 taskId 进两次、TaskList 重复 key。
-              disabled={
-                readyGraphRisk !== 'none' || pendingReplacementFile !== null || startingReadyTask
-              }
+              // 刻意**不含** readyGraphRisk：风险横幅现在就地占据「开始转换」
+              // 的位置（七期），用户已经没有「绕过横幅直接开始」的路径，六期
+              // 那条整卡禁用因此失去了理由，只剩下把引擎与后处理选项一起锁死
+              // 的副作用。而横幅上就摆着「改用 LibreOffice 并继续」——允许改
+              // 引擎却不让点引擎按钮，前后矛盾。放开之后，用户点 LibreOffice
+              // 会让 readyGraphRisk 变回 'none'，横幅自动消失、按钮回来。
+              disabled={pendingReplacementFile !== null || startingReadyTask}
               // 风险确认就地占据「开始转换」的位置，见 ReadyCard 里的注释。
               riskMessage={
                 readyGraphRisk !== 'none' ? GRAPH_RISK_MESSAGE[readyGraphRisk] : null

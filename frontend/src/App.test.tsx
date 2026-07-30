@@ -394,6 +394,65 @@ describe('App 两段式上传：ReadyCard 与「开始转换」', () => {
       expect(mocks.startTask).toHaveBeenCalledWith('T1', 'graph', expect.anything()),
     )
   })
+
+  it('风险横幅出现时，引擎与后处理选项仍然可用（用户报的 bug）', async () => {
+    // 六期风险横幅在 ReadyCard 外面，整卡禁用是为了防止用户绕过横幅直接
+    // 点「开始转换」。七期横幅就地替换了那个按钮，绕过的路径已经不存在，
+    // 那条禁用只剩副作用：把引擎和后处理选项一起锁死。而横幅上就摆着
+    // 「改用 LibreOffice 并继续」——允许改引擎却不让点引擎按钮，前后矛盾。
+    render(<App />)
+    await waitFor(() => expect(mocks.getCapacityConfig).toHaveBeenCalled())
+    chooseFile(fileOfSize(300 * MIB))
+    await screen.findByText('deck.pptx')
+    fireEvent.click(screen.getByRole('button', { name: /Microsoft Graph/ }))
+    await screen.findByRole('button', { name: '仍然继续' })
+
+    expect(screen.getByRole('button', { name: /^LibreOffice/ })).toBeEnabled()
+    expect(screen.getByRole('checkbox', { name: /动画分步展开/ })).toBeEnabled()
+    expect(screen.getByRole('checkbox', { name: /PDF 书签大纲/ })).toBeEnabled()
+  })
+
+  it('风险横幅期间点引擎按钮换成 LibreOffice：横幅消失，开始转换回来', async () => {
+    render(<App />)
+    await waitFor(() => expect(mocks.getCapacityConfig).toHaveBeenCalled())
+    chooseFile(fileOfSize(300 * MIB))
+    await screen.findByText('deck.pptx')
+    fireEvent.click(screen.getByRole('button', { name: /Microsoft Graph/ }))
+    await screen.findByRole('button', { name: '仍然继续' })
+
+    // 直接点引擎按钮，不走横幅上那个「改用 LibreOffice 并继续」
+    fireEvent.click(screen.getByRole('button', { name: /^LibreOffice/ }))
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: '仍然继续' })).toBeNull())
+    expect(screen.getByRole('button', { name: '开始转换' })).toBeEnabled()
+  })
+
+  it('风险横幅期间勾后处理选项：选项生效，横幅不受影响', async () => {
+    render(<App />)
+    await waitFor(() => expect(mocks.getCapacityConfig).toHaveBeenCalled())
+    chooseFile(fileOfSize(300 * MIB))
+    await screen.findByText('deck.pptx')
+    fireEvent.click(screen.getByRole('button', { name: /Microsoft Graph/ }))
+    await screen.findByRole('button', { name: '仍然继续' })
+
+    const outline = screen.getByRole('checkbox', { name: /PDF 书签大纲/ })
+    fireEvent.click(outline)
+
+    expect(outline).toBeChecked()
+    // 风险判定只看引擎与体积，勾选项不该让横幅消失
+    expect(screen.getByRole('button', { name: '仍然继续' })).toBeInTheDocument()
+
+    mocks.startTask.mockResolvedValue({})
+    fireEvent.click(screen.getByRole('button', { name: '仍然继续' }))
+
+    await waitFor(() =>
+      expect(mocks.startTask).toHaveBeenCalledWith(
+        'T1',
+        'graph',
+        expect.objectContaining({ pdf_outline: true }),
+      ),
+    )
+  })
 })
 
 describe('App 覆盖已有 ready 任务前的确认（复审 Important：UploadDropzone 传完一直可点可拖，用户中途拖入第二个文件是正常操作路径，不是边角场景）', () => {
