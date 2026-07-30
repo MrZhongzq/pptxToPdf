@@ -28,7 +28,7 @@ export function UploadDropzone({ onFileSelected, maxBytes }: Props) {
   return (
     <div>
       <div
-        className="card"
+        className="card glass"
         style={{
           padding: 'var(--space-7) var(--space-5)',
           textAlign: 'center',

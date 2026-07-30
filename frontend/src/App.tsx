@@ -346,7 +346,7 @@ function UploadPage() {
 
         {pendingReplacementFile !== null && readyTask !== null && (
           <div
-            className="card"
+            className="card glass"
             style={{
               padding: 'var(--space-3)',
               borderLeft: '4px solid var(--c-notable)',
@@ -380,7 +380,7 @@ function UploadPage() {
 
         {pendingFile !== null && graphRisk !== 'none' && (
           <div
-            className="card"
+            className="card glass"
             style={{
               padding: 'var(--space-3)',
               borderLeft: '4px solid var(--c-notable)',
@@ -441,54 +441,21 @@ function UploadPage() {
               disabled={
                 readyGraphRisk !== 'none' || pendingReplacementFile !== null || startingReadyTask
               }
+              // 风险确认就地占据「开始转换」的位置，见 ReadyCard 里的注释。
+              riskMessage={
+                readyGraphRisk !== 'none' ? GRAPH_RISK_MESSAGE[readyGraphRisk] : null
+              }
+              // 终审 I-5：必须跟 ReadyCard 自己的 disabled 同一个条件——覆盖
+              // 确认横幅同屏时，这两个按钮此前只被 startingReadyTask 挡，没被
+              // pendingReplacementFile 挡。用户能点"仍然继续"启动 A，
+              // setReadyTask(null) 让覆盖横幅因 readyTask===null 而消失，但
+              // pendingReplacementFile 里的 B 从未上传也从未告知，构成静默丢弃；
+              // 那份残留还会在后续任务落 ready 时冒出一条张冠李戴的横幅。
+              riskActionsDisabled={startingReadyTask || pendingReplacementFile !== null}
+              onProceedWithGraph={confirmReadyProceedWithGraph}
+              onSwitchToLibreOffice={confirmReadySwitchToLibreOffice}
             />
 
-            {readyGraphRisk !== 'none' && (
-              <div
-                className="card"
-                style={{
-                  padding: 'var(--space-3)',
-                  borderLeft: '4px solid var(--c-notable)',
-                  fontSize: 13,
-                  lineHeight: 1.6,
-                }}
-              >
-                <p>{GRAPH_RISK_MESSAGE[readyGraphRisk]}</p>
-                <div
-                  style={{
-                    display: 'flex',
-                    gap: 'var(--space-2)',
-                    marginTop: 'var(--space-3)',
-                  }}
-                >
-                  <button
-                    type="button"
-                    className="btn btn-ghost"
-                    // 终审 I-5：必须跟 ReadyCard 自己的 disabled（:348）同一个
-                    // 条件——覆盖确认横幅同屏时，这两个按钮此前只被
-                    // startingReadyTask 挡，没被 pendingReplacementFile 挡。
-                    // 用户能点"仍然继续"启动 A，setReadyTask(null) 让覆盖
-                    // 横幅因 readyTask===null 而消失，但 pendingReplacementFile
-                    // 里的 B 从未上传也从未告知，构成静默丢弃；那份残留还会在
-                    // 后续任务落 ready 时冒出一条张冠李戴的横幅（把 B 当成
-                    // 要传的文件）。锁住这两个按钮直到用户先对覆盖确认横幅
-                    // 表态，从源头掐断这整条链路。
-                    disabled={startingReadyTask || pendingReplacementFile !== null}
-                    onClick={confirmReadyProceedWithGraph}
-                  >
-                    仍然继续
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    disabled={startingReadyTask || pendingReplacementFile !== null}
-                    onClick={confirmReadySwitchToLibreOffice}
-                  >
-                    改用 LibreOffice 并继续
-                  </button>
-                </div>
-              </div>
-            )}
           </>
         ) : (
           <ConversionOptionsPanel

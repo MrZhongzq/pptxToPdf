@@ -39,7 +39,7 @@ export function StatsPanel() {
 
   return (
     <>
-      <div className="card" style={{ padding: 'var(--space-4)' }}>
+      <div className="card glass" style={{ padding: 'var(--space-4)' }}>
         <span className="section-title">任务</span>
         <p style={{ margin: 0 }}>共 {stats.tasks_total} 个</p>
         <div style={{ display: 'grid', gap: 'var(--space-1)', marginTop: 'var(--space-2)' }}>
@@ -52,7 +52,7 @@ export function StatsPanel() {
         </div>
       </div>
 
-      <div className="card" style={{ padding: 'var(--space-4)' }}>
+      <div className="card glass" style={{ padding: 'var(--space-4)' }}>
         <span className="section-title">存储占用</span>
         <div style={{ display: 'grid', gap: 'var(--space-1)' }}>
           <div>原始 pptx：{mib(stats.storage_originals_bytes)}</div>
@@ -64,7 +64,7 @@ export function StatsPanel() {
         </div>
       </div>
 
-      <div className="card" style={{ padding: 'var(--space-4)' }}>
+      <div className="card glass" style={{ padding: 'var(--space-4)' }}>
         <span className="section-title">账号</span>
         <p style={{ margin: 0 }}>共 {stats.users_total} 个</p>
       </div>

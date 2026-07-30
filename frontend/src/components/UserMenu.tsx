@@ -18,6 +18,8 @@ export function UserMenu({ onUserChange }: { onUserChange?: (u: UserDto | null) 
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const dialogRef = useRef<HTMLDivElement | null>(null)
+  const firstFieldRef = useRef<HTMLInputElement | null>(null)
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
 
   useEffect(() => {
     let alive = true
@@ -38,17 +40,29 @@ export function UserMenu({ onUserChange }: { onUserChange?: (u: UserDto | null) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // 点弹窗外面关掉。不用 <dialog>：它的原生 backdrop 在 Safari 上
-  // 表现不一致，而这个弹窗结构很简单，自己管更省心。
+  // Esc 关闭。点遮罩关闭由 .glass-overlay 的 onMouseDown 承担——不用
+  // document 级监听，那样容易和「点触发按钮」互相打架（点开的同一次
+  // 点击会冒泡到 document 上，立刻又把它关掉）。
+  //
+  // 不用原生 <dialog>：它的 backdrop 在 Safari 上表现不一致，而这里的
+  // 结构很简单，自己管更省心。
   useEffect(() => {
     if (!open) return
-    function onDocClick(e: MouseEvent) {
-      if (dialogRef.current && !dialogRef.current.contains(e.target as Node)) {
-        setOpen(false)
-      }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpen(false)
     }
-    document.addEventListener('mousedown', onDocClick)
-    return () => document.removeEventListener('mousedown', onDocClick)
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [open])
+
+  // 打开时把焦点移进模态，关闭后还给触发按钮——键盘用户不该被留在
+  // 一个已经消失的元素上。
+  useEffect(() => {
+    if (open) {
+      firstFieldRef.current?.focus()
+    } else {
+      triggerRef.current?.focus?.()
+    }
   }, [open])
 
   async function handleLogin(e: FormEvent) {
@@ -92,9 +106,11 @@ export function UserMenu({ onUserChange }: { onUserChange?: (u: UserDto | null) 
         </>
       ) : (
         <button
+          ref={triggerRef}
           type="button"
           className="btn btn-ghost"
           aria-expanded={open}
+          aria-haspopup="dialog"
           onClick={() => setOpen((v) => !v)}
         >
           {/* 与弹窗里的提交按钮区分开：两个可访问名相同会让屏幕阅读器
@@ -106,22 +122,23 @@ export function UserMenu({ onUserChange }: { onUserChange?: (u: UserDto | null) 
 
       {open && !user && (
         <div
-          ref={dialogRef}
-          className="card"
-          role="dialog"
-          aria-label="登录"
-          style={{
-            position: 'absolute',
-            top: 'calc(100% + var(--space-2))',
-            right: 0,
-            width: 280,
-            padding: 'var(--space-4)',
-            zIndex: 20,
+          className="glass-overlay"
+          onMouseDown={(e) => {
+            // 只有点在遮罩本身（而不是冒泡上来的模态内部）才关闭
+            if (e.target === e.currentTarget) setOpen(false)
           }}
+        >
+        <div
+          ref={dialogRef}
+          className="glass-strong glass-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="登录"
         >
           <form onSubmit={handleLogin} style={{ display: 'grid', gap: 'var(--space-3)' }}>
             <span className="section-title">登录</span>
             <input
+              ref={firstFieldRef}
               className="input"
               placeholder="用户名"
               value={username}
@@ -163,6 +180,7 @@ export function UserMenu({ onUserChange }: { onUserChange?: (u: UserDto | null) 
               </button>
             </div>
           </form>
+        </div>
         </div>
       )}
     </div>

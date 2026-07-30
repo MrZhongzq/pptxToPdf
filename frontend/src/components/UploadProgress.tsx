@@ -35,7 +35,7 @@ export function UploadProgress({
   )
 
   return (
-    <div className="card" style={{ padding: 'var(--space-4)' }}>
+    <div className="card glass" style={{ padding: 'var(--space-4)' }}>
       <div
         style={{
           display: 'flex',

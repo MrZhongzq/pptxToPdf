@@ -19,6 +19,11 @@ interface Props {
   disabled?: boolean
   /** 未登录时 Graph 不可选，透传给 ConversionOptionsPanel。 */
   loggedIn?: boolean
+  /** 命中 Graph 容量风险时的提示；为 null 表示无风险，正常显示开始按钮。 */
+  riskMessage?: string | null
+  riskActionsDisabled?: boolean
+  onProceedWithGraph?: () => void
+  onSwitchToLibreOffice?: () => void
 }
 
 export function ReadyCard({
@@ -31,6 +36,10 @@ export function ReadyCard({
   onStart,
   disabled = false,
   loggedIn = true,
+  riskMessage = null,
+  riskActionsDisabled = false,
+  onProceedWithGraph,
+  onSwitchToLibreOffice,
 }: Props) {
   // 用户原话「有时候手没那么快」——开始转换前留出改引擎/选项的窗口，这个
   // 组件存在的全部理由。starting 只锁按钮本身，不锁上面的选择面板之外的
@@ -47,7 +56,7 @@ export function ReadyCard({
   }
 
   return (
-    <div className="card" style={{ padding: 'var(--space-4)' }}>
+    <div className="card glass" style={{ padding: 'var(--space-4)' }}>
       <div
         style={{
           display: 'flex',
@@ -81,15 +90,53 @@ export function ReadyCard({
         />
       </div>
 
-      <button
-        type="button"
-        className="btn btn-primary"
-        onClick={() => void handleStart()}
-        disabled={disabled || starting}
-        style={{ marginTop: 'var(--space-4)' }}
-      >
-        {starting ? '启动中…' : '开始转换'}
-      </button>
+      {/*
+        容量风险的确认就地占据「开始转换」的位置，而不是另起一块浮在卡片
+        外面。它拦的就是这个按钮所代表的动作——提示与动作分处两地时，用户
+        得在两个地方找按钮，这正是用户提出要统一的那处不一致。
+      */}
+      {riskMessage ? (
+        <div
+          className="glass"
+          style={{
+            marginTop: 'var(--space-4)',
+            padding: 'var(--space-3)',
+            borderLeft: '4px solid var(--c-notable)',
+            fontSize: 13,
+            lineHeight: 1.6,
+          }}
+        >
+          <p>{riskMessage}</p>
+          <div style={{ display: 'flex', gap: 'var(--space-2)', marginTop: 'var(--space-3)' }}>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              disabled={riskActionsDisabled}
+              onClick={onProceedWithGraph}
+            >
+              仍然继续
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={riskActionsDisabled}
+              onClick={onSwitchToLibreOffice}
+            >
+              改用 LibreOffice 并继续
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={() => void handleStart()}
+          disabled={disabled || starting}
+          style={{ marginTop: 'var(--space-4)' }}
+        >
+          {starting ? '启动中…' : '开始转换'}
+        </button>
+      )}
     </div>
   )
 }

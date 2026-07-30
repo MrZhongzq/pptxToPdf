@@ -49,14 +49,14 @@ export function AdminPage() {
 
   if (checking || !user) {
     return (
-      <div className="layout">
+      <div className="layout-wide">
         <p style={{ color: 'var(--c-text-muted)' }}>正在核验身份…</p>
       </div>
     )
   }
 
   return (
-    <div className="layout">
+    <div className="layout-wide">
       <header className="page-head" style={{ position: 'relative' }}>
         <div>
           <h1 className="page-title">管理面板</h1>
@@ -69,26 +69,18 @@ export function AdminPage() {
         </div>
       </header>
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'minmax(150px, 190px) 1fr',
-          gap: 'var(--space-5)',
-          alignItems: 'start',
-        }}
-      >
-        <nav aria-label="面板分区" style={{ display: 'grid', gap: 'var(--space-2)' }}>
+      <div className="admin-shell">
+        <nav aria-label="面板分区" className="admin-nav">
           {SECTIONS.map((s) => (
             <button
               key={s.key}
               type="button"
-              className={s.key === section ? 'btn btn-primary' : 'btn btn-ghost'}
+              className="admin-nav-item"
               aria-current={s.key === section ? 'page' : undefined}
               onClick={() => setSection(s.key)}
-              style={{ display: 'grid', justifyItems: 'start', textAlign: 'left' }}
             >
-              <span>{s.label}</span>
-              <span style={{ fontSize: 11, opacity: 0.75, fontWeight: 400 }}>{s.hint}</span>
+              <span className="admin-nav-label">{s.label}</span>
+              <span className="admin-nav-hint">{s.hint}</span>
             </button>
           ))}
         </nav>

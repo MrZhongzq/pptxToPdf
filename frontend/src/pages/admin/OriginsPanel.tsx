@@ -41,7 +41,7 @@ export function OriginsPanel() {
   return (
     <>
       <div
-        className="card"
+        className="card glass"
         style={{
           padding: 'var(--space-3)',
           borderLeft: '4px solid var(--c-notable)',
@@ -55,7 +55,7 @@ export function OriginsPanel() {
         即使启用也一律放行——这是防止把自己关在门外的第二道保险。
       </div>
 
-      <form className="card" style={{ padding: 'var(--space-4)' }} onSubmit={handleAdd}>
+      <form className="card glass" style={{ padding: 'var(--space-4)' }} onSubmit={handleAdd}>
         <span className="section-title">添加白名单</span>
         <div style={{ display: 'grid', gap: 'var(--space-2)' }}>
           <input
@@ -82,7 +82,7 @@ export function OriginsPanel() {
         </p>
       )}
 
-      <div className="card" style={{ padding: 'var(--space-4)' }}>
+      <div className="card glass" style={{ padding: 'var(--space-4)' }}>
         <span className="section-title">已允许的来源（{rows.length}）</span>
         <div style={{ display: 'grid', gap: 'var(--space-2)' }}>
           {rows.map((r) => (

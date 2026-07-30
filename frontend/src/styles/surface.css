@@ -126,6 +126,42 @@
   color: var(--c-text-dim);
 }
 
+/*
+  锁定态（未登录时的 Graph）。
+
+  只加 disabled 属性的话视觉上几乎没变化——用户看到的是一个「长得能点
+  但点不动」的按钮，比明确禁用更让人困惑。这里整块降透明度、把标题与
+  说明**一起**转灰（只灰标题会显得说明还是活的）、光标改成 not-allowed，
+  并去掉 hover 反馈。
+*/
+.segment-locked {
+  background: var(--c-bg-sunken);
+  border-color: var(--c-border);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.segment-locked .segment-title,
+.segment-locked .segment-hint {
+  color: var(--c-text-faint);
+}
+
+.segment-locked:hover {
+  border-color: var(--c-border);
+}
+
+.segment-lock {
+  margin-left: var(--space-2);
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--c-bg-sunken);
+  border: 1px solid var(--c-border-strong);
+  color: var(--c-text-dim);
+  font-size: 11px;
+  font-weight: 500;
+  vertical-align: middle;
+}
+
 /* ---- 复选项 ---- */
 
 .check-row {
@@ -231,4 +267,17 @@
     width: 100% !important;
     opacity: 0.4;
   }
+}
+
+/* 表单字段组：label 与它的控件贴在一起，组与组之间才留空。
+   不包这一层的话，form 的 gap 会把 label 和它标注的输入框拉开得
+   和相邻字段一样远，读起来分不清哪个 label 属于哪个框。 */
+.field {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.field > label {
+  font-size: 13px;
+  color: var(--c-text-dim);
 }

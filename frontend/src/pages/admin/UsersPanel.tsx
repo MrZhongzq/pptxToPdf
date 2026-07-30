@@ -60,7 +60,7 @@ export function UsersPanel({ currentUserId }: { currentUserId: string }) {
 
   return (
     <>
-      <form className="card" style={{ padding: 'var(--space-4)' }} onSubmit={handleCreate}>
+      <form className="card glass" style={{ padding: 'var(--space-4)' }} onSubmit={handleCreate}>
         <span className="section-title">添加账号</span>
         <div style={{ display: 'grid', gap: 'var(--space-2)' }}>
           <input
@@ -107,7 +107,7 @@ export function UsersPanel({ currentUserId }: { currentUserId: string }) {
         </p>
       )}
 
-      <div className="card" style={{ padding: 'var(--space-4)' }}>
+      <div className="card glass" style={{ padding: 'var(--space-4)' }}>
         <span className="section-title">账号列表（{users.length}）</span>
         <div style={{ display: 'grid', gap: 'var(--space-3)' }}>
           {users.map((u) => (

@@ -23,7 +23,7 @@ const ENGINES: {
   {
     value: 'graph',
     title: 'Microsoft Graph',
-    hint: '高保真，但受 100 页 / 45 秒限制 · 三期实现',
+    hint: '高保真，受 100 页 / 45 秒限制，超出会自动切片',
   },
 ]
 
@@ -58,28 +58,31 @@ export function ConversionOptionsPanel({
   loggedIn = true,
 }: Props) {
   return (
-    <div className="card" style={{ padding: 'var(--space-4)' }}>
+    <div className="card glass" style={{ padding: 'var(--space-4)' }}>
       <div style={{ display: 'grid', gap: 'var(--space-3)' }}>
         <span className="section-title">转换引擎</span>
         <div className="segmented">
-          {ENGINES.map((e) => (
-            <button
-              key={e.value}
-              type="button"
-              className="segment"
-              aria-pressed={engine === e.value}
-              disabled={disabled || (e.value === 'graph' && !loggedIn)}
-              title={
-                e.value === 'graph' && !loggedIn
-                  ? 'Microsoft Graph 通道需要登录后使用'
-                  : undefined
-              }
-              onClick={() => onEngineChange(e.value)}
-            >
-              <span className="segment-title">{e.title}</span>
-              <span className="segment-hint">{e.hint}</span>
-            </button>
-          ))}
+          {ENGINES.map((e) => {
+            const needsLogin = e.value === 'graph' && !loggedIn
+            return (
+              <button
+                key={e.value}
+                type="button"
+                className={needsLogin ? 'segment segment-locked' : 'segment'}
+                aria-pressed={engine === e.value}
+                disabled={disabled || needsLogin}
+                onClick={() => onEngineChange(e.value)}
+              >
+                <span className="segment-title">
+                  {e.title}
+                  {/* 直接写出来而不是只靠 title 属性——title 在触屏上根本
+                      出不来，用户只会看到一个点不动的按钮 */}
+                  {needsLogin && <span className="segment-lock">需登录</span>}
+                </span>
+                <span className="segment-hint">{e.hint}</span>
+              </button>
+            )
+          })}
         </div>
       </div>
 
@@ -99,7 +102,6 @@ export function ConversionOptionsPanel({
           }}
         >
           <span className="section-title">后处理</span>
-          <span className="badge badge-warn">后端实现中</span>
         </div>
 
         {POST_OPTIONS.map((o) => (

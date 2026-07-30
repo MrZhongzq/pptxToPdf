@@ -96,7 +96,11 @@ export function GraphCredentialsPanel() {
   if (loading) return <p style={{ color: 'var(--c-text-muted)' }}>加载中…</p>
 
   return (
-    <form className="card" style={{ padding: 'var(--space-4)' }} onSubmit={handleSave}>
+    <form
+      className="card glass"
+      style={{ padding: 'var(--space-5)', display: 'grid', gap: 'var(--space-3)' }}
+      onSubmit={handleSave}
+    >
       <span className="section-title">Graph 凭证</span>
       {loadError && (
         <p role="alert" className="alert alert-danger">
@@ -104,14 +108,19 @@ export function GraphCredentialsPanel() {
         </p>
       )}
 
-      <label htmlFor="tenant-id">租户 ID</label>
-      <input id="tenant-id" className="input" value={tenantId} onChange={(e) => setTenantId(e.target.value)} />
+      <div className="field">
+        <label htmlFor="tenant-id">租户 ID</label>
+        <input id="tenant-id" className="input" value={tenantId} onChange={(e) => setTenantId(e.target.value)} />
+      </div>
 
-      <label htmlFor="client-id">客户端 ID</label>
-      <input id="client-id" className="input" value={clientId} onChange={(e) => setClientId(e.target.value)} />
+      <div className="field">
+        <label htmlFor="client-id">客户端 ID</label>
+        <input id="client-id" className="input" value={clientId} onChange={(e) => setClientId(e.target.value)} />
+      </div>
 
-      <label htmlFor="client-secret">客户端密钥</label>
-      <input
+      <div className="field">
+        <label htmlFor="client-secret">客户端密钥</label>
+        <input
         id="client-secret"
         className="input"
         type="password"
@@ -119,13 +128,18 @@ export function GraphCredentialsPanel() {
         onChange={(e) => setClientSecret(e.target.value)}
         placeholder={secretConfigured ? '已配置（不回显），留空则沿用' : '首次配置必须填写'}
       />
+      </div>
       {secretConfigured && <p className="check-hint">已配置（不回显），留空则沿用</p>}
 
-      <label htmlFor="site-id">站点 ID</label>
-      <input id="site-id" className="input" value={siteId} onChange={(e) => setSiteId(e.target.value)} />
+      <div className="field">
+        <label htmlFor="site-id">站点 ID</label>
+        <input id="site-id" className="input" value={siteId} onChange={(e) => setSiteId(e.target.value)} />
+      </div>
 
-      <label htmlFor="drive-path">云盘路径</label>
-      <input id="drive-path" className="input" value={drivePath} onChange={(e) => setDrivePath(e.target.value)} />
+      <div className="field">
+        <label htmlFor="drive-path">云盘路径</label>
+        <input id="drive-path" className="input" value={drivePath} onChange={(e) => setDrivePath(e.target.value)} />
+      </div>
 
       <button type="submit" className="btn btn-primary" disabled={saving}>
         {saving ? '自检中…' : '测试并保存'}

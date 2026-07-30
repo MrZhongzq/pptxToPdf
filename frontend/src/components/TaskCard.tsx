@@ -96,7 +96,7 @@ export function TaskCard({ taskId }: { taskId: string }) {
 
   if (pollingTimedOut) {
     return (
-      <div className="card" style={{ padding: 'var(--space-4)' }}>
+      <div className="card glass" style={{ padding: 'var(--space-4)' }}>
         <p role="alert" className="alert alert-danger">
           任务状态长时间未更新，可能已中断。请重新上传。
         </p>
@@ -107,7 +107,7 @@ export function TaskCard({ taskId }: { taskId: string }) {
   if (!task) {
     return (
       <div
-        className="card"
+        className="card glass"
         style={{ padding: 'var(--space-4)', color: 'var(--c-text-dim)' }}
       >
         载入中…
@@ -135,7 +135,7 @@ export function TaskCard({ taskId }: { taskId: string }) {
 
   return (
     <div
-      className="card"
+      className="card glass"
       style={{
         padding: 'var(--space-4)',
         ...(sharded ? { borderLeft: '4px solid var(--c-notable)' } : null),

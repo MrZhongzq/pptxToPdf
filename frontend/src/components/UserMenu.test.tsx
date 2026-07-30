@@ -115,4 +115,45 @@ describe('UserMenu', () => {
 
     expect(await screen.findByRole('button', { name: '登录 / 注册' })).toBeInTheDocument()
   })
+
+  it('登录面板是全局模态：有遮罩、标了 aria-modal', async () => {
+    render(<UserMenu />)
+    await waitFor(() => expect(mocks.getMe).toHaveBeenCalled())
+
+    await userEvent.click(screen.getByRole('button', { name: '登录 / 注册' }))
+
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toHaveAttribute('aria-modal', 'true')
+    expect(dialog).toHaveClass('glass-modal')
+  })
+
+  it('按 Esc 关闭', async () => {
+    render(<UserMenu />)
+    await waitFor(() => expect(mocks.getMe).toHaveBeenCalled())
+    await userEvent.click(screen.getByRole('button', { name: '登录 / 注册' }))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+
+    await userEvent.keyboard('{Escape}')
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  it('打开时焦点落进用户名输入框——键盘用户不用先 Tab 一路找过去', async () => {
+    render(<UserMenu />)
+    await waitFor(() => expect(mocks.getMe).toHaveBeenCalled())
+
+    await userEvent.click(screen.getByRole('button', { name: '登录 / 注册' }))
+
+    await waitFor(() => expect(screen.getByPlaceholderText('用户名')).toHaveFocus())
+  })
+
+  it('点模态内部不会把它关掉', async () => {
+    render(<UserMenu />)
+    await waitFor(() => expect(mocks.getMe).toHaveBeenCalled())
+    await userEvent.click(screen.getByRole('button', { name: '登录 / 注册' }))
+
+    await userEvent.click(screen.getByPlaceholderText('用户名'))
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
 })
