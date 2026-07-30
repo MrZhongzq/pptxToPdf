@@ -27,6 +27,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # QEMU 让 amd64 的 runner 也能构建 arm64 —— Oracle 的免费实例是
+      # Ampere（aarch64），只推 amd64 的话它 docker pull 会直接
+      # "no matching manifest for linux/arm64/v8"。发布镜像才会暴露这个，
+      # 本机构建时永远碰不到。
+      - uses: docker/setup-qemu-action@v3
+
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
@@ -41,14 +47,19 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}-${{ matrix.name }}
           tags: |
+            # semver 会剥掉 v 前缀：v1.0.0 -> 1.0.0
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+            # 再留一份与 git tag 完全同名的，否则照着 tag 名 pull 会
+            # manifest unknown——这正是第一次发布时踩的
+            type=ref,event=tag
             type=raw,value=latest,enable={{is_default_branch}}
 
       - uses: docker/build-push-action@v6
         with:
           context: .
           file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

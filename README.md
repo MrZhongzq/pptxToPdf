@@ -73,6 +73,20 @@ docker compose up -d --build
 ```
 </details>
 
+### 用预构建镜像（跳过本地构建）
+
+镜像发布在 ghcr，支持 **linux/amd64** 与 **linux/arm64**（树莓派、Oracle Ampere
+之类的 ARM 机器可以直接用）：
+
+```bash
+docker pull ghcr.io/mrzhongzq/pptxtopdf-api:latest
+docker pull ghcr.io/mrzhongzq/pptxtopdf-worker:latest
+docker pull ghcr.io/mrzhongzq/pptxtopdf-frontend:latest
+```
+
+省掉本地装 LibreOffice 那一层（3–5 分钟）。版本标签有 `1.0.0` / `1.0` /
+`v1.0.0` / `latest` 几种写法，指向同一份镜像。
+
 ### 常用命令
 
 ```bash
