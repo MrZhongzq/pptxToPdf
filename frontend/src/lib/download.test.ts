@@ -9,8 +9,15 @@ afterEach(() => {
 })
 
 describe('并发下载的启用条件', () => {
-  it('小文件不并发——几次握手的开销就吃掉了并行的收益', () => {
-    expect(shouldDownloadConcurrently(1 * MIB)).toBe(false)
+  it('很小的文件不并发——几次握手的开销就吃掉了并行的收益', () => {
+    expect(shouldDownloadConcurrently(200 * 1024)).toBe(false)
+  })
+
+  it('典型课件 PDF（2-3 MB）要并发', () => {
+    // 阈值原本是 4 MiB，真实的课件 PDF 全都卡在下面，并发从未触发。
+    // 跨境实测：单线程 28 KB/s，4 路并发 50 KB/s。
+    expect(shouldDownloadConcurrently(3 * MIB)).toBe(true)
+    expect(shouldDownloadConcurrently(2 * MIB)).toBe(true)
   })
 
   it('中等文件并发', () => {
