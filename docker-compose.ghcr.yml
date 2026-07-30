@@ -1,0 +1,32 @@
+# 用 ghcr 上的预构建镜像，跳过本地构建。
+#
+#     docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d
+#
+# 这是一个 override 文件，必须跟主 compose 一起用——端口、卷、环境变量
+# 全部沿用主文件，这里只把 build 换成 image。
+#
+# 为什么值得：api 与 worker 镜像里那层 LibreOffice 加字体要装 3-5 分钟，
+# 在 1-2 核的小机器上更久。镜像同时提供 linux/amd64 与 linux/arm64，
+# ARM 机器（树莓派、Oracle Ampere）直接可用。
+#
+# 换版本用 PPTX2PDF_TAG，默认 latest：
+#
+#     PPTX2PDF_TAG=1.0.0 docker compose -f ... up -d
+#
+# 注意标签写法：git tag 是 v1.0.0，镜像标签 1.0.0 与 v1.0.0 两种都推了，
+# 指向同一份镜像。
+#
+# 自己改过代码就别用这个文件——镜像是从 master 构建的，不含本地改动。
+
+services:
+  frontend:
+    build: !reset null
+    image: ghcr.io/mrzhongzq/pptxtopdf-frontend:${PPTX2PDF_TAG:-latest}
+
+  api:
+    build: !reset null
+    image: ghcr.io/mrzhongzq/pptxtopdf-api:${PPTX2PDF_TAG:-latest}
+
+  worker:
+    build: !reset null
+    image: ghcr.io/mrzhongzq/pptxtopdf-worker:${PPTX2PDF_TAG:-latest}

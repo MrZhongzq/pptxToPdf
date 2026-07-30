@@ -6,11 +6,22 @@
 #
 # 做四件事：检查 docker、生成 .env（含随机密钥与管理员口令）、拉起服务、
 # 把管理员口令打印出来。全程不需要事先克隆仓库。
+#
+# 默认本地构建镜像。想跳过那 3-5 分钟的 LibreOffice 安装，用 ghcr 上的
+# 预构建镜像（amd64 与 arm64 都有）：
+#
+#   curl -fsSL .../install.sh | PPTX2PDF_PREBUILT=1 bash
 set -euo pipefail
 
 REPO="${PPTX2PDF_REPO:-https://github.com/MrZhongzq/pptxToPdf.git}"
 DIR="${PPTX2PDF_DIR:-pptx2pdf}"
 PORT="${WEB_PORT:-18993}"
+PREBUILT="${PPTX2PDF_PREBUILT:-}"
+# override 文件把 build 换成 image；空串时下面的 compose 调用退化成只用主文件
+COMPOSE_FILES=(-f docker-compose.yml)
+if [ -n "$PREBUILT" ]; then
+  COMPOSE_FILES+=(-f docker-compose.ghcr.yml)
+fi
 
 red()  { printf '\033[31m%s\033[0m\n' "$*"; }
 green(){ printf '\033[32m%s\033[0m\n' "$*"; }
@@ -77,11 +88,16 @@ fi
 
 # ---- 4. 起服务 ----
 
-info "构建镜像（首次要装 LibreOffice 与字体，大约 3-5 分钟）…"
-docker compose build
+if [ -n "$PREBUILT" ]; then
+  info "拉取预构建镜像…"
+  docker compose "${COMPOSE_FILES[@]}" pull
+else
+  info "构建镜像（首次要装 LibreOffice 与字体，大约 3-5 分钟）…"
+  docker compose build
+fi
 
 info "启动…"
-docker compose up -d
+docker compose "${COMPOSE_FILES[@]}" up -d
 
 echo
 green "======================================================"
@@ -100,8 +116,15 @@ else
   echo "  沿用了已有的 .env，管理员口令没有变。"
 fi
 echo
-echo "  常用命令："
+echo "  常用命令（在 $DIR 目录下）："
 echo "    docker compose logs -f api      # 看日志"
 echo "    docker compose down             # 停"
-echo "    docker compose up -d --build    # 更新后重启"
+if [ -n "$PREBUILT" ]; then
+  # 预构建模式下 --build 会去本地构建，把拉下来的镜像盖掉，所以这里给的
+  # 更新命令必须带上 override 文件
+  echo "    docker compose -f docker-compose.yml -f docker-compose.ghcr.yml pull && \\"
+  echo "      docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d   # 更新"
+else
+  echo "    docker compose up -d --build    # 更新后重启"
+fi
 echo
