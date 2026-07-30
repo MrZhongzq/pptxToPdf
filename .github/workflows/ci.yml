@@ -67,9 +67,10 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+      # --check 只比对 JSON 的 key，不加载翻译模型，所以这一步很快
       - name: 语言文件与 en.json 对齐
         working-directory: frontend
-        run: node scripts/translate-locales.mjs --check
+        run: python3 scripts/translate_locales.py --check
 
   compose:
     name: Compose 配置

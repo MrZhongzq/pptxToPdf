@@ -65,14 +65,26 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+
+      - uses: actions/setup-python@v5
         with:
-          node-version: '22'
+          python-version: '3.12'
+
+      # Argos 在本地跑，不需要任何 API key——这正是换掉云翻译服务的理由：
+      # 一个补 UI 文案的辅助脚本不该因为服务商改政策就整条失效。
+      - name: 装 Argos Translate
+        run: pip install argostranslate
+
+      # 每门语言的模型约 100 MB，缓存住能省掉每次几分钟的下载
+      - name: 缓存翻译模型
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/argos-translate
+          key: argos-${{ hashFiles('frontend/scripts/translate_locales.py') }}
+
       - name: 从 en.json 生成其余语言
-        working-directory: frontend
-        env:
-          DEEPL_API_KEY: ${{ secrets.DEEPL_API_KEY }}
-        run: node scripts/translate-locales.mjs
+        run: python frontend/scripts/translate_locales.py
+
       - name: 有变化就提交
         run: |
           git config user.name  "github-actions[bot]"

@@ -1,21 +1,18 @@
 {
   "app.title": "pptx → PDF",
   "app.subtitle": "PDFs you can drop straight into GoodNotes or OneNote",
-
-  "nav.login": "Sign in",
-  "nav.logout": "Sign out",
+  "nav.login": "Log in / Register",
+  "nav.logout": "Log out",
   "nav.adminPanel": "Admin panel",
   "nav.backToUpload": "Back to upload",
-
-  "auth.dialogTitle": "Sign in",
+  "auth.dialogTitle": "Log in",
   "auth.username": "Username",
   "auth.password": "Password",
-  "auth.submit": "Sign in",
-  "auth.submitting": "Signing in…",
+  "auth.submit": "Log in",
+  "auth.submitting": "Logging in…",
   "auth.register": "Register",
   "auth.registerClosed": "Registration is closed. Please contact the site administrator for an account.",
-  "auth.failed": "Sign-in failed, please try again",
-
+  "auth.failed": "Login failed, please try again",
   "upload.dropzone.title": "Drop a .pptx here, or click to choose",
   "upload.dropzone.limit": "Up to {size} per file",
   "upload.tooLarge": "{size} exceeds the {limit} limit",
@@ -25,14 +22,12 @@
   "upload.phase.finalizing": "Finishing up…",
   "upload.progress": "{done} / {total} chunks · {percent}%",
   "upload.remaining": "About {time} left",
-
   "engine.section": "Conversion engine",
   "engine.libreoffice.title": "LibreOffice",
   "engine.libreoffice.hint": "No page or timeout limits — the workhorse for long decks",
   "engine.graph.title": "Microsoft Graph",
   "engine.graph.hint": "High fidelity, capped at 100 pages / 45s; larger decks are split automatically",
-  "engine.needsLogin": "Sign-in required",
-
+  "engine.needsLogin": "Login required",
   "postprocess.section": "Post-processing",
   "postprocess.animations.label": "Expand animation steps",
   "postprocess.animations.hint": "Split click-by-click builds into separate pages so nothing stacks up on one slide",
@@ -40,17 +35,14 @@
   "postprocess.outline.hint": "Generate bookmarks from slide titles for quick jumps in GoodNotes",
   "postprocess.margins.label": "Remap margins",
   "postprocess.margins.hint": "Leave a side margin for annotating in portrait on iPad",
-
   "ready.badge": "Ready",
   "ready.start": "Start conversion",
   "ready.starting": "Starting…",
   "ready.replaceConfirm": "\"{filename}\" is still waiting to start. Uploading now will discard it.",
   "ready.replaceProceed": "Upload anyway",
   "ready.replaceCancel": "Cancel",
-
   "risk.proceedAnyway": "Continue anyway",
   "risk.switchToLibreOffice": "Switch to LibreOffice and continue",
-
   "task.section": "Tasks",
   "task.empty": "No tasks yet — upload a .pptx to begin",
   "task.status.pending": "Queued",
@@ -67,7 +59,6 @@
   "task.pollingTimeout": "Polling timed out. The job may still be running — refresh the page in a moment.",
   "task.shardProgress": "Shard {done} / {total}",
   "task.pages": "{count} pages",
-
   "admin.title": "Admin panel",
   "admin.section.users": "Users",
   "admin.section.users.hint": "Add / suspend / delete accounts",
@@ -79,8 +70,7 @@
   "admin.section.blocked.hint": "Web + v1, highest precedence",
   "admin.section.stats": "System status",
   "admin.section.stats.hint": "Tasks and storage usage",
-  "admin.checking": "Verifying your identity…",
-
+  "admin.checking": "Checking your account…",
   "common.loading": "Loading…",
   "common.add": "Add",
   "common.adding": "Adding…",

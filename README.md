@@ -112,27 +112,105 @@ pptx 只存字体名不存字形。字体缺失时渲染端会替换，而替换
 
 ### HTTP v1 接口
 
-一次请求换一份 PDF，不需要轮询：
+一次请求换一份 PDF，不需要轮询。响应直接是 PDF 字节，浏览器里打开这个 URL 就会弹下载。
 
-```bash
-curl -OJ "http://<你的地址>:18993/v1/convert?fileUrl=https://example.com/deck.pptx&outline=true"
+**最简：**
+
+```
+http://192.0.2.10:18993/v1/convert?fileUrl=https://files.example.com/lecture.pptx
 ```
 
-| 参数 | 说明 |
-|---|---|
-| `fileUrl` | 必填，要转换的 pptx 的公网地址 |
-| `engine` | `libreoffice`（默认）或 `graph` |
-| `user` / `pwd` | 用 `graph` 时必填 |
-| `animations` | 展开动画分步 |
-| `outline` | 生成书签大纲 |
-| `margins` | 页边距重映射 |
+只给一个文件地址，其余全走默认（LibreOffice 引擎、三项后处理都不做）。
 
-响应直接是 PDF 字节，浏览器里打开这个 URL 就会弹下载。
+**完整——所有参数都填上：**
 
-**v1 默认拒绝所有来源**，需要在管理面板的「访问白名单」里加上调用方的 IP 或域名。
-网页不受这份白名单影响。
+```
+http://192.0.2.10:18993/v1/convert
+  ?fileUrl=https%3A%2F%2Ffiles.example.com%2Flecture-01.pptx
+  &engine=graph
+  &user=alice
+  &pwd=hunter2%21
+  &animations=true
+  &outline=true
+  &margins=true
+```
 
-> 凭据走查询串会进服务器访问日志与浏览器历史，建议只在受控网络里用。
+拼成一行（实际调用时不能有换行和空格）：
+
+```bash
+curl -OJ "http://192.0.2.10:18993/v1/convert?fileUrl=https%3A%2F%2Ffiles.example.com%2Flecture-01.pptx&engine=graph&user=alice&pwd=hunter2%21&animations=true&outline=true&margins=true"
+```
+
+`-OJ` 让 curl 用服务端给的文件名保存（`lecture-01.pdf`）。不加的话会打印一堆二进制到终端。
+
+**用 LibreOffice 的话不需要账号：**
+
+```bash
+curl -OJ "http://192.0.2.10:18993/v1/convert?fileUrl=https%3A%2F%2Ffiles.example.com%2Flecture-01.pptx&engine=libreoffice&animations=true&outline=true&margins=true"
+```
+
+#### 参数
+
+| 参数 | 必填 | 取值 | 说明 |
+|---|---|---|---|
+| `fileUrl` | ✅ | URL | 要转换的 pptx 的**公网**地址。必须是 http/https，且不能指向内网 |
+| `engine` | | `libreoffice`（默认）/ `graph` | 用哪个引擎转 |
+| `user` | 用 graph 时 ✅ | 用户名 | 在管理面板里创建的账号 |
+| `pwd` | 用 graph 时 ✅ | 密码 | 同上 |
+| `animations` | | `true` / `false`（默认） | 按 `p:timing` 展开动画分步，一页变多页 |
+| `outline` | | `true` / `false`（默认） | 用每页标题生成 PDF 书签 |
+| `margins` | | `true` / `false`（默认） | 每页右侧扩宽 25%，留批注空间 |
+
+**URL 编码**：`fileUrl` 里的 `://` 和 `/`、密码里的 `!` `@` `#` 这类字符要转义，
+否则会被当成查询串的分隔符截断。上面例子里 `hunter2!` 编码成了 `hunter2%21`。
+
+用 Python 拼参数最省心：
+
+```python
+import urllib.parse, urllib.request
+
+params = urllib.parse.urlencode({
+    "fileUrl": "https://files.example.com/lecture-01.pptx",
+    "engine": "graph",
+    "user": "alice",
+    "pwd": "hunter2!",
+    "animations": "true",
+    "outline": "true",
+    "margins": "true",
+})
+url = f"http://192.0.2.10:18993/v1/convert?{params}"
+urllib.request.urlretrieve(url, "lecture-01.pdf")
+```
+
+#### 返回什么
+
+成功是 `200` + `Content-Type: application/pdf`，文件名在 `Content-Disposition` 里。
+
+出错是 JSON：
+
+```json
+{"code": "CROSS_ORIGIN_BLOCKED", "message": "来源不在 v1 白名单中"}
+```
+
+| 状态码 | code | 通常是 |
+|---|---|---|
+| 400 | `URL_NOT_ALLOWED` | `fileUrl` 指向内网，或不是 http/https |
+| 401 | `AUTH_REQUIRED` | 用了 graph 但没给 user/pwd，或密码错 |
+| 403 | `CROSS_ORIGIN_BLOCKED` | 调用方不在白名单里 ← **最常见** |
+| 403 | `ORIGIN_BLOCKED` | 调用方在黑名单里 |
+| 403 | `ENGINE_NOT_ALLOWED` | 白名单规则带了 `@no_graph` 却请求了 graph |
+| 413 | `DOWNLOAD_TOO_LARGE` | 源文件超过上限 |
+| 422 | `VALIDATION_ERROR` | 参数不合法，比如 `engine` 拼错 |
+| 502 | `DOWNLOAD_FAILED` | 源站不通或返回了错误 |
+
+#### 两件容易踩的事
+
+**v1 默认拒绝所有来源。** 装好之后第一次调用一定是 403 —— 要先在管理面板的
+「访问白名单」里加上调用方的 IP 或域名。网页不受这份白名单影响，所以浏览器
+里能用不代表 v1 能用。
+
+**凭据走查询串**会进服务器访问日志与浏览器历史。建议只在受控网络里用，
+或者给调用方单独开一个只用于 v1 的账号。
 
 ---
 
@@ -239,10 +317,17 @@ frontend  (nginx)  ──►  api  (FastAPI)  ──►  redis  ──►  worke
 `zh-CN` 与 `en` 是人工维护的，其余语言由脚本从 `en.json` 机器翻译生成：
 
 ```bash
-cd frontend
-node scripts/translate-locales.mjs --check   # 校验是否与 en.json 对齐
-DEEPL_API_KEY=xxx node scripts/translate-locales.mjs
+python frontend/scripts/translate_locales.py --check   # 校验是否与 en.json 对齐
+pip install argostranslate
+python frontend/scripts/translate_locales.py           # 翻译缺失的条目
 ```
+
+翻译用 [Argos Translate](https://github.com/argosopentech/argos-translate) **在本地跑**，
+不调任何第三方 API、不需要密钥。模型首次运行时自动下载，每门约 100 MB。
+
+译文里的 `{name}` 占位符会被校验：没能原样保留的条目自动退回英文原文，
+而不是产出一条插值静默失效的文案。个别短语模型有稳定的坏输出（比如韩语
+把「Login required」译成「姓名 *」），在脚本的 `OVERRIDES` 里定点纠正。
 
 改了界面文案要同步更新 `zh-CN.json` 与 `en.json` 两份，CI 会校验 key 是否一致。
 
