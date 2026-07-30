@@ -55,10 +55,13 @@ class Settings(BaseSettings):
     # 六期：admin 引导账号的邮箱。只在数据库里还没有 admin 时用一次，
     # 之后以库里那一行为准。
     admin_email: str = "admin@localhost"
-    # 六期：防跨站白名单开关。默认关闭，且白名单为空时即使开启也放行——
-    # 双保险。这个功能现在没有实际用途，配错却能把自己关在门外（当前
-    # 部署是 IP 直连），所以「先做着」不能变成「先炸着」。
-    origin_guard_enabled: bool = False
+    # 七期：v1 接口的来源白名单开关。**默认开启**。
+    #
+    # 六期它默认关闭，因为那时它校验所有写请求、配错就会把自己关在门外；
+    # 七期把作用域收窄到只管 /v1/*，网页永不受影响，那个风险随之消失——
+    # 于是默认改为开启，且去掉了「白名单为空时放行」那道保险：空白名单
+    # 现在的语义是「v1 谁也不许用」，这是一个清晰且安全的默认。
+    origin_guard_enabled: bool = True
     graph_max_pages_per_shard: int = 80
     graph_max_shard_bytes: int = 40 * MIB
     graph_request_timeout_s: int = 50

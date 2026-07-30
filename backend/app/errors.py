@@ -209,3 +209,15 @@ class CrossOriginBlocked(AppError):
 
     code = "CROSS_ORIGIN_BLOCKED"
     http_status = 403
+
+
+class OriginBlocked(AppError):
+    """来源在黑名单里。网页与 v1 一起拦，优先级高于白名单。
+
+    与 CROSS_ORIGIN_BLOCKED 分开：那个是「你不在 v1 的白名单里」，
+    只影响 v1；这个是「你被整站拒绝」。两者对调用方的含义不同，
+    合并成一个码会让排查时分不清是哪道门把人挡在外面。
+    """
+
+    code = "ORIGIN_BLOCKED"
+    http_status = 403

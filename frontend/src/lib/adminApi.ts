@@ -158,3 +158,27 @@ export async function getStats(): Promise<SystemStats> {
   if (!resp.ok) await parseError(resp)
   return resp.json() as Promise<SystemStats>
 }
+
+
+// ---- 七期：黑名单 ----
+
+export async function listBlocked(): Promise<AllowedOrigin[]> {
+  const resp = await fetch('/api/admin/blocked')
+  if (!resp.ok) await parseError(resp)
+  return resp.json() as Promise<AllowedOrigin[]>
+}
+
+export async function createBlocked(origin: string, note?: string): Promise<AllowedOrigin> {
+  const resp = await fetch('/api/admin/blocked', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ origin, note: note || null }),
+  })
+  if (!resp.ok) await parseError(resp)
+  return resp.json() as Promise<AllowedOrigin>
+}
+
+export async function deleteBlocked(originId: string): Promise<void> {
+  const resp = await fetch('/api/admin/blocked/' + originId, { method: 'DELETE' })
+  if (!resp.ok) await parseError(resp)
+}

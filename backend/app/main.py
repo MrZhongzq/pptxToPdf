@@ -6,10 +6,10 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import admin, admin_users, auth, config, tasks, uploads
+from app.api import admin, admin_users, auth, config, tasks, uploads, v1
 from app.config import settings
 from app.db import init_db
-from app.errors import AppError, CrossOriginBlocked, ValidationError
+from app.errors import AppError, CrossOriginBlocked, OriginBlocked, ValidationError
 from app.services import origin_guard
 from app.services.retention import purge_expired_ready, purge_expired_shards, reap_stale_tasks
 from app.services.users import bootstrap_admin
@@ -33,32 +33,49 @@ app.add_middleware(
 
 
 @app.middleware("http")
-async def origin_guard_middleware(request: Request, call_next):
-    """防跨站。默认关闭，见 services/origin_guard 的模块 docstring。
+async def access_control_middleware(request: Request, call_next):
+    """黑名单（全站）与来源白名单（只管 v1）。
 
-    两道保险都在这里体现：关闭时直接放行；开启但白名单为空时也放行——
-    否则第一次打开开关就会把所有写请求（包括管理员自己添加白名单的那次
-    请求）全部拒绝，变成一个无法自救的死锁。
+    顺序是承重的：**黑名单在最前**，命中即 403 返回，不再进入任何后续
+    判断——这正是需求要的「优先级高于防跨站」。
+
+    白名单只作用于 /v1/*。网页永远不受它影响，所以即使白名单拒绝一切，
+    webui 照常工作；也正因如此，六期那道「白名单为空时放行」的保险在
+    七期被去掉了——空白名单现在的语义是「v1 谁也不许用」。
     """
-    if not settings.origin_guard_enabled or not origin_guard.should_check(request.method):
-        return await call_next(request)
-
     from app.db import SessionLocal
 
-    with SessionLocal() as session:
-        allowed = origin_guard.load_allowed(session)
-    if not allowed:
-        return await call_next(request)
-
-    host = origin_guard.extract_host(
-        request.headers.get("origin") or request.headers.get("referer")
+    path = request.url.path
+    client_ip = request.client.host if request.client else None
+    hosts = origin_guard.candidate_hosts(
+        client_ip, request.headers.get("origin"), request.headers.get("referer")
     )
-    if not origin_guard.is_allowed(host, allowed):
-        logger.warning("跨站请求被拒 host=%s path=%s", host, request.url.path)
-        err = CrossOriginBlocked(f"来源 {host} 不在白名单中")
-        return JSONResponse(
-            status_code=err.http_status, content={"code": err.code, "message": err.message}
-        )
+
+    with SessionLocal() as session:
+        blocked = origin_guard.load_blocked(session)
+        hit = origin_guard.match_any(blocked, hosts) if blocked else None
+        if hit is not None:
+            logger.warning("黑名单拦截 hosts=%s rule=%s path=%s", hosts, hit.raw, path)
+            err = OriginBlocked("访问被拒绝")
+            return JSONResponse(
+                status_code=err.http_status, content={"code": err.code, "message": err.message}
+            )
+
+        if origin_guard.is_v1(path) and settings.origin_guard_enabled:
+            allowed = origin_guard.load_allowed(session)
+            rule = origin_guard.match_any(allowed, hosts)
+            if rule is None:
+                logger.warning("v1 来源不在白名单 hosts=%s path=%s", hosts, path)
+                err = CrossOriginBlocked("来源不在 v1 白名单中")
+                return JSONResponse(
+                    status_code=err.http_status,
+                    content={"code": err.code, "message": err.message},
+                )
+            # @no_graph 是修饰符，不影响放行，只影响放行之后能不能选 graph。
+            # 挂在 request.state 上交给 v1 端点判断——中间件不该知道引擎参数
+            # 叫什么名字。
+            request.state.origin_rule = rule
+
     return await call_next(request)
 
 
@@ -132,3 +149,4 @@ app.include_router(tasks.router)
 app.include_router(config.router)
 app.include_router(admin.router)
 app.include_router(admin_users.router)
+app.include_router(v1.router)

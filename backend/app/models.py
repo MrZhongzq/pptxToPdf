@@ -43,6 +43,21 @@ class AllowedOrigin(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class BlockedOrigin(Base):
+    """黑名单。语法与白名单一致（共用 services/origin_rules 的解析器）。
+
+    与白名单的区别：黑名单**网页与 v1 一起拦**，命中直接 403，且优先级
+    高于白名单——先查黑名单，命中即返回，不再进入任何后续判断。
+    """
+
+    __tablename__ = "blocked_origins"
+
+    origin_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    origin: Mapped[str] = mapped_column(String(256), unique=True, index=True)
+    note: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class Upload(Base):
     __tablename__ = "uploads"
 

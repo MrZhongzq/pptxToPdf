@@ -92,7 +92,7 @@ describe('AdminPage 的侧边栏', () => {
     await screen.findByRole('heading', { name: '管理面板' })
 
     const nav = screen.getByRole('navigation', { name: '面板分区' })
-    for (const label of ['用户管理', 'Azure 凭证', '访问白名单', '系统状态']) {
+    for (const label of ['用户管理', 'Azure 凭证', '访问白名单', '网站黑名单', '系统状态']) {
       expect(nav).toHaveTextContent(label)
     }
   })
@@ -115,11 +115,9 @@ describe('AdminPage 的侧边栏', () => {
       'aria-current',
       'page',
     )
-    // 白名单面板必须把「当前未启用」说清楚——否则管理员配了一堆条目却
-    // 发现没有任何效果，只会以为是坏的
-    expect(
-      await screen.findByText(/防跨站保护当前/),
-    ).toBeInTheDocument()
+    // 白名单面板必须把作用域说清楚：它只管 v1，网页永不受影响。
+    // 不写明的话管理员会以为配错就会把整站关掉。
+    expect(await screen.findByText(/只作用于 HTTP v1 接口/)).toBeInTheDocument()
   })
 
   it('有返回上传页的入口', async () => {
@@ -127,5 +125,26 @@ describe('AdminPage 的侧边栏', () => {
     await screen.findByRole('heading', { name: '管理面板' })
 
     expect(screen.getByRole('link', { name: '返回上传页' })).toHaveAttribute('href', '/')
+  })
+
+  it('白名单面板带上「别把自己关在门外」的提示', async () => {
+    render(<AdminPage />)
+    await screen.findByRole('heading', { name: '管理面板' })
+
+    await userEvent.click(screen.getByRole('button', { name: /访问白名单/ }))
+
+    expect(
+      await screen.findByText(/记得把自己解析域名加进来/),
+    ).toBeInTheDocument()
+  })
+
+  it('黑名单面板说清它比白名单优先、且网页也拦', async () => {
+    render(<AdminPage />)
+    await screen.findByRole('heading', { name: '管理面板' })
+
+    await userEvent.click(screen.getByRole('button', { name: /网站黑名单/ }))
+
+    expect(await screen.findByText(/网页与 v1 一起拦/)).toBeInTheDocument()
+    expect(screen.getByText(/高于白名单/)).toBeInTheDocument()
   })
 })

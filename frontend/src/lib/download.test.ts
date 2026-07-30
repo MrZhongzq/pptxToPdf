@@ -57,9 +57,11 @@ describe('downloadConcurrently', () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (_url: string, init?: RequestInit) => {
-        const range = (init?.headers as Record<string, string>).Range
+        const range = ((init?.headers ?? {}) as Record<string, string>).Range
         seen.push(range)
-        const [, s, e] = /bytes=(\d+)-(\d+)/.exec(range)!.map(Number)
+        const m = /bytes=(\d+)-(\d+)/.exec(range)
+        if (!m) throw new Error(`Range 头不合法: ${range}`)
+        const [, s, e] = m.map(Number)
         return new Response(payload.slice(s, e + 1), { status: 206 })
       }),
     )
@@ -86,8 +88,10 @@ describe('downloadConcurrently', () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (_url: string, init?: RequestInit) => {
-        const range = (init?.headers as Record<string, string>).Range
-        const [, s, e] = /bytes=(\d+)-(\d+)/.exec(range)!.map(Number)
+        const range = ((init?.headers ?? {}) as Record<string, string>).Range
+        const m = /bytes=(\d+)-(\d+)/.exec(range)
+        if (!m) throw new Error(`Range 头不合法: ${range}`)
+        const [, s, e] = m.map(Number)
         return new Response(new Uint8Array(e - s + 1), { status: 206 })
       }),
     )
@@ -105,8 +109,10 @@ describe('downloadConcurrently', () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (_url: string, init?: RequestInit) => {
-        const range = (init?.headers as Record<string, string>).Range
-        const [, s, e] = /bytes=(\d+)-(\d+)/.exec(range)!.map(Number)
+        const range = ((init?.headers ?? {}) as Record<string, string>).Range
+        const m = /bytes=(\d+)-(\d+)/.exec(range)
+        if (!m) throw new Error(`Range 头不合法: ${range}`)
+        const [, s, e] = m.map(Number)
         ranges.push([s, e])
         return new Response(new Uint8Array(e - s + 1), { status: 206 })
       }),

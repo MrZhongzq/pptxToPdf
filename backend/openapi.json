@@ -1541,6 +1541,227 @@
         }
       }
     },
+    "/api/admin/blocked": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "List Blocked",
+        "operationId": "list_blocked_api_admin_blocked_get",
+        "parameters": [
+          {
+            "name": "pptx2pdf_admin",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pptx2Pdf Admin"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AllowedOriginDto"
+                  },
+                  "title": "Response List Blocked Api Admin Blocked Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "AUTH_REQUIRED"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "FORBIDDEN"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Create Blocked",
+        "operationId": "create_blocked_api_admin_blocked_post",
+        "parameters": [
+          {
+            "name": "pptx2pdf_admin",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pptx2Pdf Admin"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAllowedOriginRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AllowedOriginDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "AUTH_REQUIRED"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "FORBIDDEN"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/blocked/{origin_id}": {
+      "delete": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Delete Blocked",
+        "operationId": "delete_blocked_api_admin_blocked__origin_id__delete",
+        "parameters": [
+          {
+            "name": "origin_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Origin Id"
+            }
+          },
+          {
+            "name": "pptx2pdf_admin",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pptx2Pdf Admin"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "AUTH_REQUIRED"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "FORBIDDEN"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/stats": {
       "get": {
         "tags": [
@@ -1596,6 +1817,145 @@
               }
             },
             "description": "FORBIDDEN"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/convert": {
+      "get": {
+        "tags": [
+          "v1"
+        ],
+        "summary": "Convert",
+        "operationId": "convert_v1_convert_get",
+        "parameters": [
+          {
+            "name": "fileUrl",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "要转换的 pptx 的公网地址",
+              "title": "Fileurl"
+            },
+            "description": "要转换的 pptx 的公网地址"
+          },
+          {
+            "name": "engine",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "libreoffice | graph",
+              "default": "libreoffice",
+              "title": "Engine"
+            },
+            "description": "libreoffice | graph"
+          },
+          {
+            "name": "user",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "用户名，graph 必填",
+              "title": "User"
+            },
+            "description": "用户名，graph 必填"
+          },
+          {
+            "name": "pwd",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "密码，graph 必填",
+              "title": "Pwd"
+            },
+            "description": "密码，graph 必填"
+          },
+          {
+            "name": "animations",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "按 p:timing 展开动画分步",
+              "default": false,
+              "title": "Animations"
+            },
+            "description": "按 p:timing 展开动画分步"
+          },
+          {
+            "name": "outline",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "生成 PDF 书签大纲",
+              "default": false,
+              "title": "Outline"
+            },
+            "description": "生成 PDF 书签大纲"
+          },
+          {
+            "name": "margins",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "页边距重映射，右侧留白",
+              "default": false,
+              "title": "Margins"
+            },
+            "description": "页边距重映射，右侧留白"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "转换好的 PDF",
+            "content": {
+              "application/pdf": {}
+            }
+          },
+          "400": {
+            "description": "参数不合法 / URL 不允许访问"
+          },
+          "401": {
+            "description": "Graph 通道需要有效凭据"
+          },
+          "403": {
+            "description": "来源被拒绝，或该来源不允许使用 graph"
+          },
+          "413": {
+            "description": "文件超过上限"
+          },
+          "502": {
+            "description": "下载源站失败"
           },
           "422": {
             "description": "Validation Error",

@@ -1,22 +1,27 @@
 import { useEffect, useState, type FormEvent } from 'react'
 
-import { createOrigin, deleteOrigin, listOrigins, type AllowedOrigin } from '../../lib/adminApi'
+import {
+  createBlocked,
+  deleteBlocked,
+  listBlocked,
+  type AllowedOrigin,
+} from '../../lib/adminApi'
 
 /**
- * 访问白名单。
+ * 网站黑名单。
  *
- * 这个功能目前**默认关闭**（后端 origin_guard_enabled 默认 false），
- * 面板上必须把这件事说清楚——否则管理员配了一堆条目却发现没有任何效果，
- * 只会以为是坏的。
+ * 与白名单的区别必须在界面上说清楚：黑名单**网页与 v1 一起拦**，而且
+ * 优先级更高——先查黑名单，命中直接 403，不再进入任何后续判断。不写明
+ * 的话，管理员会以为它和白名单是同一层东西。
  */
-export function OriginsPanel() {
+export function BlockedPanel() {
   const [rows, setRows] = useState<AllowedOrigin[]>([])
   const [origin, setOrigin] = useState('')
   const [note, setNote] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  const reload = () => listOrigins().then(setRows).catch((e) => setError(e.message))
+  const reload = () => listBlocked().then(setRows).catch((e: Error) => setError(e.message))
 
   useEffect(() => {
     void reload()
@@ -27,7 +32,7 @@ export function OriginsPanel() {
     setBusy(true)
     setError(null)
     try {
-      await createOrigin(origin.trim(), note.trim() || undefined)
+      await createBlocked(origin.trim(), note.trim() || undefined)
       setOrigin('')
       setNote('')
       await reload()
@@ -44,53 +49,29 @@ export function OriginsPanel() {
         className="glass"
         style={{
           padding: 'var(--space-3)',
-          borderLeft: '4px solid var(--c-notable)',
+          borderLeft: '4px solid var(--c-danger)',
           fontSize: 14,
           lineHeight: 1.7,
         }}
       >
         <p>
-          白名单<strong>只作用于 HTTP v1 接口</strong>（<code>/v1/convert</code>）。
-          网页永远不受它影响——即使这里一条都不填，webui 照常使用。
+          黑名单<strong>网页与 v1 一起拦</strong>，命中直接返回 403。
         </p>
         <p style={{ marginTop: 'var(--space-2)' }}>
-          <strong>空白名单 = v1 谁也不许用。</strong>
+          优先级<strong>高于白名单</strong>：先查黑名单，命中就直接返回，不再进入
+          任何后续判断。只有不在黑名单里的请求才会继续走网页或去匹配白名单。
         </p>
         <p style={{ marginTop: 'var(--space-2)', color: 'var(--c-warn)' }}>
-          记得把自己解析域名加进来，避免把自己关在门外。
+          语法与白名单相同。别把自己的地址加进来——这里没有第二道保险。
         </p>
-      </div>
-
-      <div className="glass" style={{ padding: 'var(--space-3)', fontSize: 13, lineHeight: 1.8 }}>
-        <strong>支持的语法</strong>
-        <ul style={{ margin: 'var(--space-2) 0 0', paddingLeft: '1.2em' }}>
-          <li>
-            <code>example.com</code> — 精确匹配
-          </li>
-          <li>
-            <code>*.example.com</code> — 任意子域（不含裸域本身）
-          </li>
-          <li>
-            <code>203.0.113.7</code> — IP
-          </li>
-          <li>
-            <code>{'*.a.com||@except{x.a.com}'}</code> — 通配但排除
-          </li>
-          <li>
-            <code>{'*.a.com||@match{api.a.com}'}</code> — 范围内只允许列出的
-          </li>
-          <li>
-            <code>{'a.com||@no_graph'}</code> — 该来源不得使用 graph 引擎
-          </li>
-        </ul>
       </div>
 
       <form className="card glass" style={{ padding: 'var(--space-4)' }} onSubmit={handleAdd}>
-        <span className="section-title">添加白名单</span>
+        <span className="section-title">加入黑名单</span>
         <div style={{ display: 'grid', gap: 'var(--space-2)' }}>
           <input
             className="input"
-            placeholder={'例如 *.example.com||@except{a.example.com}'}
+            placeholder="域名或 IP，支持通配与修饰符"
             value={origin}
             onChange={(e) => setOrigin(e.target.value)}
           />
@@ -101,7 +82,7 @@ export function OriginsPanel() {
             onChange={(e) => setNote(e.target.value)}
           />
           <button type="submit" className="btn btn-primary" disabled={busy || !origin.trim()}>
-            {busy ? '添加中…' : '添加'}
+            {busy ? '添加中…' : '加入黑名单'}
           </button>
         </div>
       </form>
@@ -113,30 +94,33 @@ export function OriginsPanel() {
       )}
 
       <div className="card glass" style={{ padding: 'var(--space-4)' }}>
-        <span className="section-title">已允许的来源（{rows.length}）</span>
+        <span className="section-title">已封禁（{rows.length}）</span>
         <div style={{ display: 'grid', gap: 'var(--space-2)' }}>
           {rows.map((r) => (
-            <div key={r.origin_id} style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+            <div
+              key={r.origin_id}
+              style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}
+            >
               <code>{r.origin}</code>
               {r.note && (
-                <span style={{ fontSize: 12, color: 'var(--c-text-muted)' }}>{r.note}</span>
+                <span style={{ fontSize: 12, color: 'var(--c-text-dim)' }}>{r.note}</span>
               )}
               <button
                 type="button"
                 className="btn btn-ghost"
                 style={{ marginLeft: 'auto' }}
                 onClick={() =>
-                  void deleteOrigin(r.origin_id)
+                  void deleteBlocked(r.origin_id)
                     .then(reload)
                     .catch((e: Error) => setError(e.message))
                 }
               >
-                删除
+                解封
               </button>
             </div>
           ))}
           {rows.length === 0 && (
-            <p style={{ color: 'var(--c-text-dim)', margin: 0 }}>白名单为空 —— v1 当前不可用</p>
+            <p style={{ color: 'var(--c-text-dim)', margin: 0 }}>黑名单为空</p>
           )}
         </div>
       </div>

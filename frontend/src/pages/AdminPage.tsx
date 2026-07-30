@@ -2,16 +2,18 @@ import { useEffect, useState } from 'react'
 
 import { getMe, type UserDto } from '../lib/api'
 import { GraphCredentialsPanel } from './admin/GraphCredentialsPanel'
+import { BlockedPanel } from './admin/BlockedPanel'
 import { OriginsPanel } from './admin/OriginsPanel'
 import { StatsPanel } from './admin/StatsPanel'
 import { UsersPanel } from './admin/UsersPanel'
 
-type Section = 'users' | 'graph' | 'origins' | 'stats'
+type Section = 'users' | 'graph' | 'origins' | 'blocked' | 'stats'
 
 const SECTIONS: { key: Section; label: string; hint: string }[] = [
   { key: 'users', label: '用户管理', hint: '添加 / 暂停 / 删除账号' },
   { key: 'graph', label: 'Azure 凭证', hint: 'Graph 通道与连通性自检' },
-  { key: 'origins', label: '访问白名单', hint: '防跨站（当前未启用）' },
+  { key: 'origins', label: '访问白名单', hint: '只管 v1 接口' },
+  { key: 'blocked', label: '网站黑名单', hint: '网页 + v1，优先级最高' },
   { key: 'stats', label: '系统状态', hint: '任务与存储占用' },
 ]
 
@@ -89,6 +91,7 @@ export function AdminPage() {
           {section === 'users' && <UsersPanel currentUserId={user.user_id} />}
           {section === 'graph' && <GraphCredentialsPanel />}
           {section === 'origins' && <OriginsPanel />}
+          {section === 'blocked' && <BlockedPanel />}
           {section === 'stats' && <StatsPanel />}
         </div>
       </div>
