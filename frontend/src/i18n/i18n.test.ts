@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { availableLocales, detectLocale, translate } from './index'
+import { availableLocales, detectLocale, translate } from './core'
 
 describe('语言选择', () => {
   it('浏览器语言命中就用它', () => {

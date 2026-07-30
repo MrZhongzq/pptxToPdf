@@ -1,3 +1,5 @@
+/* eslint-disable react-refresh/only-export-components -- 只在测试里用，
+   不参与 HMR。 */
 import { render as rtlRender, type RenderOptions } from '@testing-library/react'
 import { beforeEach } from 'vitest'
 import type { ReactElement, ReactNode } from 'react'
