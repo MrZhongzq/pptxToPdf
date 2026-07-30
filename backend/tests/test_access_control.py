@@ -183,3 +183,55 @@ def test_blacklist_except_lets_one_subdomain_through(client, db):
 
 def test_empty_blacklist_blocks_nothing(client):
     assert client.get("/api/auth/me").status_code == 200
+
+
+# ---- 反向代理后面的真实客户端 IP ----
+
+
+def test_client_ip_prefers_x_forwarded_for():
+    """在反向代理后面 request.client.host 永远是代理自己的 IP——白名单按
+    IP 判定会因此完全失效：把代理 IP 加进白名单等于放行所有人，不加则谁
+    也进不来。真机验证时就是这么撞上的。"""
+    from app.services.origin_guard import client_ip
+
+    assert client_ip("172.18.0.5", "203.0.113.9") == "203.0.113.9"
+
+
+def test_client_ip_takes_the_leftmost_hop():
+    """X-Forwarded-For 是 `client, proxy1, proxy2`，最左才是原始客户端。"""
+    from app.services.origin_guard import client_ip
+
+    assert client_ip("172.18.0.5", "203.0.113.9, 10.0.0.1, 10.0.0.2") == "203.0.113.9"
+
+
+def test_client_ip_falls_back_when_header_absent():
+    from app.services.origin_guard import client_ip
+
+    assert client_ip("203.0.113.9", None) == "203.0.113.9"
+
+
+def test_client_ip_ignores_header_when_not_trusting_proxies(monkeypatch):
+    """这个头客户端可伪造。api 若直接对外，必须关掉信任，否则白名单与
+    黑名单都形同虚设。"""
+    from app.config import settings
+    from app.services.origin_guard import client_ip
+
+    monkeypatch.setattr(settings, "trust_proxy_headers", False)
+    assert client_ip("172.18.0.5", "203.0.113.9") == "172.18.0.5"
+
+
+def test_v1_whitelist_matches_the_forwarded_client(client, db):
+    """端到端：白名单里写真实客户端 IP，经代理转发后仍能命中。"""
+    _allow(db, "203.0.113.9")
+    resp = client.get(
+        "/v1/convert",
+        params={"fileUrl": "http://127.0.0.1/a.pptx"},
+        headers={"X-Forwarded-For": "203.0.113.9"},
+    )
+    assert resp.status_code == 400  # 过了白名单，倒在 SSRF 上
+
+
+def test_blacklist_matches_the_forwarded_client(client, db):
+    _block(db, "203.0.113.9")
+    resp = client.get("/api/auth/me", headers={"X-Forwarded-For": "203.0.113.9"})
+    assert resp.status_code == 403

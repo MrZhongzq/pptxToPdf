@@ -18,6 +18,7 @@ import logging
 
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models import AllowedOrigin, BlockedOrigin
 from app.services import origin_rules
 from app.services.origin_rules import RuleSet
@@ -33,6 +34,28 @@ def load_allowed(session: Session) -> RuleSet:
 
 def load_blocked(session: Session) -> RuleSet:
     return origin_rules.build([r.origin for r in session.query(BlockedOrigin).all()])
+
+
+def client_ip(request_client_host: str | None, forwarded_for: str | None) -> str | None:
+    """取真实客户端 IP。
+
+    在反向代理后面，`request.client.host` 永远是代理自己的 IP——白名单按
+    IP 判定会因此完全失效：把代理 IP 加进白名单等于放行所有人，不加则
+    谁也进不来。真机验证时就是这么撞上的。
+
+    所以优先取 `X-Forwarded-For` 的**最左**一项（RFC 7239 的约定：
+    `client, proxy1, proxy2`，最左是原始客户端）。
+
+    这个头是客户端可伪造的，只有在「api 不直接对外」的前提下才可信。
+    本项目的 compose 把 api 绑在 127.0.0.1:8000，外部只能经 nginx 进来，
+    前提成立。若以后把 api 直接暴露出去，必须把 trust_proxy_headers
+    关掉，否则白名单形同虚设。
+    """
+    if settings.trust_proxy_headers and forwarded_for:
+        first = forwarded_for.split(",")[0].strip()
+        if first:
+            return first.lower()
+    return request_client_host.lower() if request_client_host else None
 
 
 def is_v1(path: str) -> bool:

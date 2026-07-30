@@ -62,6 +62,13 @@ class Settings(BaseSettings):
     # 于是默认改为开启，且去掉了「白名单为空时放行」那道保险：空白名单
     # 现在的语义是「v1 谁也不许用」，这是一个清晰且安全的默认。
     origin_guard_enabled: bool = True
+    # 是否信任 X-Forwarded-For 里的客户端 IP。
+    #
+    # 本项目的部署形态是 nginx 反代 + api 绑 127.0.0.1:8000，外部只能经
+    # nginx 进来，这个头由 nginx 写入、客户端伪造不了，所以默认信任。
+    # **若以后把 api 直接暴露到公网，必须改成 false**——否则任何人都能
+    # 靠伪造这个头绕过白名单与黑名单。
+    trust_proxy_headers: bool = True
     graph_max_pages_per_shard: int = 80
     graph_max_shard_bytes: int = 40 * MIB
     graph_request_timeout_s: int = 50

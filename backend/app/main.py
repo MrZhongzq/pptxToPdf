@@ -46,7 +46,10 @@ async def access_control_middleware(request: Request, call_next):
     from app.db import SessionLocal
 
     path = request.url.path
-    client_ip = request.client.host if request.client else None
+    client_ip = origin_guard.client_ip(
+        request.client.host if request.client else None,
+        request.headers.get("x-forwarded-for"),
+    )
     hosts = origin_guard.candidate_hosts(
         client_ip, request.headers.get("origin"), request.headers.get("referer")
     )
