@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from app.services import font_store
 from app.services.font_probe import FontFace
 from app.services.font_store import (
     SOURCE_BUILTIN,
@@ -18,6 +19,7 @@ from app.services.font_store import (
     encode_file_id,
     find_conflicts,
     is_duplicate,
+    probe,
     resolve_collision,
     safe_filename,
 )
@@ -145,3 +147,50 @@ class TestFindConflicts:
         """同一个文件（file_id 相同）不算与自己冲突。"""
         incoming = _font("same.ttf", ["A"])
         assert find_conflicts(incoming, [incoming]) == []
+
+
+class TestProbeCallsFcQuery:
+    """probe() 调 fc-query 时用的 format 字符串本身要被锁住。
+
+    font_probe.py 里 parse_charset 的多段测试只测「多段输入怎么算」，
+    测不到「fc-query 真的会不会分段输出」——那半条逻辑完全靠 probe()
+    传给 fc-query 的 --format 参数。真机上一个 10 face 的 Noto CJK 显示
+    「覆盖 -462,222,757 字」，根因就是这个 format 当初没带 \n：ttc 一个
+    文件多个 face，fc-query 为每个 face 各输出一段，没有 \n 分隔的话
+    相邻两段会粘成一个畸形 token（前段末尾 ...ffff 接后段开头 20-7e
+    变成 ffff20-7e），减法算出巨大负数。两半（「怎么算」与「怎么分段」）
+    都要有测试锁住，否则谁把 CHARSET_FORMAT 的 \n 删掉，全量测试照样
+    全绿，bug 原样复现。
+    """
+
+    def test_charset_format_asks_fc_query_to_separate_faces(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[list[str]] = []
+
+        class _Result:
+            returncode = 0
+            stdout = "DejaVu Sans\tBook\t155320\t0\n"
+
+        def fake_run(cmd: list[str], **kwargs: object) -> _Result:
+            calls.append(cmd)
+            return _Result()
+
+        monkeypatch.setattr(font_store.subprocess, "run", fake_run)
+
+        font_path = tmp_path / "a.ttf"
+        font_path.write_bytes(b"fake font bytes")
+
+        result = probe(font_path, SOURCE_MANAGED)
+
+        assert result is not None
+        assert len(calls) == 2  # 一次取 meta（family/style/...），一次取 charset
+
+        charset_calls = [c for c in calls if "%{charset}" in " ".join(c)]
+        assert len(charset_calls) == 1, "probe 应该只查询一次 charset"
+        cmd = charset_calls[0]
+        fmt = cmd[cmd.index("--format") + 1]
+        assert fmt.endswith("\n"), (
+            f"charset 的 --format 必须以换行结尾，让 fc-query 按 face 分段输出，"
+            f"否则 ttc 多 face 会粘连出畸形 token 并算出负数；实际传的是 {fmt!r}"
+        )
