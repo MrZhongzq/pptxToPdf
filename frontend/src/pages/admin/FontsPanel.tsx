@@ -1,7 +1,16 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 
 import { useI18n } from '../../i18n'
-import { deleteFont, listFonts, type FontFile, type FontList } from '../../lib/adminApi'
+import {
+  commitFont,
+  deleteFont,
+  listFonts,
+  preflightFont,
+  type FontFile,
+  type FontList,
+  type FontPreflight,
+} from '../../lib/adminApi'
+import { FontConflictDialog } from './FontConflictDialog'
 
 const EMPTY: FontList = { managed: [], mounted: [], builtin: [] }
 
@@ -27,7 +36,15 @@ export function FontsPanel() {
   const [busyId, setBusyId] = useState<string | null>(null)
   const [builtinExpanded, setBuiltinExpanded] = useState(false)
   const [builtinLoading, setBuiltinLoading] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [duplicateNotice, setDuplicateNotice] = useState<string | null>(null)
+  const [conflict, setConflict] = useState<FontPreflight | null>(null)
   const generation = useRef(0)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  // 冲突弹窗的决定权在用户手上，而这里是个 for 循环——用一个 ref 存
+  // 当前那次 preflight 对应的 resolve，弹窗点了按钮就唤醒它，循环才
+  // 能继续处理下一个文件。resolve(null) 表示这一个文件被取消上传。
+  const conflictResolverRef = useRef<((replace: string[] | null) => void) | null>(null)
 
   const reload = (includeBuiltin: boolean) => {
     // 每次请求领一个号，回来时只有最新那一代才允许写状态。
@@ -73,6 +90,66 @@ export function FontsPanel() {
     }
   }
 
+  // 弹窗内点了「替换勾选的」或「这是新字体」都算 resolve；点「取消上传」
+  // 走 handleConflictCancel，两者互斥，弹窗组件自己保证不会都触发。
+  const handleConflictResolve = (replace: string[]) => {
+    setConflict(null)
+    conflictResolverRef.current?.(replace)
+    conflictResolverRef.current = null
+  }
+
+  const handleConflictCancel = () => {
+    setConflict(null)
+    conflictResolverRef.current?.(null)
+    conflictResolverRef.current = null
+  }
+
+  const waitForConflictResolution = (preflight: FontPreflight): Promise<string[] | null> =>
+    new Promise((resolve) => {
+      conflictResolverRef.current = resolve
+      setConflict(preflight)
+    })
+
+  // 支持一次选多个文件，逐个处理：一个处理完（commit 或取消）才进下一个，
+  // 弹窗永远只描述「当前这一个文件」的冲突，不会同时堆出好几个弹窗。
+  const handleFilesSelected = async (e: ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files ? Array.from(e.target.files) : []
+    // 立刻清空 input value：不然选中同一个文件两次，第二次不会触发 onChange。
+    e.target.value = ''
+    if (files.length === 0) return
+
+    setUploading(true)
+    setError(null)
+    setDuplicateNotice(null)
+    try {
+      for (const file of files) {
+        try {
+          const preflight = await preflightFont(file)
+          if (preflight.duplicate_of) {
+            setDuplicateNotice(
+              t('admin.fonts.duplicate', { filename: preflight.duplicate_of.filename }),
+            )
+            continue
+          }
+
+          let replace: string[] = []
+          if (preflight.candidates.length > 0) {
+            const decision = await waitForConflictResolution(preflight)
+            if (decision === null) continue // 这一个文件被取消上传
+            replace = decision
+          }
+
+          await commitFont(preflight.token, replace)
+          await reload(builtinExpanded)
+        } catch (err) {
+          setError((err as Error).message)
+        }
+      }
+    } finally {
+      setUploading(false)
+    }
+  }
+
   const renderRow = (font: FontFile) => (
     <div
       key={font.file_id}
@@ -113,9 +190,40 @@ export function FontsPanel() {
           {error}
         </p>
       )}
+      {duplicateNotice && (
+        <p role="status" className="alert" style={{ margin: 0 }}>
+          {duplicateNotice}
+        </p>
+      )}
 
       <div className="card glass" style={{ padding: 'var(--space-4)' }}>
-        <span className="section-title">{t('admin.fonts.managed')}</span>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 'var(--space-2)',
+            flexWrap: 'wrap',
+          }}
+        >
+          <span className="section-title">{t('admin.fonts.managed')}</span>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={uploading}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            {uploading ? t('admin.fonts.uploading') : t('admin.fonts.upload')}
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept=".ttf,.otf,.ttc"
+            style={{ display: 'none' }}
+            onChange={(e) => void handleFilesSelected(e)}
+          />
+        </div>
         <div style={{ display: 'grid', gap: 'var(--space-2)' }}>
           {data.managed.map(renderRow)}
           {data.managed.length === 0 && (
@@ -155,6 +263,14 @@ export function FontsPanel() {
           </div>
         )}
       </div>
+
+      {conflict && (
+        <FontConflictDialog
+          preflight={conflict}
+          onResolve={handleConflictResolve}
+          onCancel={handleConflictCancel}
+        />
+      )}
     </>
   )
 }
