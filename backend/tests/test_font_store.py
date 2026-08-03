@@ -52,6 +52,27 @@ class TestFileId:
         with pytest.raises(ValueError):
             decode_file_id("!!!not-base64!!!")
 
+    def test_rejects_absolute_path_in_filename(self) -> None:
+        """partition 只切第一个斜杠——"managed//etc/passwd" 会解出一个
+        绝对路径，而 pathlib 的 `base / "/etc/passwd"` 会整体替换掉 base。
+        """
+        import base64
+        evil = base64.urlsafe_b64encode(b"managed//etc/passwd").decode().rstrip("=")
+        with pytest.raises(ValueError):
+            decode_file_id(evil)
+
+    def test_rejects_traversal_in_filename(self) -> None:
+        import base64
+        evil = base64.urlsafe_b64encode(b"managed/../../etc/passwd").decode().rstrip("=")
+        with pytest.raises(ValueError):
+            decode_file_id(evil)
+
+    def test_rejects_unknown_source(self) -> None:
+        import base64
+        evil = base64.urlsafe_b64encode(b"../../etc/font.ttf").decode().rstrip("=")
+        with pytest.raises(ValueError):
+            decode_file_id(evil)
+
 
 class TestSafeFilename:
     def test_strips_directory_components(self) -> None:

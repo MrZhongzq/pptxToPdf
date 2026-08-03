@@ -32,6 +32,8 @@ SOURCE_MANAGED = "managed"
 SOURCE_MOUNTED = "mounted"
 SOURCE_BUILTIN = "builtin"
 
+KNOWN_SOURCES = frozenset({SOURCE_MANAGED, SOURCE_MOUNTED, SOURCE_BUILTIN})
+
 #: 只有 managed 的字体允许删除或被替换。
 WRITABLE_SOURCES = frozenset({SOURCE_MANAGED})
 
@@ -86,6 +88,15 @@ def decode_file_id(file_id: str) -> tuple[str, str]:
         raise ValueError(f"无法解析的字体 id: {file_id}") from exc
     source, _, filename = raw.partition("/")
     if not source or not filename:
+        raise ValueError(f"无法解析的字体 id: {file_id}")
+    # id 是客户端传来的，解出来的两截都要当成不可信输入。
+    #
+    # partition 只切第一个斜杠，剩下的原样留在 filename 里：构造
+    # "managed//etc/passwd" 就能解出一个绝对路径，而 pathlib 的
+    # `base / "/etc/passwd"` 会**整体替换**掉 base，变成任意文件读写。
+    # 消费方那边也会再过一次 safe_filename，但把防线全押在「每个调用方
+    # 都记得校验」上，漏一处就是任意删除，所以这里先堵死。
+    if source not in KNOWN_SOURCES or filename != safe_filename(filename):
         raise ValueError(f"无法解析的字体 id: {file_id}")
     return source, filename
 
