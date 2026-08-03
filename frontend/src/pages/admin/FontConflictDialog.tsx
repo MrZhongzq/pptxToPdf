@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '../../i18n'
 import type { FontFile, FontPreflight } from '../../lib/adminApi'
@@ -34,6 +34,29 @@ export function FontConflictDialog({
   const { t } = useI18n()
   const { incoming, candidates } = preflight
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const dialogRef = useRef<HTMLDivElement | null>(null)
+  const previousFocusRef = useRef<HTMLElement | null>(null)
+
+  // Esc 与点遮罩都等同于「取消上传」，不是静默关闭：preflight 阶段已经
+  // 在后端生成了暂存文件，半途关掉弹窗而不给后端任何信号，那个暂存
+  // 文件会一直挂到 TTL 过期。
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onCancel()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onCancel])
+
+  // 打开时把焦点移进模态，卸载后还给触发上传的按钮——键盘用户不该被
+  // 留在一个已经消失的元素上。与 UserMenu 的登录弹窗同一套写法。
+  useEffect(() => {
+    previousFocusRef.current = document.activeElement as HTMLElement | null
+    dialogRef.current?.focus()
+    return () => {
+      previousFocusRef.current?.focus?.()
+    }
+  }, [])
 
   const toggle = (fileId: string) => {
     setSelected((prev) => {
@@ -92,7 +115,11 @@ export function FontConflictDialog({
           </span>
           {disabled && (
             <span style={{ fontSize: 12, color: 'var(--c-text-dim)' }}>
-              ({t('admin.fonts.notReplaceable')})
+              (
+              {font.source === 'builtin'
+                ? t('admin.fonts.notReplaceable.builtin')
+                : t('admin.fonts.notReplaceable.mounted')}
+              )
             </span>
           )}
         </label>
@@ -106,8 +133,16 @@ export function FontConflictDialog({
   }
 
   return (
-    <div className="glass-overlay">
+    <div
+      className="glass-overlay"
+      onMouseDown={(e) => {
+        // 只有点在遮罩本身（而不是冒泡上来的模态内部）才算取消
+        if (e.target === e.currentTarget) onCancel()
+      }}
+    >
       <div
+        ref={dialogRef}
+        tabIndex={-1}
         className="glass-strong glass-modal"
         role="dialog"
         aria-modal="true"

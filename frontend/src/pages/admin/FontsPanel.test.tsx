@@ -1,9 +1,27 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '../../i18n'
 import { FontsPanel } from './FontsPanel'
+
+// preflightFont/commitFont 都是 fetch 的薄封装（见 adminApi.ts），这里在
+// fetch 这一层桩，而不是 vi.mock 整个模块——这样断言的是「FontsPanel 真的
+// 打到了 /api/admin/fonts/preflight 和 /api/admin/fonts，body 是对的」，
+// 比断言「调用了某个函数」更接近这条链路实际要保证的东西，也和文件里
+// 已有的四条列表/删除测试用同一套桩风格。
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+function getFileInput(container: HTMLElement): HTMLInputElement {
+  return container.querySelector('input[type="file"]') as HTMLInputElement
+}
+
+const EMPTY_LIST = { managed: [], mounted: [], builtin: [] }
 
 const FONT = {
   file_id: 'bWFuYWdlZC9tc3loLnR0Yw',
@@ -137,5 +155,176 @@ describe('FontsPanel', () => {
     // 给过期响应的 .then 一个机会跑完（应该是空操作）。
     await new Promise((r) => setTimeout(r, 0))
     expect(screen.getByText('b.ttf')).toBeInTheDocument()
+  })
+
+  it('uploads a font with no conflicts straight through, without opening the dialog', async () => {
+    const fetchSpy = vi.fn(async (url: string, init?: RequestInit) => {
+      const u = String(url)
+      if (u.endsWith('/api/admin/fonts/preflight')) {
+        return jsonResponse({ token: 'tok1', incoming: FONT, duplicate_of: null, candidates: [] })
+      }
+      if (u === '/api/admin/fonts' && init?.method === 'POST') {
+        return jsonResponse(FONT)
+      }
+      return jsonResponse(EMPTY_LIST)
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const { container } = renderPanel()
+    const input = getFileInput(container)
+    fireEvent.change(input, { target: { files: [new File(['x'], 'new.ttf')] } })
+
+    await waitFor(() => {
+      const commitCall = fetchSpy.mock.calls.find(
+        ([u, init]) => String(u) === '/api/admin/fonts' && init?.method === 'POST',
+      )
+      expect(commitCall).toBeDefined()
+      expect(JSON.parse((commitCall![1] as RequestInit).body as string)).toEqual({
+        token: 'tok1',
+        replace: [],
+      })
+    })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('shows a notice and skips commit when the file is an exact duplicate', async () => {
+    const fetchSpy = vi.fn(async (url: string) => {
+      const u = String(url)
+      if (u.endsWith('/api/admin/fonts/preflight')) {
+        return jsonResponse({
+          token: 'tok1',
+          incoming: FONT,
+          duplicate_of: { ...FONT, filename: 'dup.ttc' },
+          candidates: [],
+        })
+      }
+      return jsonResponse(EMPTY_LIST)
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const { container } = renderPanel()
+    const input = getFileInput(container)
+    fireEvent.change(input, { target: { files: [new File(['x'], 'dup.ttc')] } })
+
+    expect(await screen.findByText(/已经传过了|Already uploaded/)).toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(
+      fetchSpy.mock.calls.some(
+        ([u, init]) => String(u) === '/api/admin/fonts' && init?.method === 'POST',
+      ),
+    ).toBe(false)
+  })
+
+  it('opens the conflict dialog on a real collision and sends the checked candidate as replace', async () => {
+    const fetchSpy = vi.fn(async (url: string, init?: RequestInit) => {
+      const u = String(url)
+      if (u.endsWith('/api/admin/fonts/preflight')) {
+        return jsonResponse({
+          token: 'tok1',
+          incoming: FONT,
+          duplicate_of: null,
+          candidates: [{ ...FONT, file_id: 'old1', filename: 'msyh-old.ttc' }],
+        })
+      }
+      if (u === '/api/admin/fonts' && init?.method === 'POST') {
+        return jsonResponse(FONT)
+      }
+      return jsonResponse(EMPTY_LIST)
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const { container } = renderPanel()
+    const input = getFileInput(container)
+    fireEvent.change(input, { target: { files: [new File(['x'], 'msyh.ttc')] } })
+
+    await screen.findByRole('dialog')
+    await userEvent.click(screen.getByRole('checkbox'))
+    await userEvent.click(screen.getByRole('button', { name: /替换勾选|Replace selected/ }))
+
+    await waitFor(() => {
+      const commitCall = fetchSpy.mock.calls.find(
+        ([u, init]) => String(u) === '/api/admin/fonts' && init?.method === 'POST',
+      )
+      expect(commitCall).toBeDefined()
+      expect(JSON.parse((commitCall![1] as RequestInit).body as string)).toEqual({
+        token: 'tok1',
+        replace: ['old1'],
+      })
+    })
+  })
+
+  it('processes multiple files strictly serially — waits for a decision before preflighting the next', async () => {
+    // 重点验证 for 循环真的 await 住了：第二个文件的 preflight 请求
+    // 不该在第一个文件的冲突弹窗还没决定之前就发出去。
+    let preflightCalls = 0
+    const fetchSpy = vi.fn(async (url: string, init?: RequestInit) => {
+      const u = String(url)
+      if (u.endsWith('/api/admin/fonts/preflight')) {
+        preflightCalls += 1
+        return jsonResponse({
+          token: `tok${preflightCalls}`,
+          incoming: FONT,
+          duplicate_of: null,
+          candidates: [
+            { ...FONT, file_id: `old${preflightCalls}`, filename: `old${preflightCalls}.ttc` },
+          ],
+        })
+      }
+      if (u === '/api/admin/fonts' && init?.method === 'POST') {
+        return jsonResponse(FONT)
+      }
+      return jsonResponse(EMPTY_LIST)
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const { container } = renderPanel()
+    const input = getFileInput(container)
+    fireEvent.change(input, {
+      target: { files: [new File(['a'], 'a.ttf'), new File(['b'], 'b.ttf')] },
+    })
+
+    await screen.findByRole('dialog')
+    expect(preflightCalls).toBe(1)
+
+    // 处理完第一个（选"这是新字体"）之后，第二个文件才该被 preflight。
+    await userEvent.click(screen.getByRole('button', { name: /新字体|new font/i }))
+
+    await waitFor(() => expect(preflightCalls).toBe(2))
+  })
+
+  it('canceling one file does not block the rest of the queue', async () => {
+    let preflightCalls = 0
+    const fetchSpy = vi.fn(async (url: string, init?: RequestInit) => {
+      const u = String(url)
+      if (u.endsWith('/api/admin/fonts/preflight')) {
+        preflightCalls += 1
+        return jsonResponse({
+          token: `tok${preflightCalls}`,
+          incoming: FONT,
+          duplicate_of: null,
+          candidates: [
+            { ...FONT, file_id: `old${preflightCalls}`, filename: `old${preflightCalls}.ttc` },
+          ],
+        })
+      }
+      if (u === '/api/admin/fonts' && init?.method === 'POST') {
+        return jsonResponse(FONT)
+      }
+      return jsonResponse(EMPTY_LIST)
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const { container } = renderPanel()
+    const input = getFileInput(container)
+    fireEvent.change(input, {
+      target: { files: [new File(['a'], 'a.ttf'), new File(['b'], 'b.ttf')] },
+    })
+
+    await screen.findByRole('dialog')
+    expect(preflightCalls).toBe(1)
+
+    await userEvent.click(screen.getByRole('button', { name: /取消|Cancel/ }))
+
+    await waitFor(() => expect(preflightCalls).toBe(2))
   })
 })
