@@ -75,3 +75,32 @@ def test_counts_codepoints_from_charset_ranges() -> None:
 
 def test_empty_charset_counts_zero() -> None:
     assert parse_charset("") == 0
+
+
+def test_charset_multi_segment_takes_the_max() -> None:
+    """ttc 一个文件多个 face，CHARSET_FORMAT 按 \\n 给每个 face 分一段。
+    各段字数不一样时取覆盖最多的一段代表整个文件，而不是求和——见
+    parse_charset 里的注释。"""
+    raw = "0-9\n0-63\n0-1\n"  # 10 个, 100 个, 2 个
+    assert parse_charset(raw) == 100
+
+
+def test_charset_multi_segment_all_same_returns_that_value() -> None:
+    """真机实测：10 face 的 NotoSansCJK-Bold.ttc 里每个 face 的字符集都是
+    44810 字（同一字体针对不同语言区域的变体，字符集高度重叠）。取最大值
+    而不是求和，避免把这个文件的覆盖量算成 448100——虚高 10 倍，误导
+    管理员判断这个文件是否已经足够全。
+    """
+    segment = "0-af09"  # 0x0-0xaf09 = 44810 个码位
+    raw = "\n".join([segment] * 10)
+    assert parse_charset(raw) == 44810
+
+
+def test_charset_malformed_glued_range_does_not_go_negative() -> None:
+    """CHARSET_FORMAT 忘记加 \\n 时，前一段末尾 ...ffff 会跟下一段开头
+    20-7e 粘成 "ffff20-7e" 这种 end < start 的畸形 token。真机上这种
+    粘连让「覆盖字数」显示成 -462,222,757。parse_charset 永远不该返回
+    负数——这道防御独立于「有没有分隔符」，即使将来又冒出别的畸形输入
+    也不能把负数摆到界面上。
+    """
+    assert parse_charset("ffff20-7e") >= 0

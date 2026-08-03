@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.services.font_probe import (
+    CHARSET_FORMAT,
     FC_QUERY_FORMAT,
     FontFace,
     parse_charset,
@@ -137,7 +138,7 @@ def probe(path: Path, source: str) -> FontFile | None:
             capture_output=True, text=True, timeout=30,
         )
         charset = subprocess.run(
-            ["fc-query", "--format", "%{charset}", str(path)],
+            ["fc-query", "--format", CHARSET_FORMAT, str(path)],
             capture_output=True, text=True, timeout=30,
         )
     except (OSError, subprocess.SubprocessError):
