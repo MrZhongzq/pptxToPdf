@@ -58,6 +58,10 @@ def parse_fc_query(stdout: str) -> list[FontFace]:
         try:
             idx = int(index)
         except ValueError:
+            # index 畸形就回退成 0，而不是丢掉整行。index 不参与冲突判定（那只看
+            # family），标错了没有后果；但漏掉一个 face 就让 ttc 里的某个字体名彻底
+            # 消失，后续出现「明明撞名了却没提示」，用户的字体被悄悄覆盖。两害相权，
+            # 宁可标错也不能丢。
             idx = 0
         faces.append(
             FontFace(

@@ -40,6 +40,19 @@ def test_ignores_blank_and_malformed_lines() -> None:
     assert len(parse_fc_query(stdout)) == 1
 
 
+def test_keeps_the_face_when_only_the_index_is_malformed() -> None:
+    """index 畸形就回退成 0，而不是丢掉整个 face。
+
+    index 不参与冲突判定（那只看 family），标错了没有后果；但丢掉一个
+    face 就会让 ttc 里的某个字体名彻底消失，后续出现「明明撞名了却没
+    提示」，用户的字体被悄悄覆盖。两害相权，宁可标错也不能丢。
+    """
+    faces = parse_fc_query("微软雅黑\tRegular\t393216\t不是数字\n")
+    assert len(faces) == 1
+    assert faces[0].family == "微软雅黑"
+    assert faces[0].index == 0
+
+
 def test_version_is_fixed_point_divided_by_65536() -> None:
     """fontversion 是 16.16 定点数，直接显示会变成 155320 这种天书。"""
     assert format_version("155320") == "2.37"
