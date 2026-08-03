@@ -125,6 +125,7 @@
   "admin.fonts.mounted": "手工挂载（只读）",
   "admin.fonts.builtin": "镜像内置",
   "admin.fonts.families": "包含字体",
+  "admin.fonts.familySeparator": "、",
   "admin.fonts.version": "版本",
   "admin.fonts.coverage": "覆盖 {count} 字",
   "admin.fonts.empty": "还没有上传字体",

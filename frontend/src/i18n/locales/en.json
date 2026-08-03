@@ -125,6 +125,7 @@
   "admin.fonts.mounted": "Mounted manually (read-only)",
   "admin.fonts.builtin": "Built into the image",
   "admin.fonts.families": "Contains",
+  "admin.fonts.familySeparator": ", ",
   "admin.fonts.version": "Version",
   "admin.fonts.coverage": "{count} characters",
   "admin.fonts.empty": "No fonts uploaded yet",

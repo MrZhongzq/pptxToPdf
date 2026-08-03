@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '../../i18n'
 import { deleteFont, listFonts, type FontFile, type FontList } from '../../lib/adminApi'
@@ -27,11 +27,22 @@ export function FontsPanel() {
   const [busyId, setBusyId] = useState<string | null>(null)
   const [builtinExpanded, setBuiltinExpanded] = useState(false)
   const [builtinLoading, setBuiltinLoading] = useState(false)
+  const generation = useRef(0)
 
-  const reload = (includeBuiltin: boolean) =>
-    listFonts(includeBuiltin)
-      .then(setData)
-      .catch((e: Error) => setError(e.message))
+  const reload = (includeBuiltin: boolean) => {
+    // 每次请求领一个号，回来时只有最新那一代才允许写状态。
+    // 初始加载与「展开内置」可能并发在途：初始那个不含 builtin，
+    // 若它后落地就会把已展开的列表盖成空的，界面显示「展开了但没有
+    // 内置字体」，管理员会以为镜像里真的缺字体。
+    const mine = ++generation.current
+    return listFonts(includeBuiltin)
+      .then((d) => {
+        if (mine === generation.current) setData(d)
+      })
+      .catch((e: Error) => {
+        if (mine === generation.current) setError(e.message)
+      })
+  }
 
   useEffect(() => {
     void reload(false)
@@ -69,7 +80,7 @@ export function FontsPanel() {
     >
       <strong>{font.filename}</strong>
       <span style={{ fontSize: 12, color: 'var(--c-text-dim)' }}>
-        {t('admin.fonts.families')}: {font.families.join('、')}
+        {t('admin.fonts.families')}: {font.families.join(t('admin.fonts.familySeparator'))}
       </span>
       <span style={{ fontSize: 12, color: 'var(--c-text-dim)' }}>
         {t('admin.fonts.version')}: {font.version}
@@ -129,6 +140,7 @@ export function FontsPanel() {
           <button
             type="button"
             className="btn btn-ghost"
+            aria-expanded={builtinExpanded}
             disabled={builtinLoading}
             onClick={() => void handleExpandBuiltin()}
           >

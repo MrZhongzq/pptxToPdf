@@ -20,6 +20,14 @@ const FONT = {
 
 const MOUNTED = { ...FONT, file_id: 'bW91bnRlZC9hLnR0Zg', filename: 'a.ttf', source: 'mounted', deletable: false }
 
+const BUILTIN_FONT = {
+  ...FONT,
+  file_id: 'YnVpbHRpbi9iLnR0Zg',
+  filename: 'b.ttf',
+  source: 'builtin',
+  deletable: false,
+}
+
 function renderPanel() {
   return render(
     <I18nProvider>
@@ -88,5 +96,46 @@ describe('FontsPanel', () => {
     await waitFor(() =>
       expect(fetchSpy.mock.calls.some(([u]) => String(u).includes('include_builtin=true'))).toBe(true),
     )
+  })
+
+  it('keeps the expanded builtin list even if the stale initial request resolves later', async () => {
+    // 挂载时发出的初始请求（不含 builtin）故意卡住不 resolve，模拟它比
+    // 「展开内置」那次请求慢的乱序场景。展开按钮在初始请求落地前就能点，
+    // 所以两个请求会并发在途。
+    let resolveInitial!: (r: Response) => void
+    const initial = new Promise<Response>((resolve) => {
+      resolveInitial = resolve
+    })
+
+    const fetchSpy = vi.fn(async (url: string) => {
+      if (String(url).includes('include_builtin=true')) {
+        return new Response(
+          JSON.stringify({ managed: [], mounted: [], builtin: [BUILTIN_FONT] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+      return initial
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+
+    renderPanel()
+
+    // 初始请求还没落地，就点了展开——这是竞态能发生的前提。
+    await userEvent.click(screen.getByRole('button', { name: /内置|built-in/i }))
+    await screen.findByText('b.ttf')
+
+    // 现在才放行那个过期的初始响应。如果没有世代号防护，它落地时会用
+    // 「不含 builtin」的旧数据覆盖已经展开的列表，b.ttf 就会从界面消失。
+    resolveInitial(
+      new Response(JSON.stringify({ managed: [], mounted: [], builtin: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2))
+    // 给过期响应的 .then 一个机会跑完（应该是空操作）。
+    await new Promise((r) => setTimeout(r, 0))
+    expect(screen.getByText('b.ttf')).toBeInTheDocument()
   })
 })
