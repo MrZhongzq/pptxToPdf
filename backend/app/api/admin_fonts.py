@@ -7,9 +7,11 @@ fontconfig 发现目录 mtime 变了会自动重扫，不需要 fc-cache，也�
 """
 
 import os
+import re
 import shutil
 import time
 import uuid
+from dataclasses import replace as dataclass_replace
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, UploadFile
@@ -29,6 +31,7 @@ from app.services.font_store import (
     WRITABLE_SOURCES,
     FontFile,
     decode_file_id,
+    encode_file_id,
     find_conflicts,
     is_duplicate,
     probe,
@@ -134,6 +137,25 @@ def _sweep_tmp() -> None:
             continue
 
 
+def _staged_dir(token: str) -> Path:
+    """定位暂存目录。
+
+    token 来自客户端，拼路径前必须锁死格式——pathlib 的
+    `base / "/etc"`（绝对路径）或 `base / "../../../etc"`（穿越）都会
+    逃出 base，而 `os.replace` 紧接着会把逃出去目录里的任意文件当成
+    「暂存的字体」搬进字体目录、并删除原文件。schemas.py 的
+    FontCommitRequest.token 那层已经用 pattern 卡过一次，这里是第二道：
+    防线只有一道时，任何一次 schema 重构都可能悄悄把它拆掉——
+    decode_file_id 与消费方各校验一次的模式在 font_store.py 里已经立过
+    先例。
+    """
+    if not re.fullmatch(r"[0-9a-f]{32}", token):
+        # 对调用方而言「token 无效」和「token 过期」是同一件事——没必要
+        # 给攻击者一个能区分两者的信号。
+        raise FontUploadExpired("这次上传已过期，请重新选择文件")
+    return settings.font_tmp_dir / token
+
+
 def _reserve_target(directory: Path, filename: str) -> tuple[Path, str]:
     """在 directory 下排他式占位一个文件名，撞名就按 -2 / -3 递增重试。
 
@@ -181,7 +203,10 @@ async def preflight(
     staged.mkdir()
     dest = staged / name
 
-    # 边写边计数：先读进内存再判大小的话，一个超大请求就能把进程撑爆
+    # 边写边计数：真正防内存打爆的是 Starlette 在进入本函数之前就已经
+    # 用 SpooledTemporaryFile 落盘/落临时文件解析完了 multipart，这个循环
+    # 挡的是另一件事——避免超限内容被写进 font_tmp_dir 长期占磁盘，一旦
+    # 超限立刻中止清理，而不是等 read() 把整个文件都读完再算总数。
     written = 0
     try:
         with dest.open("wb") as fh:
@@ -216,10 +241,19 @@ async def preflight(
 def commit(
     payload: FontCommitRequest, _: User = Depends(require_admin)
 ) -> FontFileDto:
-    staged = settings.font_tmp_dir / payload.token
+    staged = _staged_dir(payload.token)
     if not staged.is_dir() or not any(staged.iterdir()):
         raise FontUploadExpired("这次上传已过期，请重新选择文件")
     source_file = next(staged.iterdir())
+
+    # probe 必须放在任何破坏性操作之前：探测的是暂存文件，字节跟落盘后
+    # 完全一样，语义不变，但失败时旧文件没删、新文件没写，客户端能干净
+    # 地重试。反过来先删旧文件/落盘再 probe，失败时就是「一半替换一半
+    # 失败」——replace 掉的旧文件已经不在了，事后 unlink 新文件也回滚
+    # 不回旧文件，是 brief 里反复强调要避免的状态。
+    info = probe(source_file, SOURCE_MANAGED)
+    if info is None:
+        raise FontInvalid("这不是可识别的字体文件")
 
     # 先校验整个 replace 列表再动手：一半替换一半失败是最难收拾的状态
     targets: list[Path] = []
@@ -248,7 +282,10 @@ def commit(
     os.replace(source_file, final_path)
     shutil.rmtree(staged, ignore_errors=True)
 
-    info = probe(final_path, SOURCE_MANAGED)
-    if info is None:
-        raise FontInvalid("落盘后无法解析，文件可能已损坏")
+    # 内容跟上面 probe 时完全一致（只是搬了个位置），不需要再跑一次
+    # fc-query 去决定成败——只订正可能被 _reserve_target 改过的文件名
+    # /file_id，用于构造返回值。
+    info = dataclass_replace(
+        info, file_id=encode_file_id(SOURCE_MANAGED, final_name), filename=final_name
+    )
     return _to_dto(info)

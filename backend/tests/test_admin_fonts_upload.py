@@ -205,6 +205,35 @@ class TestPreflightConflicts:
         assert body["candidates"] == []
 
 
+class TestStagedDirTraversal:
+    """schema 的 pattern 已经在请求体这一层挡掉了非法 token（见
+    schemas.py 的 FontCommitRequest.token），所以走 HTTP 端点测不出
+    _staged_dir 自己这道防线——请求根本进不到端点里。这里直接单测
+    _staged_dir(token)，验证的是「schema 那道以后被重构弄丢了」的场景。
+    """
+
+    @pytest.mark.parametrize(
+        "token",
+        [
+            "/etc",
+            "../../../etc",
+            "ABC0123456789abcdef0123456789abc",  # 大写，格式对但不匹配 [0-9a-f]
+            "",
+        ],
+    )
+    def test_traversal_and_malformed_tokens_rejected(self, token: str) -> None:
+        from app.config import settings
+        from app.errors import FontUploadExpired
+        import app.api.admin_fonts as mod
+
+        with pytest.raises(FontUploadExpired):
+            mod._staged_dir(token)
+
+        # 没有任何东西被写进 font_dir——_staged_dir 只负责算路径,
+        # 但这里额外确认拒绝发生在任何文件系统操作之前。
+        assert not settings.font_dir.exists() or list(settings.font_dir.glob("*")) == []
+
+
 def _mock_probe(monkeypatch) -> None:
     """测试机没有 fontconfig（Windows 上跑不了 fc-query），真正的 probe()
     对 `b"fake-font-bytes"` 只会返回 None。TestCommit 关心的是落盘/替换/
@@ -254,30 +283,88 @@ class TestCommit:
         assert resp.status_code == 200, resp.text
         assert not old.exists()
         assert (settings.font_dir / "test.ttf").is_file()
+        assert (settings.font_dir / "test.ttf").read_bytes() == b"fake-font-bytes"
 
     def test_refuses_to_replace_non_managed(self, admin_session, monkeypatch) -> None:
         """replace 列表里有手工挂载/内置的 → 400，不静默跳过。
         静默跳过会让管理员以为替换成功了。"""
+        from app.config import settings
+
         _mock_probe(monkeypatch)
         pre = _upload(admin_session)
         assert pre.status_code == 200, pre.text
         token = pre.json()["token"]
 
+        # replace 列表里混一个合法的 managed 文件——如果实现是「遍历到哪个
+        # 非法就在哪短路，之前遍历过的合法条目已经删了」，这个断言能抓到；
+        # 只有整体先校验完、一个不合法就全部不动手才能通过。
+        settings.font_dir.mkdir(parents=True, exist_ok=True)
+        old = settings.font_dir / "old.ttf"
+        old.write_bytes(b"old-bytes")
+        old_id = encode_file_id(SOURCE_MANAGED, "old.ttf")
         mounted_id = encode_file_id(SOURCE_MOUNTED, "a.ttf")
 
         resp = admin_session.post(
-            "/api/admin/fonts", json={"token": token, "replace": [mounted_id]}
+            "/api/admin/fonts", json={"token": token, "replace": [old_id, mounted_id]}
         )
 
         assert resp.status_code == 400
         assert resp.json()["code"] == "FONT_NOT_DELETABLE"
+        assert old.read_bytes() == b"old-bytes"
+        assert list(settings.font_dir.glob("*")) == [old]
+
+    def test_probe_failure_at_commit_has_no_side_effects(
+        self, admin_session, tmp_path, monkeypatch
+    ) -> None:
+        """commit 阶段 probe 失败 → 400，且不会一半替换一半失败：旧文件
+        还在，没有新文件被写进 font_dir。这是本轮最重要的一条——证明
+        probe 提前到任何破坏性操作之前真的生效了，不是「先删后探测」。
+        """
+        from app.config import settings
+        import app.api.admin_fonts as mod
+
+        _mock_probe(monkeypatch)
+        pre = _upload(admin_session)
+        assert pre.status_code == 200, pre.text
+        token = pre.json()["token"]
+
+        settings.font_dir.mkdir(parents=True, exist_ok=True)
+        old = settings.font_dir / "old.ttf"
+        old.write_bytes(b"old-bytes")
+        old_id = encode_file_id(SOURCE_MANAGED, "old.ttf")
+
+        # 模拟暂存文件在 preflight 之后、commit 之前损坏/不可解析：
+        # preflight 已经走过 _mock_probe 成功了，这里把 probe 换成
+        # commit 阶段会调用的失败桩。
+        monkeypatch.setattr(mod, "probe", lambda path, source: None)
+
+        resp = admin_session.post(
+            "/api/admin/fonts", json={"token": token, "replace": [old_id]}
+        )
+
+        assert resp.status_code == 400
+        assert resp.json()["code"] == "FONT_INVALID"
+        assert old.read_bytes() == b"old-bytes"
+        assert list(settings.font_dir.glob("*")) == [old]
 
     def test_expired_token_is_410(self, admin_session) -> None:
+        """格式合法但目录不在——已过期或从未存在，对调用方是同一件事。"""
         resp = admin_session.post(
-            "/api/admin/fonts", json={"token": "does-not-exist", "replace": []}
+            "/api/admin/fonts", json={"token": "f" * 32, "replace": []}
         )
         assert resp.status_code == 410
         assert resp.json()["code"] == "FONT_UPLOAD_EXPIRED"
+
+    def test_malformed_token_is_rejected_by_schema(self, admin_session) -> None:
+        """格式非法在 schema 层就被拦下，进不到端点。
+
+        「不存在」与「已过期」必须不可区分（都是 410），但「格式错」
+        和它们区分开没有害处——攻击者拿不到任何有价值的信息。
+        """
+        resp = admin_session.post(
+            "/api/admin/fonts", json={"token": "does-not-exist", "replace": []}
+        )
+        assert resp.status_code == 422
 
     def test_renames_on_collision(self, admin_session, tmp_path, monkeypatch) -> None:
         from app.config import settings

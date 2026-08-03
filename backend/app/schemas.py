@@ -242,6 +242,10 @@ class FontPreflightDto(BaseModel):
 
 
 class FontCommitRequest(BaseModel):
-    token: str
+    #: preflight 返回的暂存 token。必须锁死格式——它会被拿去拼路径，
+    #: 而 pathlib 的 `base / "/etc"` 会整体替换掉 base（见 font_store.py
+    #: 里 decode_file_id 的注释，同一个陷阱我们踩过一次了）。token 恒为
+    #: uuid.uuid4().hex，即 32 位小写十六进制。
+    token: str = Field(pattern=r"^[0-9a-f]{32}$")
     #: 要被替换掉的已有字体的 file_id。空列表表示「这是一个新字体」。
     replace: list[str] = []
