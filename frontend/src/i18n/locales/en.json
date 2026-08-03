@@ -130,7 +130,7 @@
   "admin.fonts.empty": "No fonts uploaded yet",
   "admin.fonts.mountedEmpty": "fonts-extra is empty",
   "admin.fonts.confirmDelete": "Delete \"{filename}\"? Conversions will fall back to a substitute font.",
-  "admin.fonts.loadBuiltin": "Show Built-in fonts (300+, slow to load)",
+  "admin.fonts.loadBuiltin": "Show built-in fonts (300+, slow to load)",
   "admin.stats.tasks": "Tasks",
   "admin.stats.tasksTotal": "{count} total",
   "admin.stats.storage": "Storage",

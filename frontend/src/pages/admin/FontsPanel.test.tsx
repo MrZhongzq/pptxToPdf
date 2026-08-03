@@ -84,7 +84,7 @@ describe('FontsPanel', () => {
     await waitFor(() => expect(fetchSpy).toHaveBeenCalled())
     expect(String(fetchSpy.mock.calls[0][0])).not.toContain('include_builtin=true')
 
-    await userEvent.click(screen.getByRole('button', { name: /内置|Built-in/ }))
+    await userEvent.click(screen.getByRole('button', { name: /内置|built-in/i }))
     await waitFor(() =>
       expect(fetchSpy.mock.calls.some(([u]) => String(u).includes('include_builtin=true'))).toBe(true),
     )
