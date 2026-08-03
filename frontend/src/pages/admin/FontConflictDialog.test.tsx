@@ -73,15 +73,17 @@ describe('FontConflictDialog', () => {
     expect(btn).toBeEnabled()
   })
 
-  it('warns when the incoming font covers noticeably fewer characters', () => {
+  it('does not warn when the coverage matches', () => {
     /** 字数掉一大截基本是子集化的精简版，换上去中文会缺字。
      *  这条提示是这个弹窗最有价值的部分。 */
     renderDialog([{ ...managedCandidate, charset_count: 28762 }])
-    // incoming 也是 28762，不该报警
-    expect(screen.queryByText(/少了|fewer/)).not.toBeInTheDocument()
+    // incoming 也是 28762，字数相等，不该报警
+    expect(screen.queryByText(/丢失|lose/i)).not.toBeInTheDocument()
   })
 
   it('shows how many characters would be lost', () => {
+    // 候选（已有字体）36,220 字 > 上传的 28,762 字：勾选替换会把完整版
+    // 覆盖成字少的版本，丢的字数是两者之差 7,458。
     renderDialog([{ ...managedCandidate, charset_count: 36220 }])
     expect(screen.getByText(/7,458/)).toBeInTheDocument()
   })

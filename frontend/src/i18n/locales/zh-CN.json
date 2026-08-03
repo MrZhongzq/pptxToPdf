@@ -138,7 +138,7 @@
   "admin.fonts.conflictTitle": "上传的字体与下列已有字体可能是同一个，请逐个确认",
   "admin.fonts.incoming": "你上传的",
   "admin.fonts.notReplaceable": "手工挂载，不可替换",
-  "admin.fonts.fewerChars": "字数比你上传的少 {count} 个",
+  "admin.fonts.wouldLoseChars": "替换后会丢失 {count} 个字",
   "admin.fonts.replaceSelected": "替换勾选的字体",
   "admin.fonts.isNewFont": "这是一个新字体，直接添加",
   "admin.fonts.cancelUpload": "取消上传",

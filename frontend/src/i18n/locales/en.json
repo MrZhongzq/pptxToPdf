@@ -138,7 +138,7 @@
   "admin.fonts.conflictTitle": "This font may be the same as the ones below — please confirm each",
   "admin.fonts.incoming": "You are uploading",
   "admin.fonts.notReplaceable": "Mounted manually, cannot be replaced",
-  "admin.fonts.fewerChars": "{count} fewer characters than yours",
+  "admin.fonts.wouldLoseChars": "Replacing would lose {count} characters",
   "admin.fonts.replaceSelected": "Replace selected",
   "admin.fonts.isNewFont": "This is a new font, just add it",
   "admin.fonts.cancelUpload": "Cancel upload",

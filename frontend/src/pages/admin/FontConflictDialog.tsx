@@ -46,10 +46,11 @@ export function FontConflictDialog({
 
   const renderCandidate = (font: FontFile) => {
     const disabled = !font.deletable
-    const overBy = font.charset_count - incoming.charset_count
-    // 候选字数明显多于上传的，才提示——这是精简版（子集化）最直接的信号。
+    // 候选（已有字体）比上传的多出的字数：这也正是勾选替换后会丢掉的字数——
+    // 候选字数明显多于上传的，才提示，这是精简版（子集化）最直接的信号。
+    const wouldLose = font.charset_count - incoming.charset_count
     const showWarning =
-      incoming.charset_count > 0 && overBy > incoming.charset_count * SUBSET_WARNING_RATIO
+      incoming.charset_count > 0 && wouldLose > incoming.charset_count * SUBSET_WARNING_RATIO
 
     return (
       <div
@@ -97,7 +98,7 @@ export function FontConflictDialog({
         </label>
         {showWarning && (
           <p role="alert" className="alert alert-danger" style={{ margin: 0, fontSize: 12 }}>
-            {t('admin.fonts.fewerChars', { count: overBy.toLocaleString() })}
+            {t('admin.fonts.wouldLoseChars', { count: wouldLose.toLocaleString() })}
           </p>
         )}
       </div>
