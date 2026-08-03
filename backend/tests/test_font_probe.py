@@ -4,14 +4,6 @@
 样本取自真机上 fontconfig 2.14 的实际输出。
 """
 
-import sys
-from unittest.mock import MagicMock
-
-# Mock 外部依赖以便全局 conftest 能导入 app.services.pipeline（即使本测试不需要它）。
-sys.modules['redis'] = MagicMock()
-sys.modules['rq'] = MagicMock()
-sys.modules['rq.job'] = MagicMock()
-
 from app.services.font_probe import FontFace, format_version, parse_charset, parse_fc_query
 
 
