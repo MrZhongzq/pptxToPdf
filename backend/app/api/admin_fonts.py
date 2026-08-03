@@ -6,14 +6,21 @@ fontconfig 发现目录 mtime 变了会自动重扫，不需要 fc-cache，也�
 不建数据库表，列表每次现扫目录。
 """
 
-from fastapi import APIRouter, Depends
+import os
+import shutil
+import time
+import uuid
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, UploadFile
 
 from app.api.deps import require_admin
 from app.config import settings
-from app.errors import FontNotDeletable, FontNotFound
+from app.errors import FontInvalid, FontNotDeletable, FontNotFound, FontTooLarge, FontUploadExpired
 from app.models import User
-from app.schemas import FontFaceDto, FontFileDto, FontListDto
+from app.schemas import FontCommitRequest, FontFaceDto, FontFileDto, FontListDto, FontPreflightDto
 from app.services.font_store import (
+    ALLOWED_SUFFIXES,
     BUILTIN_DIRS,
     MOUNTED_DIR,
     SOURCE_BUILTIN,
@@ -22,11 +29,21 @@ from app.services.font_store import (
     WRITABLE_SOURCES,
     FontFile,
     decode_file_id,
+    find_conflicts,
+    is_duplicate,
+    probe,
     safe_filename,
     scan_dir,
 )
 
 router = APIRouter(prefix="/api/admin/fonts", tags=["admin"])
+
+#: 单个字体文件上限。参照：msyh.ttc 约 19 MB，Noto CJK 全集约 20 MB。
+#: 不沿用 pptx 那个 600MB 的限制——对字体毫无意义。
+MAX_FONT_BYTES = 64 * 1024 * 1024
+
+#: preflight 暂存的 TTL。够管理员看完对比表做决定，又不会长期占盘。
+FONT_TMP_TTL_SECONDS = 30 * 60
 
 
 def _scan_all(include_builtin: bool) -> list[FontFile]:
@@ -97,3 +114,141 @@ def delete_font(file_id: str, _: User = Depends(require_admin)) -> None:
     if not target.is_file():
         raise FontNotFound(f"字体 {filename} 不存在")
     target.unlink()
+
+
+def _sweep_tmp() -> None:
+    """清掉过期的暂存文件。
+
+    放在 preflight 入口顺手做，不另起后台任务：uploads 的那个回收器绑在
+    uploads 表上，而这里没有表，复用不了。
+    """
+    tmp = settings.font_tmp_dir
+    if not tmp.is_dir():
+        return
+    deadline = time.time() - FONT_TMP_TTL_SECONDS
+    for p in tmp.iterdir():
+        try:
+            if p.stat().st_mtime < deadline:
+                shutil.rmtree(p, ignore_errors=True) if p.is_dir() else p.unlink()
+        except OSError:
+            continue
+
+
+def _reserve_target(directory: Path, filename: str) -> tuple[Path, str]:
+    """在 directory 下排他式占位一个文件名，撞名就按 -2 / -3 递增重试。
+
+    resolve_collision 只是「看一眼目录、算一个候选名」，检查存在性与
+    实际创建之间有 TOCTOU 窗口：并发的两次 commit 可能都看到同一个候选名
+    空闲，然后都往里写，后写的会静默覆盖先写的。这里用
+    `os.O_CREAT | os.O_EXCL` 把「检查是否存在」与「创建」合成一步原子
+    操作，堵死这个窗口——占位失败（文件已存在）就换下一个候选名重试，
+    占位成功的那一个才是真正属于本次 commit 的文件名。
+
+    返回的文件此时是一个空占位文件，调用方随后要用 os.replace 把真正
+    的内容写进去。
+    """
+    stem, dot, suffix = filename.rpartition(".")
+    if not dot:
+        stem, suffix = filename, ""
+    candidate = filename
+    n = 2
+    while True:
+        target = directory / candidate
+        try:
+            fd = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            candidate = f"{stem}-{n}{dot}{suffix}" if dot else f"{stem}-{n}"
+            n += 1
+            continue
+        os.close(fd)
+        return target, candidate
+
+
+@router.post("/preflight", response_model=FontPreflightDto)
+async def preflight(
+    file: UploadFile = File(...), _: User = Depends(require_admin)
+) -> FontPreflightDto:
+    _sweep_tmp()
+
+    name = safe_filename(file.filename or "font")
+    if Path(name).suffix.lower() not in ALLOWED_SUFFIXES:
+        raise FontInvalid("只接受 .ttf / .ttc / .otf")
+
+    tmp_dir = settings.font_tmp_dir
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    token = uuid.uuid4().hex
+    staged = tmp_dir / token
+    staged.mkdir()
+    dest = staged / name
+
+    # 边写边计数：先读进内存再判大小的话，一个超大请求就能把进程撑爆
+    written = 0
+    try:
+        with dest.open("wb") as fh:
+            while chunk := await file.read(1024 * 1024):
+                written += len(chunk)
+                if written > MAX_FONT_BYTES:
+                    raise FontTooLarge(
+                        f"字体文件不能超过 {MAX_FONT_BYTES // 1024 // 1024} MB"
+                    )
+                fh.write(chunk)
+        info = probe(dest, SOURCE_MANAGED)
+        if info is None:
+            raise FontInvalid("这不是可识别的字体文件")
+    except Exception:
+        # 被拒的上传不能在暂存区留垃圾，也不能留半个文件让 fontconfig 去扫
+        shutil.rmtree(staged, ignore_errors=True)
+        raise
+
+    existing = _scan_all(include_builtin=True)
+    dup = is_duplicate(info.sha256, existing)
+    return FontPreflightDto(
+        token=token,
+        incoming=_to_dto(info),
+        duplicate_of=_to_dto(dup) if dup else None,
+        # 完全相同的文件没有歧义，直接告知即可——不必再列一遍候选让管理员
+        # 多余地确认一次「要不要替换成一模一样的东西」
+        candidates=[] if dup else [_to_dto(c) for c in find_conflicts(info, existing)],
+    )
+
+
+@router.post("", response_model=FontFileDto)
+def commit(
+    payload: FontCommitRequest, _: User = Depends(require_admin)
+) -> FontFileDto:
+    staged = settings.font_tmp_dir / payload.token
+    if not staged.is_dir() or not any(staged.iterdir()):
+        raise FontUploadExpired("这次上传已过期，请重新选择文件")
+    source_file = next(staged.iterdir())
+
+    # 先校验整个 replace 列表再动手：一半替换一半失败是最难收拾的状态
+    targets: list[Path] = []
+    for fid in payload.replace:
+        try:
+            src, fname = decode_file_id(fid)
+        except ValueError as exc:
+            raise FontNotFound(str(exc)) from exc
+        if src not in WRITABLE_SOURCES:
+            raise FontNotDeletable(
+                "手工挂载与镜像内置的字体不能替换，需要在宿主机上处理"
+            )
+        target = settings.font_dir / safe_filename(fname)
+        if not target.is_file():
+            raise FontNotFound(f"要替换的字体 {fname} 已不存在")
+        targets.append(target)
+
+    settings.font_dir.mkdir(parents=True, exist_ok=True)
+    for t in targets:
+        t.unlink()
+
+    # 排他式占位而不是直接信任 resolve_collision 算出的名字——见
+    # _reserve_target 的说明。占位成功后 target 是个空文件，os.replace
+    # 原子地把真正内容换进去，两端都在同一个 storage 卷下，不会跨设备。
+    final_path, final_name = _reserve_target(settings.font_dir, source_file.name)
+    os.replace(source_file, final_path)
+    shutil.rmtree(staged, ignore_errors=True)
+
+    info = probe(final_path, SOURCE_MANAGED)
+    if info is None:
+        raise FontInvalid("落盘后无法解析，文件可能已损坏")
+    return _to_dto(info)

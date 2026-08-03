@@ -230,3 +230,18 @@ class FontListDto(BaseModel):
     managed: list[FontFileDto]
     mounted: list[FontFileDto]
     builtin: list[FontFileDto]
+
+
+class FontPreflightDto(BaseModel):
+    token: str
+    incoming: FontFileDto
+    #: sha256 完全相同的已有文件。非空时前端不该再弹冲突框，直接提示已存在。
+    duplicate_of: FontFileDto | None
+    #: family 有重叠的已有文件，由管理员逐个决定是否替换。
+    candidates: list[FontFileDto]
+
+
+class FontCommitRequest(BaseModel):
+    token: str
+    #: 要被替换掉的已有字体的 file_id。空列表表示「这是一个新字体」。
+    replace: list[str] = []

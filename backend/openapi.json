@@ -1888,6 +1888,63 @@
             }
           }
         }
+      },
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Commit",
+        "operationId": "commit_api_admin_fonts_post",
+        "parameters": [
+          {
+            "name": "pptx2pdf_admin",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pptx2Pdf Admin"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FontCommitRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FontFileDto"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/admin/fonts/{file_id}": {
@@ -1927,6 +1984,65 @@
         "responses": {
           "204": {
             "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/fonts/preflight": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Preflight",
+        "operationId": "preflight_api_admin_fonts_preflight_post",
+        "parameters": [
+          {
+            "name": "pptx2pdf_admin",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pptx2Pdf Admin"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_preflight_api_admin_fonts_preflight_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FontPreflightDto"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -2118,6 +2234,20 @@
           "created_at"
         ],
         "title": "AllowedOriginDto"
+      },
+      "Body_preflight_api_admin_fonts_preflight_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_preflight_api_admin_fonts_preflight_post"
       },
       "CapacityConfig": {
         "properties": {
@@ -2367,6 +2497,27 @@
         "title": "ErrorResponse",
         "description": "所有 API 错误的统一形状，码值取自 app/errors.py。"
       },
+      "FontCommitRequest": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "title": "Token"
+          },
+          "replace": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Replace",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "token"
+        ],
+        "title": "FontCommitRequest"
+      },
       "FontFaceDto": {
         "properties": {
           "family": {
@@ -2481,6 +2632,42 @@
           "builtin"
         ],
         "title": "FontListDto"
+      },
+      "FontPreflightDto": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "title": "Token"
+          },
+          "incoming": {
+            "$ref": "#/components/schemas/FontFileDto"
+          },
+          "duplicate_of": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FontFileDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/FontFileDto"
+            },
+            "type": "array",
+            "title": "Candidates"
+          }
+        },
+        "type": "object",
+        "required": [
+          "token",
+          "incoming",
+          "duplicate_of",
+          "candidates"
+        ],
+        "title": "FontPreflightDto"
       },
       "GraphCredentialsDto": {
         "properties": {
