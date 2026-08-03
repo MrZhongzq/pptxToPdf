@@ -115,30 +115,18 @@ def safe_filename(raw: str) -> str:
     return name
 
 
-def resolve_collision(directory: Path, filename: str) -> str:
-    """重名时在扩展名前加 -2 / -3 递增后缀。"""
-    if not (directory / filename).exists():
-        return filename
-    stem, dot, suffix = filename.rpartition(".")
-    if not dot:
-        stem, suffix = filename, ""
-    n = 2
-    while True:
-        candidate = f"{stem}-{n}{dot}{suffix}" if dot else f"{stem}-{n}"
-        if not (directory / candidate).exists():
-            return candidate
-        n += 1
-
-
 def probe(path: Path, source: str) -> FontFile | None:
     """读一个字体文件的元信息。不是字体就返回 None。"""
     try:
+        # `--` 挡住形如 "--format=x.ttf" 的文件名：safe_filename 不剥离
+        # 开头的 "-"，没有这个分隔符的话这种文件名会被当成第二个
+        # --format 参数，覆盖掉前一个。
         meta = subprocess.run(
-            ["fc-query", "--format", FC_QUERY_FORMAT, str(path)],
+            ["fc-query", "--format", FC_QUERY_FORMAT, "--", str(path)],
             capture_output=True, text=True, timeout=30,
         )
         charset = subprocess.run(
-            ["fc-query", "--format", CHARSET_FORMAT, str(path)],
+            ["fc-query", "--format", CHARSET_FORMAT, "--", str(path)],
             capture_output=True, text=True, timeout=30,
         )
     except (OSError, subprocess.SubprocessError):
@@ -201,7 +189,4 @@ def find_conflicts(incoming: FontFile, existing: list[FontFile]) -> list[FontFil
     手工挂载与内置的也会列出来。它们删不掉，但管理员需要知道名字被占了。
     """
     wanted = set(incoming.families)
-    return [
-        f for f in existing
-        if f.file_id != incoming.file_id and wanted.intersection(f.families)
-    ]
+    return [f for f in existing if wanted.intersection(f.families)]

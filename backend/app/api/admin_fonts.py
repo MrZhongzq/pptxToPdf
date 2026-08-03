@@ -15,6 +15,7 @@ from dataclasses import replace as dataclass_replace
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, UploadFile
+from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import require_admin
 from app.config import settings
@@ -169,6 +170,11 @@ def _reserve_target(directory: Path, filename: str) -> tuple[Path, str]:
     返回的文件此时是一个空占位文件，调用方随后要用 os.replace 把真正
     的内容写进去。
     """
+    # 唯一调用方传的是已经过 safe_filename 净化的 source_file.name，此刻
+    # 不可利用。补这一行是补齐防线，不是修已知漏洞——这条分支已经在
+    # 「每一层各校验一次」的模式上栽过两次（decode_file_id 的 file_id、
+    # commit 的 token），这里不该是唯一破例的那个。
+    filename = safe_filename(filename)
     stem, dot, suffix = filename.rpartition(".")
     if not dot:
         stem, suffix = filename, ""
@@ -225,7 +231,14 @@ async def preflight(
         shutil.rmtree(staged, ignore_errors=True)
         raise
 
-    existing = _scan_all(include_builtin=True)
+    # 必须丢进线程池，不能直接同步调用：这里要扫 349 个内置文件、每个跑
+    # 两次 fc-query 子进程 + 算 sha256，是秒级的重活。api 容器的 uvicorn
+    # 默认单 worker（deploy/api.Dockerfile 没有 --workers），preflight 又
+    # 是 async def（要 await file.read()），直接同步跑会冻结整个事件
+    # 循环——上传一个字体期间，转换状态轮询、健康检查、v1 同步接口全部
+    # 一起卡住。list_fonts/commit 是普通 def，FastAPI 自动丢线程池，没有
+    # 这个问题；这里要手动补上。
+    existing = await run_in_threadpool(_scan_all, True)
     dup = is_duplicate(info.sha256, existing)
     return FontPreflightDto(
         token=token,

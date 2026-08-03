@@ -20,7 +20,6 @@ from app.services.font_store import (
     find_conflicts,
     is_duplicate,
     probe,
-    resolve_collision,
     safe_filename,
 )
 
@@ -94,17 +93,6 @@ class TestSafeFilename:
         assert safe_filename("") == "font"
 
 
-class TestResolveCollision:
-    def test_returns_name_unchanged_when_free(self, tmp_path: Path) -> None:
-        assert resolve_collision(tmp_path, "a.ttf") == "a.ttf"
-
-    def test_appends_incrementing_suffix_before_extension(self, tmp_path: Path) -> None:
-        (tmp_path / "a.ttf").write_bytes(b"x")
-        assert resolve_collision(tmp_path, "a.ttf") == "a-2.ttf"
-        (tmp_path / "a-2.ttf").write_bytes(b"x")
-        assert resolve_collision(tmp_path, "a.ttf") == "a-3.ttf"
-
-
 class TestDuplicate:
     def test_same_sha_is_a_duplicate(self) -> None:
         existing = [_font("old.ttf", ["A"], sha="deadbeef")]
@@ -143,10 +131,17 @@ class TestFindConflicts:
         ]
         assert len(find_conflicts(incoming, existing)) == 2
 
-    def test_does_not_report_the_file_against_itself(self) -> None:
-        """同一个文件（file_id 相同）不算与自己冲突。"""
-        incoming = _font("same.ttf", ["A"])
-        assert find_conflicts(incoming, [incoming]) == []
+    def test_reports_an_existing_file_with_the_same_name(self) -> None:
+        """升级字体时会重传一个同名文件——这是最主流的用法，必须报冲突。
+
+        incoming 的 file_id 由 (source, filename) 算出，与目录里那个同名
+        文件完全相同。曾经有个「不跟自己冲突」的 guard 会把它静默剔除，
+        结果新文件落成 msyh-2.ttc，两份同 family 字体并存，fontconfig
+        选谁不确定——正是这个模块要防的事。
+        """
+        incoming = _font("msyh.ttc", ["微软雅黑"], sha="new")
+        existing = [_font("msyh.ttc", ["微软雅黑"], sha="old")]
+        assert [c.filename for c in find_conflicts(incoming, existing)] == ["msyh.ttc"]
 
 
 class TestProbeCallsFcQuery:

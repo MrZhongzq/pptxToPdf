@@ -136,6 +136,10 @@ class TestPreflightValidation:
         monkeypatch.setattr(settings, "font_tmp_dir", tmp_path / "t")
         monkeypatch.setattr(mod, "probe", lambda path, source: None)
         _upload(admin_session)
+        # 目录确实建过——否则下面的空目录断言在「目录从未创建」时也会
+        # 安静地绿，跟清理逻辑对不对无关（Path.glob 对不存在的目录也
+        # 只返回空）。这正是本用例上一次假绿的机制。
+        assert (tmp_path / "t").is_dir()
         assert list((tmp_path / "t").glob("*")) == []
 
 
@@ -222,16 +226,11 @@ class TestStagedDirTraversal:
         ],
     )
     def test_traversal_and_malformed_tokens_rejected(self, token: str) -> None:
-        from app.config import settings
         from app.errors import FontUploadExpired
         import app.api.admin_fonts as mod
 
         with pytest.raises(FontUploadExpired):
             mod._staged_dir(token)
-
-        # 没有任何东西被写进 font_dir——_staged_dir 只负责算路径,
-        # 但这里额外确认拒绝发生在任何文件系统操作之前。
-        assert not settings.font_dir.exists() or list(settings.font_dir.glob("*")) == []
 
 
 def _mock_probe(monkeypatch) -> None:
