@@ -4,15 +4,17 @@ import { useI18n } from '../i18n'
 import { getMe, type UserDto } from '../lib/api'
 import { GraphCredentialsPanel } from './admin/GraphCredentialsPanel'
 import { BlockedPanel } from './admin/BlockedPanel'
+import { FontsPanel } from './admin/FontsPanel'
 import { OriginsPanel } from './admin/OriginsPanel'
 import { StatsPanel } from './admin/StatsPanel'
 import { UsersPanel } from './admin/UsersPanel'
 
-type Section = 'users' | 'graph' | 'origins' | 'blocked' | 'stats'
+type Section = 'users' | 'graph' | 'fonts' | 'origins' | 'blocked' | 'stats'
 
 const SECTIONS: { key: Section; labelKey: string; hintKey: string }[] = [
   { key: 'users', labelKey: 'admin.section.users', hintKey: 'admin.section.users.hint' },
   { key: 'graph', labelKey: 'admin.section.graph', hintKey: 'admin.section.graph.hint' },
+  { key: 'fonts', labelKey: 'admin.section.fonts', hintKey: 'admin.section.fonts.hint' },
   { key: 'origins', labelKey: 'admin.section.origins', hintKey: 'admin.section.origins.hint' },
   { key: 'blocked', labelKey: 'admin.section.blocked', hintKey: 'admin.section.blocked.hint' },
   { key: 'stats', labelKey: 'admin.section.stats', hintKey: 'admin.section.stats.hint' },
@@ -92,6 +94,7 @@ export function AdminPage() {
         <div style={{ display: 'grid', gap: 'var(--space-4)' }}>
           {section === 'users' && <UsersPanel currentUserId={user.user_id} />}
           {section === 'graph' && <GraphCredentialsPanel />}
+          {section === 'fonts' && <FontsPanel />}
           {section === 'origins' && <OriginsPanel />}
           {section === 'blocked' && <BlockedPanel />}
           {section === 'stats' && <StatsPanel />}
