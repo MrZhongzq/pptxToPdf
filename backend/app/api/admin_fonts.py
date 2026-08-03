@@ -160,9 +160,9 @@ def _staged_dir(token: str) -> Path:
 def _reserve_target(directory: Path, filename: str) -> tuple[Path, str]:
     """在 directory 下排他式占位一个文件名，撞名就按 -2 / -3 递增重试。
 
-    resolve_collision 只是「看一眼目录、算一个候选名」，检查存在性与
-    实际创建之间有 TOCTOU 窗口：并发的两次 commit 可能都看到同一个候选名
-    空闲，然后都往里写，后写的会静默覆盖先写的。这里用
+    「先看一眼目录算个候选名、再去创建」的写法有 TOCTOU 窗口：并发的
+    两次 commit 可能都看到同一个候选名空闲，然后都往里写，后写的会静默
+    覆盖先写的。这里用
     `os.O_CREAT | os.O_EXCL` 把「检查是否存在」与「创建」合成一步原子
     操作，堵死这个窗口——占位失败（文件已存在）就换下一个候选名重试，
     占位成功的那一个才是真正属于本次 commit 的文件名。
@@ -288,8 +288,8 @@ def commit(
     for t in targets:
         t.unlink()
 
-    # 排他式占位而不是直接信任 resolve_collision 算出的名字——见
-    # _reserve_target 的说明。占位成功后 target 是个空文件，os.replace
+    # 排他式占位而不是先算名字再创建——见 _reserve_target 的说明。
+    # 占位成功后 target 是个空文件，os.replace
     # 原子地把真正内容换进去，两端都在同一个 storage 卷下，不会跨设备。
     final_path, final_name = _reserve_target(settings.font_dir, source_file.name)
     os.replace(source_file, final_path)
