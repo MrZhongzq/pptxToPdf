@@ -3,22 +3,28 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '../../i18n'
+import type { FontFile } from '../../lib/adminApi'
 import { FontConflictDialog } from './FontConflictDialog'
 
-const incoming = {
-  file_id: 'x', filename: 'msyh.ttc', source: 'managed' as const,
+// 显式标注 FontFile：不标注的话 `source` 会从第一次赋值处被推断成窄化的
+// 字面量类型（比如 "managed"），后面 `{...incoming, source: 'mounted'}`
+// 派生候选时会跟那个窄类型冲突（tsc 报错，vitest 不做完整类型检查所以
+// 测试本身照样能跑，但 `tsc -b` / `npm run build` 会红）。标注成 FontFile
+// 后 source 是联合类型 'managed' | 'mounted' | 'builtin'，派生就合法了。
+const incoming: FontFile = {
+  file_id: 'x', filename: 'msyh.ttc', source: 'managed',
   families: ['微软雅黑'], faces: [{ family: '微软雅黑', style: 'Regular' }],
   version: '6.30', charset_count: 28762, size_bytes: 19_000_000,
   modified_at: '2026-08-03T00:00:00Z', deletable: true,
 }
-const managedCandidate = { ...incoming, file_id: 'old1', filename: 'msyh-old.ttc', version: '6.25' }
-const mountedCandidate = {
+const managedCandidate: FontFile = { ...incoming, file_id: 'old1', filename: 'msyh-old.ttc', version: '6.25' }
+const mountedCandidate: FontFile = {
   ...incoming, file_id: 'm1', filename: 'mounted.ttc',
-  source: 'mounted' as const, deletable: false,
+  source: 'mounted', deletable: false,
 }
-const builtinCandidate = {
+const builtinCandidate: FontFile = {
   ...incoming, file_id: 'b1', filename: 'builtin.ttc',
-  source: 'builtin' as const, deletable: false,
+  source: 'builtin', deletable: false,
 }
 
 function renderDialog(candidates = [managedCandidate], onResolve = vi.fn(), onCancel = vi.fn()) {

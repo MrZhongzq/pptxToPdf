@@ -84,7 +84,7 @@ describe('FontsPanel', () => {
   })
 
   it('asks for confirmation before deleting', async () => {
-    const fetchSpy = vi.fn(async (url: string, init?: RequestInit) => {
+    const fetchSpy = vi.fn(async (_url: string, init?: RequestInit) => {
       if (init?.method === 'DELETE') return new Response(null, { status: 204 })
       return new Response(JSON.stringify({ managed: [FONT], mounted: [], builtin: [] }),
         { status: 200, headers: { 'Content-Type': 'application/json' } })
@@ -100,7 +100,10 @@ describe('FontsPanel', () => {
   })
 
   it('loads builtin fonts only when the group is expanded', async () => {
-    const fetchSpy = vi.fn(async () => new Response(
+    // 标注 (_url: string) 而不是空参数列表：不是为了在函数体里用它，是
+    // 为了让 vi.fn() 推断出的 mock.calls 元素类型是 [url: string] 而不是
+    // 空 tuple []——下面几行要按索引取 calls[0][0]，空 tuple 取不出来。
+    const fetchSpy = vi.fn(async (_url: string) => new Response(
       JSON.stringify({ managed: [], mounted: [], builtin: [] }),
       { status: 200, headers: { 'Content-Type': 'application/json' } },
     ))
@@ -188,7 +191,10 @@ describe('FontsPanel', () => {
   })
 
   it('shows a notice and skips commit when the file is an exact duplicate', async () => {
-    const fetchSpy = vi.fn(async (url: string) => {
+    // 同样需要标注 _init：这个桩本身不看 init，但下面用
+    // `.some(([u, init]) => ...)` 解构 mock.calls，元素类型得是
+    // [url: string, init?: RequestInit] 两个位置才够解构。
+    const fetchSpy = vi.fn(async (url: string, _init?: RequestInit) => {
       const u = String(url)
       if (u.endsWith('/api/admin/fonts/preflight')) {
         return jsonResponse({
