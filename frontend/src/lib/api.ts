@@ -108,6 +108,46 @@ export async function createUpload(
   return parse<CreateUploadResponse>(resp)
 }
 
+/** 失败响应读 body 的上限。正常情况下 body 与响应头同批到达，读取是纯
+ *  内存操作（毫秒级），2 秒是极宽松的余量。 */
+const ERROR_BODY_TIMEOUT_MS = 2000
+
+/**
+ * 分片上传专用的响应处理——**不能**换回通用的 parse()。
+ *
+ * iOS WebKit 上传一个 File.slice() 切出来的 Blob 时，响应**体**的读取
+ * 永远不会完成：fetch 的 promise 在响应头到达时正常 resolve，紧接着的
+ * resp.json() 就再也回不来了。真机实测（iPad OS 26 / WebKit 605.1.15）
+ * 换 XMLHttpRequest 一样死——onload 也要等完整响应——所以这不是 fetch
+ * 的问题，是网络层的，规避手段只有「不读 body」这一个。
+ *
+ * 症状极具误导性：服务端分片全部收齐、200 也发出去了、客户端 TCP 层
+ * 连 ACK 都回了，但 JS 这边 Promise.all 永远不返回，complete 请求再也
+ * 发不出去，界面就停在第一块不动。
+ *
+ * 所以成功路径一个字节都不读。putChunk 返回 void，本来也不需要响应内容。
+ * 失败路径仍要给出可读的错误，但读 body 同样可能挂住，超时就退回状态码。
+ */
+async function parseChunkResponse(resp: Response): Promise<void> {
+  if (resp.ok) return
+
+  let code = 'INTERNAL_ERROR'
+  let message = resp.statusText
+
+  // 输掉的那个 promise 仍然挂着（fetch 没法取消已开始的 body 读取），
+  // 但它不再挡住主流程——这正是这里用 race 而不是 await 的原因。
+  const body = (await Promise.race([
+    resp.json().catch(() => null),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), ERROR_BODY_TIMEOUT_MS)),
+  ])) as { code?: string; message?: string } | null
+
+  if (body) {
+    code = body.code ?? code
+    message = body.message ?? message
+  }
+  throw new ApiError(code, message, resp.status)
+}
+
 export async function putChunk(
   uploadId: string,
   index: number,
@@ -119,7 +159,7 @@ export async function putChunk(
     body: blob,
     signal,
   })
-  await parse<unknown>(resp)
+  await parseChunkResponse(resp)
 }
 
 export async function getUploadStatus(

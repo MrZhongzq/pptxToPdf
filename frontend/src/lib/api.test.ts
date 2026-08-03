@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { getCapacityConfig } from './api'
+import { getCapacityConfig, putChunk } from './api'
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -42,5 +42,73 @@ describe('getCapacityConfig', () => {
       code: 'INTERNAL_ERROR',
       message: '挂了',
     })
+  })
+})
+
+describe('putChunk', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  /**
+   * iOS WebKit 的坑：上传一个从 File.slice() 切出来的 Blob 时，响应**体**
+   * 的读取永远不会完成——fetch 的 promise 在响应头到达时正常 resolve，
+   * 但紧接着的 resp.json() 就再也回不来了。真机实测（iPad OS 26 /
+   * WebKit 605.1.15）：换 XMLHttpRequest 一样死，因为 onload 也要等
+   * 完整响应，所以这不是 fetch 的问题，是网络层的。
+   *
+   * 症状是整个上传永久卡住：Promise.all 里的那个 worker 永不返回，
+   * complete 请求从此发不出去，服务端那边分片其实早就收全了。
+   *
+   * 所以成功路径一个字节的 body 都不能读。putChunk 返回 void，本来也
+   * 不需要响应内容。
+   */
+  it('resolves without reading the body when the server returns ok', async () => {
+    let bodyRead = false
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: () => {
+          bodyRead = true
+          return new Promise(() => {}) // 永不 resolve，正如真机上那样
+        },
+        text: () => {
+          bodyRead = true
+          return new Promise(() => {})
+        },
+      })),
+    )
+
+    await expect(putChunk('u1', 0, new Blob(['x']))).resolves.toBeUndefined()
+    expect(bodyRead).toBe(false)
+  })
+
+  /** 失败路径仍要给出可读的错误，但同样不能被永远挂住的 body 拖死。 */
+  it('still surfaces an ApiError when the server rejects the chunk', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse({ code: 'UPLOAD_SESSION_NOT_FOUND', message: '没了' }, 404)),
+    )
+
+    await expect(putChunk('u1', 0, new Blob(['x']))).rejects.toMatchObject({
+      code: 'UPLOAD_SESSION_NOT_FOUND',
+      status: 404,
+    })
+  })
+
+  it('falls back to the status code when the error body also hangs', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 503,
+        statusText: 'Service Unavailable',
+        json: () => new Promise(() => {}),
+      })),
+    )
+
+    await expect(putChunk('u1', 0, new Blob(['x']))).rejects.toMatchObject({ status: 503 })
   })
 })
