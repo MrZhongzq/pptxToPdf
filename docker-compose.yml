@@ -30,6 +30,10 @@ services:
       - "127.0.0.1:${API_PORT:-8000}:8000"
     volumes:
       - storage:/app/storage
+      # api 也要挂字体：v1 是同步接口，转换发生在 api 进程内。只给 worker
+      # 挂的话，同一份 pptx 走网页和走 v1 会用不同的字体集出两份不同的
+      # PDF——README 里写了「两边必须一致」，但配置一直只挂了 worker。
+      - ./fonts-extra:/usr/share/fonts/truetype/extra:ro
     env_file:
       - .env
     environment:

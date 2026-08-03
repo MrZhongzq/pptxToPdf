@@ -1,0 +1,14 @@
+把字体文件（.ttf / .ttc / .otf）直接放进这个目录，然后重启容器。
+
+    docker compose restart api worker
+
+容器启动时会跑 fc-cache 重建字体缓存——不重启的话，新放进来的字体
+不会被 LibreOffice 看到。
+
+这个目录以只读方式挂进 api 与 worker 两个容器。两边必须一致：v1 接口
+的转换在 api 进程内跑，网页的转换在 worker 里跑，字体集不同会导致同一
+份 pptx 出来两份排版不一样的 PDF。
+
+常用的：Windows 的 C:\Windows\Fonts 里的等线（Deng.ttf / Dengb.ttf /
+Dengl.ttf）与微软雅黑（msyh.ttc / msyhbd.ttc）。它们受版权保护，不能
+打进镜像，只能自己放。

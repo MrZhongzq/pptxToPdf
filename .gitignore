@@ -8,5 +8,6 @@ storage/
 *.db
 .pytest_cache/
 .vite/
-fonts-extra/
+fonts-extra/*
+!fonts-extra/.gitkeep
 .env

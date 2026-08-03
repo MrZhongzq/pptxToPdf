@@ -97,6 +97,85 @@ docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d
 
 改过代码就别用预构建镜像：它是从 master 构建的，不含本地改动。
 
+<details>
+<summary>先拉镜像、再启动（群晖 / 威联通等 NAS，或任何不想让它自己去 pull 的环境）</summary>
+
+群晖的 Container Manager、威联通的 Container Station 这类图形界面，通常要求
+**镜像已经在本地**才能建项目或选模板。三个镜像先拉下来：
+
+```bash
+docker pull ghcr.io/mrzhongzq/pptxtopdf-api:latest
+docker pull ghcr.io/mrzhongzq/pptxtopdf-worker:latest
+docker pull ghcr.io/mrzhongzq/pptxtopdf-frontend:latest
+docker pull redis:7-alpine
+```
+
+拉完之后，用下面这份自包含的 compose（不引用本仓库任何文件，可以直接粘进
+群晖「项目」的编辑框）：
+
+```yaml
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  frontend:
+    image: ghcr.io/mrzhongzq/pptxtopdf-frontend:latest
+    restart: unless-stopped
+    ports:
+      - "18993:80"
+    depends_on:
+      - api
+
+  api:
+    image: ghcr.io/mrzhongzq/pptxtopdf-api:latest
+    restart: unless-stopped
+    volumes:
+      - ./storage:/app/storage
+      - ./fonts-extra:/usr/share/fonts/truetype/extra:ro
+    environment:
+      PPTX2PDF_STORAGE_ROOT: /app/storage
+      PPTX2PDF_DATABASE_URL: sqlite:////app/storage/pptx2pdf.db
+      PPTX2PDF_REDIS_URL: redis://redis:6379/0
+      PPTX2PDF_SECRET_KEY: 换成你自己生成的
+      PPTX2PDF_ADMIN_PASSWORD_HASH: 换成你自己生成的
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker:
+    image: ghcr.io/mrzhongzq/pptxtopdf-worker:latest
+    restart: unless-stopped
+    volumes:
+      - ./storage:/app/storage
+      - ./fonts-extra:/usr/share/fonts/truetype/extra:ro
+    environment:
+      PPTX2PDF_STORAGE_ROOT: /app/storage
+      PPTX2PDF_DATABASE_URL: sqlite:////app/storage/pptx2pdf.db
+      PPTX2PDF_REDIS_URL: redis://redis:6379/0
+      PPTX2PDF_SECRET_KEY: 换成你自己生成的
+      PPTX2PDF_ADMIN_PASSWORD_HASH: 换成你自己生成的
+    depends_on:
+      redis:
+        condition: service_healthy
+```
+
+与仓库里那份的三点差别，都是为了脱离仓库也能用：
+
+- **卷用 `./storage` 而不是具名卷**，NAS 上更容易在文件管理器里找到、备份。
+  `./storage` 与 `./fonts-extra` 两个目录要**先手工建好**，见下面的[字体](#中文字体)一节。
+- **密钥直接写在 `environment` 里**，因为没有 `.env` 文件可以引用。两个值的
+  生成方法见上面的「手动安装」。写进去之后这份 compose 就含密钥了，注意别外传。
+- **worker 只起 1 个**。仓库那份默认 2 个副本、每个限 8G 内存，NAS 上通常吃不消。
+  要多开就加 `deploy.replicas`。
+
+</details>
+
 ### 常用命令
 
 ```bash
@@ -117,8 +196,53 @@ pptx 只存字体名不存字形。字体缺失时渲染端会替换，而替换
 - **中文仍有偏差**：等线、微软雅黑受版权保护不能打进镜像，也没有 metric 兼容的
   自由替代。镜像装的是 Noto CJK，能保证中文不显示成方块，但段落换行位置会偏移。
 
-要消除中文偏差，把 Windows 的 `C:\Windows\Fonts` 里的等线（`Deng.ttf` 等）与微软雅黑
-拷进项目下的 `fonts-extra/`，容器启动时会自动加载并优先使用。
+### 放自己的字体
+
+要消除中文偏差，就得提供真字体。等线与微软雅黑受版权保护，不能打进镜像。
+
+**目录不用你建**——`fonts-extra/` 随仓库一起克隆下来，里面有个说明文件。
+用上面的一键脚本或 `git clone` 装的，它已经在项目根目录下了。
+
+只有一种情况需要手工建：**不克隆仓库、直接粘 compose 用**（比如群晖那种）。
+这时 `./fonts-extra` 与 `./storage` 都要在 `docker compose up` **之前**建好：
+
+```bash
+mkdir -p fonts-extra storage
+```
+
+先启动再建也不是不行，但 Docker 会先替你建一个 **root 拥有**的空目录，
+之后往里拷字体会遇到权限问题，还得 `chown` 一遍——不如一开始就建好。
+
+**放进去，然后重启：**
+
+```bash
+cp /mnt/c/Windows/Fonts/Deng*.ttf  fonts-extra/     # 等线
+cp /mnt/c/Windows/Fonts/msyh*.ttc  fonts-extra/     # 微软雅黑
+docker compose restart api worker
+```
+
+**必须重启。** fontconfig 的缓存是镜像构建时生成的，而你的字体是构建之后才
+出现的；容器启动时会跑一次 `fc-cache -f` 重建缓存，不重启就等于没放。
+
+**映射关系：**
+
+| 宿主机 | 容器内 | 挂给谁 |
+|---|---|---|
+| `./fonts-extra` | `/usr/share/fonts/truetype/extra` | api **和** worker，只读 |
+
+两个容器都要挂，且必须是同一个目录：网页的转换在 worker 里跑，
+[HTTP v1 接口](#http-v1-接口)的转换在 api 进程内跑。只挂一边的话，同一份 pptx
+走两条路会出来两份排版不一样的 PDF。
+
+支持 `.ttf` / `.ttc` / `.otf`。放进去的字体优先于镜像内置的替代字体——
+`deploy/fontconfig-local.conf` 里的映射规则用的是 `binding="weak"`，
+只在真字体缺失时才兜底，不会盖掉你放的。
+
+**确认字体真的被加载了：**
+
+```bash
+docker compose exec worker fc-list | grep -i deng
+```
 
 ---
 

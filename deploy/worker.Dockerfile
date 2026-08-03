@@ -28,8 +28,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 FROM base AS worker
 
 COPY backend/ ./
-COPY deploy/worker-entrypoint.sh /usr/local/bin/worker-entrypoint.sh
-RUN chmod +x /usr/local/bin/worker-entrypoint.sh
+COPY deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
-ENTRYPOINT ["/usr/local/bin/worker-entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["python", "worker.py"]
