@@ -6,6 +6,7 @@
 """
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from cryptography.fernet import Fernet
@@ -145,6 +146,86 @@ class TestList:
         assert item["charset_count"] == 28_762
 
 
+class TestScanAll:
+    """`_scan_all` 此前完全被 TestList 里的 monkeypatch 桩掉，零覆盖。
+
+    这里直接调用真正的 `_scan_all`，只把最底层的 `scan_dir` 换成记录调用
+    参数的桩——不需要真字体文件，也不碰真实的 /usr/share/fonts，
+    Windows 上也能跑。
+    """
+
+    def _patch(self, monkeypatch, *, builtin_dirs: tuple[Path, ...], mounted_dir: Path, managed_dir: Path):
+        import app.api.admin_fonts as mod
+
+        calls: list[tuple[Path, str]] = []
+
+        def fake_scan_dir(directory: Path, source: str) -> list:
+            calls.append((directory, source))
+            return []
+
+        monkeypatch.setattr(mod, "scan_dir", fake_scan_dir)
+        monkeypatch.setattr(mod, "BUILTIN_DIRS", builtin_dirs)
+        monkeypatch.setattr(mod, "MOUNTED_DIR", mounted_dir)
+        monkeypatch.setattr(mod.settings, "font_dir", managed_dir)
+        return mod, calls
+
+    def test_skips_builtin_entirely_when_flag_false(self, tmp_path, monkeypatch) -> None:
+        mod, calls = self._patch(
+            monkeypatch,
+            builtin_dirs=(tmp_path / "builtin",),
+            mounted_dir=tmp_path / "mounted",
+            managed_dir=tmp_path / "managed",
+        )
+        (tmp_path / "builtin").mkdir()
+
+        mod._scan_all(include_builtin=False)
+
+        assert all(source != mod.SOURCE_BUILTIN for _, source in calls)
+
+    def test_always_scans_managed_and_mounted(self, tmp_path, monkeypatch) -> None:
+        managed_dir = tmp_path / "managed"
+        mounted_dir = tmp_path / "mounted"
+        mod, calls = self._patch(
+            monkeypatch, builtin_dirs=(), mounted_dir=mounted_dir, managed_dir=managed_dir
+        )
+
+        mod._scan_all(include_builtin=False)
+
+        assert (managed_dir, mod.SOURCE_MANAGED) in calls
+        assert (mounted_dir, mod.SOURCE_MOUNTED) in calls
+
+    def test_scans_builtin_root_and_skips_mounted_subtree(self, tmp_path, monkeypatch) -> None:
+        """一次覆盖真机布局验证出的两个点：
+
+        - 根目录本身直接放字体的情况（真机上目前不触发，但不能靠布局
+          永远不变来保证），只扫 rglob 命中的子目录会永久漏掉它。
+        - mounted 子树可能被用户按字体家族整理成多级子目录，这些子目录
+          落在 BUILTIN_DIRS 的 rglob 范围内，必须整棵子树排除，只挡
+          MOUNTED_DIR 这一个节点不够。
+        """
+        builtin_root = tmp_path / "builtin"
+        mounted_dir = builtin_root / "truetype" / "extra"
+        mounted_child = mounted_dir / "my-family"  # 用户在挂载目录下自建的子目录
+        normal_sub = builtin_root / "dejavu"
+        for d in (mounted_child, normal_sub):
+            d.mkdir(parents=True)
+
+        mod, calls = self._patch(
+            monkeypatch,
+            builtin_dirs=(builtin_root,),
+            mounted_dir=mounted_dir,
+            managed_dir=tmp_path / "managed",
+        )
+
+        mod._scan_all(include_builtin=True)
+
+        builtin_dirs_scanned = {d for d, source in calls if source == mod.SOURCE_BUILTIN}
+        assert builtin_root in builtin_dirs_scanned  # 根目录本身被扫到
+        assert normal_sub in builtin_dirs_scanned  # 普通子目录正常扫到
+        assert mounted_dir not in builtin_dirs_scanned  # 挂载目录本身不重复归类
+        assert mounted_child not in builtin_dirs_scanned  # 挂载目录的子孙同样排除
+
+
 class TestDelete:
     def test_removes_a_managed_file(self, admin_session: TestClient, tmp_path, monkeypatch) -> None:
         from app.config import settings
@@ -162,6 +243,13 @@ class TestDelete:
         """手工挂载的目录是 :ro，删了也会失败——提前拦住并说明原因，
         比让 OSError 冒成 500 强。"""
         fid = encode_file_id(SOURCE_MOUNTED, "a.ttf")
+        resp = admin_session.delete(f"/api/admin/fonts/{fid}")
+        assert resp.status_code == 400
+        assert resp.json()["code"] == "FONT_NOT_DELETABLE"
+
+    def test_refuses_to_delete_builtin(self, admin_session: TestClient) -> None:
+        """镜像内置字体同样只读，此前只测过 mounted 这一半。"""
+        fid = encode_file_id(SOURCE_BUILTIN, "a.ttf")
         resp = admin_session.delete(f"/api/admin/fonts/{fid}")
         assert resp.status_code == 400
         assert resp.json()["code"] == "FONT_NOT_DELETABLE"

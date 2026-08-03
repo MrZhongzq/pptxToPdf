@@ -39,10 +39,15 @@ def _scan_all(include_builtin: bool) -> list[FontFile]:
     found += scan_dir(MOUNTED_DIR, SOURCE_MOUNTED)
     if include_builtin:
         for d in BUILTIN_DIRS:
-            for sub in sorted(p for p in d.rglob("*") if p.is_dir()) if d.is_dir() else []:
-                if sub == MOUNTED_DIR:
+            if not d.is_dir():
+                continue
+            # 根目录本身也可能直接放字体——只扫子目录会把它们永久漏掉
+            for directory in [d, *sorted(p for p in d.rglob("*") if p.is_dir())]:
+                # 排除整个手工挂载子树：那批字体已经作为 mounted 扫过了，
+                # 再作为 builtin 扫一遍会让用户看到自己放的字体却删不掉
+                if directory == MOUNTED_DIR or directory.is_relative_to(MOUNTED_DIR):
                     continue
-                found += scan_dir(sub, SOURCE_BUILTIN)
+                found += scan_dir(directory, SOURCE_BUILTIN)
     return found
 
 
