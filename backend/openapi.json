@@ -1831,6 +1831,116 @@
         }
       }
     },
+    "/api/admin/fonts": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "List Fonts",
+        "operationId": "list_fonts_api_admin_fonts_get",
+        "parameters": [
+          {
+            "name": "include_builtin",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Builtin"
+            }
+          },
+          {
+            "name": "pptx2pdf_admin",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pptx2Pdf Admin"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FontListDto"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/fonts/{file_id}": {
+      "delete": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Delete Font",
+        "operationId": "delete_font_api_admin_fonts__file_id__delete",
+        "parameters": [
+          {
+            "name": "file_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "File Id"
+            }
+          },
+          {
+            "name": "pptx2pdf_admin",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pptx2Pdf Admin"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/convert": {
       "get": {
         "tags": [
@@ -2256,6 +2366,121 @@
         ],
         "title": "ErrorResponse",
         "description": "所有 API 错误的统一形状，码值取自 app/errors.py。"
+      },
+      "FontFaceDto": {
+        "properties": {
+          "family": {
+            "type": "string",
+            "title": "Family"
+          },
+          "style": {
+            "type": "string",
+            "title": "Style"
+          }
+        },
+        "type": "object",
+        "required": [
+          "family",
+          "style"
+        ],
+        "title": "FontFaceDto"
+      },
+      "FontFileDto": {
+        "properties": {
+          "file_id": {
+            "type": "string",
+            "title": "File Id"
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "families": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Families"
+          },
+          "faces": {
+            "items": {
+              "$ref": "#/components/schemas/FontFaceDto"
+            },
+            "type": "array",
+            "title": "Faces"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "charset_count": {
+            "type": "integer",
+            "title": "Charset Count"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "title": "Size Bytes"
+          },
+          "modified_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Modified At"
+          },
+          "deletable": {
+            "type": "boolean",
+            "title": "Deletable"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file_id",
+          "filename",
+          "source",
+          "families",
+          "faces",
+          "version",
+          "charset_count",
+          "size_bytes",
+          "modified_at",
+          "deletable"
+        ],
+        "title": "FontFileDto"
+      },
+      "FontListDto": {
+        "properties": {
+          "managed": {
+            "items": {
+              "$ref": "#/components/schemas/FontFileDto"
+            },
+            "type": "array",
+            "title": "Managed"
+          },
+          "mounted": {
+            "items": {
+              "$ref": "#/components/schemas/FontFileDto"
+            },
+            "type": "array",
+            "title": "Mounted"
+          },
+          "builtin": {
+            "items": {
+              "$ref": "#/components/schemas/FontFileDto"
+            },
+            "type": "array",
+            "title": "Builtin"
+          }
+        },
+        "type": "object",
+        "required": [
+          "managed",
+          "mounted",
+          "builtin"
+        ],
+        "title": "FontListDto"
       },
       "GraphCredentialsDto": {
         "properties": {

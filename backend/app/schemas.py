@@ -203,3 +203,30 @@ class SystemStatsDto(BaseModel):
     storage_originals_bytes: int
     storage_outputs_bytes: int
     storage_shards_bytes: int
+
+
+# ---- 字体管理 ----
+
+
+class FontFaceDto(BaseModel):
+    family: str
+    style: str
+
+
+class FontFileDto(BaseModel):
+    file_id: str
+    filename: str
+    source: str
+    families: list[str]
+    faces: list[FontFaceDto]
+    version: str
+    charset_count: int
+    size_bytes: int
+    modified_at: datetime
+    deletable: bool
+
+
+class FontListDto(BaseModel):
+    managed: list[FontFileDto]
+    mounted: list[FontFileDto]
+    builtin: list[FontFileDto]

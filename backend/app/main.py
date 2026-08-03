@@ -6,7 +6,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import admin, admin_users, auth, config, tasks, uploads, v1
+from app.api import admin, admin_fonts, admin_users, auth, config, tasks, uploads, v1
 from app.config import settings
 from app.db import init_db
 from app.errors import AppError, CrossOriginBlocked, OriginBlocked, ValidationError
@@ -152,4 +152,5 @@ app.include_router(tasks.router)
 app.include_router(config.router)
 app.include_router(admin.router)
 app.include_router(admin_users.router)
+app.include_router(admin_fonts.router)
 app.include_router(v1.router)
