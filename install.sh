@@ -70,16 +70,28 @@ else
   SECRET_KEY=$(docker run --rm python:3.12-slim python -c \
     "from base64 import urlsafe_b64encode; import os; print(urlsafe_b64encode(os.urandom(32)).decode())")
 
-  # 管理员口令：随机 20 位。脚本只打印一次，不写进任何文件。
-  ADMIN_PASSWORD=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20)
-  # 纯标准库，既不用挂载 backend 也不用装 cryptography——scrypt 就在 hashlib 里。
-  # 参数必须与 backend/app/services/auth.py 的 _SCRYPT_* 常量保持一致。
-  ADMIN_HASH=$(docker run --rm python:3.12-slim python -c "
-import binascii, hashlib, os
+  # 口令与哈希在同一个容器里一次算完，有三个理由：
+  #
+  # 1. 原来用 `tr -dc ... </dev/urandom | head -c 20` 生成口令。head 读够
+  #    20 字节就退出，tr 还在无限读 /dev/urandom，吃到 SIGPIPE——管道退出
+  #    码非零，配上开头的 `set -euo pipefail` 会让脚本在这里**静默终止**，
+  #    只留下一个空的 .env，什么都没装也不报错。这台 ARM 机器上实测
+  #    20/20 必现。install.sh 从引入那天起就带着这个毛病。
+  # 2. 口令不再经过 shell 变量传给 docker，也就不会出现在进程列表里。
+  # 3. 少起一个容器。
+  #
+  # scrypt 参数必须与 backend/app/services/auth.py 的 _SCRYPT_* 常量一致。
+  CREDS=$(docker run --rm python:3.12-slim python -c "
+import binascii, hashlib, os, secrets, string
+pw = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(20))
 salt = os.urandom(16)
-digest = hashlib.scrypt('$ADMIN_PASSWORD'.encode(), salt=salt, n=16384, r=8, p=1, dklen=32)
+digest = hashlib.scrypt(pw.encode(), salt=salt, n=16384, r=8, p=1, dklen=32)
+print(pw)
 print(f'scrypt:{binascii.hexlify(salt).decode()}:{binascii.hexlify(digest).decode()}')
 ")
+  # here-string 读两行，不用管道也不用 printf 转义——上面那个坑正是管道
+  # 提前退出制造 SIGPIPE 引起的，这里不想再引入第二个管道。
+  { read -r ADMIN_PASSWORD; read -r ADMIN_HASH; } <<< "$CREDS"
 
   # 用 : 而不是 $ 做分隔符——Compose 会把 \$xxx 当变量插值吃掉哈希的一段
   sed -i.bak "s|^PPTX2PDF_SECRET_KEY=.*|PPTX2PDF_SECRET_KEY=$SECRET_KEY|" .env
