@@ -57,14 +57,24 @@ cp .env.example .env
 
 ```bash
 # Fernet 主密钥，32 字节 urlsafe base64
-python -c "from base64 import urlsafe_b64encode; import os; print(urlsafe_b64encode(os.urandom(32)).decode())"
+python -c "
+import base64, os
+print(base64.urlsafe_b64encode(os.urandom(32)).decode())
+"
 
-# 管理员口令的哈希
-cd backend && python -c "
-from app.services.auth import hash_password
-print(hash_password('你的口令'))
+# 管理员口令的哈希。把 你的口令 换成你要用的
+python -c "
+import binascii, hashlib, os
+salt = os.urandom(16)
+d = hashlib.scrypt(b'你的口令', salt=salt, n=16384, r=8, p=1, dklen=32)
+print('scrypt:' + binascii.hexlify(salt).decode() + ':' + binascii.hexlify(d).decode())
 "
 ```
+
+这两条只用 Python 标准库，**不需要先装项目依赖**——此刻依赖还没装，走
+`from app.services.auth import hash_password` 那条路会因为 config 要
+pydantic-settings 而直接报 ModuleNotFoundError。没有 Python 的话，把
+`python -c` 换成 `docker run --rm python:3.12-slim python -c` 一样跑。
 
 分隔符是 `:` 而不是 `$`——Compose 会把 `$xxx` 当变量插值，把哈希吃掉一段。
 
@@ -110,8 +120,34 @@ docker pull ghcr.io/mrzhongzq/pptxtopdf-frontend:latest
 docker pull redis:7-alpine
 ```
 
-拉完之后，用下面这份自包含的 compose（不引用本仓库任何文件，可以直接粘进
-群晖「项目」的编辑框）：
+**先生成两个必填的值。** 下面两条命令各起一个一次性容器就跑完，不需要克隆仓库、
+不需要装 Python——用的全是标准库。在群晖上开个 SSH，或者用 Container Manager
+自带的终端都行：
+
+```bash
+# 1. Fernet 主密钥。Azure 凭证与会话签名都靠它，丢了等于所有已存的凭证都解不开
+docker run --rm python:3.12-slim python -c "
+import base64, os
+print(base64.urlsafe_b64encode(os.urandom(32)).decode())
+"
+
+# 2. 管理员口令的哈希。把 你的口令 换成你要用的，输出整行照抄
+docker run --rm python:3.12-slim python -c "
+import binascii, hashlib, os
+salt = os.urandom(16)
+d = hashlib.scrypt(b'你的口令', salt=salt, n=16384, r=8, p=1, dklen=32)
+print('scrypt:' + binascii.hexlify(salt).decode() + ':' + binascii.hexlify(d).decode())
+"
+```
+
+第一条输出形如 `YS4FbNGa8dbePE0kS64aAV4NMrWNkaLH1snU4qn8sFY=`，
+第二条形如 `scrypt:0db979ba…:8f3c21…`（三段，冒号分隔）。
+
+分隔符是 `:` 而不是 `$`——Compose 会把 `$xxx` 当变量插值，把哈希吃掉一段。
+
+拉完镜像、生成完这两个值之后，用下面这份自包含的 compose（不引用本仓库任何
+文件，可以直接粘进群晖「项目」的编辑框），把 `<粘贴上面第 N 条的输出>` 两处
+替换掉：
 
 ```yaml
 services:
@@ -142,8 +178,8 @@ services:
       PPTX2PDF_STORAGE_ROOT: /app/storage
       PPTX2PDF_DATABASE_URL: sqlite:////app/storage/pptx2pdf.db
       PPTX2PDF_REDIS_URL: redis://redis:6379/0
-      PPTX2PDF_SECRET_KEY: 换成你自己生成的
-      PPTX2PDF_ADMIN_PASSWORD_HASH: 换成你自己生成的
+      PPTX2PDF_SECRET_KEY: <粘贴上面第 1 条的输出>
+      PPTX2PDF_ADMIN_PASSWORD_HASH: <粘贴上面第 2 条的输出>
     depends_on:
       redis:
         condition: service_healthy
@@ -158,8 +194,8 @@ services:
       PPTX2PDF_STORAGE_ROOT: /app/storage
       PPTX2PDF_DATABASE_URL: sqlite:////app/storage/pptx2pdf.db
       PPTX2PDF_REDIS_URL: redis://redis:6379/0
-      PPTX2PDF_SECRET_KEY: 换成你自己生成的
-      PPTX2PDF_ADMIN_PASSWORD_HASH: 换成你自己生成的
+      PPTX2PDF_SECRET_KEY: <粘贴上面第 1 条的输出>
+      PPTX2PDF_ADMIN_PASSWORD_HASH: <粘贴上面第 2 条的输出>
     depends_on:
       redis:
         condition: service_healthy
@@ -169,8 +205,9 @@ services:
 
 - **卷用 `./storage` 而不是具名卷**，NAS 上更容易在文件管理器里找到、备份。
   `./storage` 与 `./fonts-extra` 两个目录要**先手工建好**，见下面的[字体](#中文字体)一节。
-- **密钥直接写在 `environment` 里**，因为没有 `.env` 文件可以引用。两个值的
-  生成方法见上面的「手动安装」。写进去之后这份 compose 就含密钥了，注意别外传。
+- **密钥直接写在 `environment` 里**，因为没有 `.env` 文件可以引用。写进去之后
+  这份 compose 就含密钥了，注意别外传、别截图发出去。
+- **其余环境变量都有默认值**，不用写。转换超时、分片阈值、TTL 这些想调再加。
 - **worker 只起 1 个**。仓库那份默认 2 个副本、每个限 8G 内存，NAS 上通常吃不消。
   要多开就加 `deploy.replicas`。
 

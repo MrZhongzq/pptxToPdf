@@ -72,13 +72,14 @@ else
 
   # 管理员口令：随机 20 位。脚本只打印一次，不写进任何文件。
   ADMIN_PASSWORD=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20)
-  ADMIN_HASH=$(docker run --rm -v "$PWD/backend:/app" -w /app python:3.12-slim sh -c \
-    "pip install -q cryptography >/dev/null 2>&1; python -c \"
+  # 纯标准库，既不用挂载 backend 也不用装 cryptography——scrypt 就在 hashlib 里。
+  # 参数必须与 backend/app/services/auth.py 的 _SCRYPT_* 常量保持一致。
+  ADMIN_HASH=$(docker run --rm python:3.12-slim python -c "
 import binascii, hashlib, os
 salt = os.urandom(16)
 digest = hashlib.scrypt('$ADMIN_PASSWORD'.encode(), salt=salt, n=16384, r=8, p=1, dklen=32)
 print(f'scrypt:{binascii.hexlify(salt).decode()}:{binascii.hexlify(digest).decode()}')
-\"")
+")
 
   # 用 : 而不是 $ 做分隔符——Compose 会把 \$xxx 当变量插值吃掉哈希的一段
   sed -i.bak "s|^PPTX2PDF_SECRET_KEY=.*|PPTX2PDF_SECRET_KEY=$SECRET_KEY|" .env
