@@ -182,3 +182,69 @@ export async function deleteBlocked(originId: string): Promise<void> {
   const resp = await fetch('/api/admin/blocked/' + originId, { method: 'DELETE' })
   if (!resp.ok) await parseError(resp)
 }
+
+// ---- 字体管理 ----
+
+export interface FontFace {
+  family: string
+  style: string
+}
+
+export interface FontFile {
+  file_id: string
+  filename: string
+  source: 'managed' | 'mounted' | 'builtin'
+  /** 这个文件里包含的字体名。ttc 一个文件含多个，微软雅黑就是。 */
+  families: string[]
+  faces: FontFace[]
+  version: string
+  /** 覆盖的码位数。比版本号有用——版本号看不出子集化，字数能。 */
+  charset_count: number
+  size_bytes: number
+  modified_at: string
+  deletable: boolean
+}
+
+export interface FontList {
+  managed: FontFile[]
+  mounted: FontFile[]
+  builtin: FontFile[]
+}
+
+export interface FontPreflight {
+  token: string
+  incoming: FontFile
+  /** 非空表示这个文件一模一样地传过了，前端不该再弹冲突框。 */
+  duplicate_of: FontFile | null
+  candidates: FontFile[]
+}
+
+export async function listFonts(includeBuiltin = false): Promise<FontList> {
+  const q = includeBuiltin ? '?include_builtin=true' : ''
+  const resp = await fetch('/api/admin/fonts' + q)
+  if (!resp.ok) await parseError(resp)
+  return resp.json() as Promise<FontList>
+}
+
+export async function preflightFont(file: File): Promise<FontPreflight> {
+  const form = new FormData()
+  form.append('file', file)
+  const resp = await fetch('/api/admin/fonts/preflight', { method: 'POST', body: form })
+  if (!resp.ok) await parseError(resp)
+  return resp.json() as Promise<FontPreflight>
+}
+
+export async function commitFont(token: string, replace: string[]): Promise<FontFile> {
+  const resp = await fetch('/api/admin/fonts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, replace }),
+  })
+  if (!resp.ok) await parseError(resp)
+  return resp.json() as Promise<FontFile>
+}
+
+export async function deleteFont(fileId: string): Promise<void> {
+  const resp = await fetch('/api/admin/fonts/' + fileId, { method: 'DELETE' })
+  if (!resp.ok) await parseError(resp)
+}

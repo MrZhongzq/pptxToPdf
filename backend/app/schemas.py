@@ -203,3 +203,49 @@ class SystemStatsDto(BaseModel):
     storage_originals_bytes: int
     storage_outputs_bytes: int
     storage_shards_bytes: int
+
+
+# ---- 字体管理 ----
+
+
+class FontFaceDto(BaseModel):
+    family: str
+    style: str
+
+
+class FontFileDto(BaseModel):
+    file_id: str
+    filename: str
+    source: str
+    families: list[str]
+    faces: list[FontFaceDto]
+    version: str
+    charset_count: int
+    size_bytes: int
+    modified_at: datetime
+    deletable: bool
+
+
+class FontListDto(BaseModel):
+    managed: list[FontFileDto]
+    mounted: list[FontFileDto]
+    builtin: list[FontFileDto]
+
+
+class FontPreflightDto(BaseModel):
+    token: str
+    incoming: FontFileDto
+    #: sha256 完全相同的已有文件。非空时前端不该再弹冲突框，直接提示已存在。
+    duplicate_of: FontFileDto | None
+    #: family 有重叠的已有文件，由管理员逐个决定是否替换。
+    candidates: list[FontFileDto]
+
+
+class FontCommitRequest(BaseModel):
+    #: preflight 返回的暂存 token。必须锁死格式——它会被拿去拼路径，
+    #: 而 pathlib 的 `base / "/etc"` 会整体替换掉 base（见 font_store.py
+    #: 里 decode_file_id 的注释，同一个陷阱我们踩过一次了）。token 恒为
+    #: uuid.uuid4().hex，即 32 位小写十六进制。
+    token: str = Field(pattern=r"^[0-9a-f]{32}$")
+    #: 要被替换掉的已有字体的 file_id。空列表表示「这是一个新字体」。
+    replace: list[str] = []

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 MIB = 1024 * 1024
@@ -132,6 +132,29 @@ class Settings(BaseSettings):
     @property
     def shards_dir(self) -> Path:
         return self.storage_root / "shards"
+
+    #: 面板管理的字体。放在 storage 下，api 与 worker 共享同一个卷，
+    #: 写进去两边立刻都能用。
+    font_dirname: str = "fonts"
+    #: preflight 暂存区。上传完但还没决定怎么处理冲突的文件放这里。
+    font_tmp_dirname: str = "fonts-tmp"
+
+    # font_dir / font_tmp_dir 特意不写成 uploads_dir 那种 @property：测试要
+    # 能 monkeypatch.setattr(settings, "font_dir", tmp_path) 直接换目录（见
+    # test_admin_fonts.py），而 pydantic 模型的 __setattr__ 对没有 setter 的
+    # property 会直接抛 AttributeError。这里用普通字段 + model_validator
+    # 在构造后按 storage_root 填默认值，字段本身可以像其它设置项一样被
+    # 直接赋值覆盖。
+    font_dir: Path | None = None
+    font_tmp_dir: Path | None = None
+
+    @model_validator(mode="after")
+    def _default_font_dirs(self) -> "Settings":
+        if self.font_dir is None:
+            self.font_dir = self.storage_root / self.font_dirname
+        if self.font_tmp_dir is None:
+            self.font_tmp_dir = self.storage_root / self.font_tmp_dirname
+        return self
 
     def ensure_dirs(self) -> None:
         for d in (self.uploads_dir, self.originals_dir, self.outputs_dir, self.shards_dir):

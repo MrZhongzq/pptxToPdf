@@ -221,3 +221,32 @@ class OriginBlocked(AppError):
 
     code = "ORIGIN_BLOCKED"
     http_status = 403
+
+
+class FontNotFound(AppError):
+    code = "FONT_NOT_FOUND"
+    http_status = 404
+
+
+class FontNotDeletable(AppError):
+    """手工挂载与镜像内置的字体不归面板管——那两个目录在容器里是只读的。"""
+
+    code = "FONT_NOT_DELETABLE"
+    http_status = 400
+
+
+class FontInvalid(AppError):
+    code = "FONT_INVALID"
+    http_status = 400
+
+
+class FontTooLarge(AppError):
+    code = "FONT_TOO_LARGE"
+    http_status = 413
+
+
+class FontUploadExpired(AppError):
+    """preflight 暂存的文件已过 TTL 被回收。"""
+
+    code = "FONT_UPLOAD_EXPIRED"
+    http_status = 410
